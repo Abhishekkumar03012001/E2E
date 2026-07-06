@@ -46,12 +46,19 @@ Run:
 
 import os
 import re
-import sys
 from collections import Counter
 from datetime import datetime
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+
+# ------------------------------------------------------------------
+# >>> SET YOUR INPUT FILE PATH HERE <<<
+# IMPORTANT: Keep the "r" right before the quote (r"...") -- this makes
+# it a "raw string" so backslashes in Windows paths are not misread as
+# escape codes (this is what was causing your unicode error).
+# ------------------------------------------------------------------
+INPUT_FILE_PATH = r"C:\Users\YourName\Documents\Input_File.xlsx"
 
 # ------------------------------------------------------------------
 # Config constants (edit here if actual header names differ)
@@ -447,7 +454,4 @@ def main(input_file):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python compare_tool.py <path_to_input_file.xlsx>")
-        sys.exit(1)
-    main(sys.argv[1])
+    main(INPUT_FILE_PATH)
