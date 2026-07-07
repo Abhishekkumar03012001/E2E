@@ -51,6 +51,8 @@ from datetime import datetime
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ------------------------------------------------------------------
 # >>> SET YOUR INPUT FILE PATH HERE <<<
@@ -81,6 +83,59 @@ VALIDATED = "Validated - All Rows Match"
 MANUAL_VALIDATION = "Manual validation required"
 MISSING_IN_CONFIG = "Tab missing in config file"
 MISSING_IN_EXPORT = "Tab missing in Export file"
+
+# ------------------------------------------------------------------
+# Styling constants
+# ------------------------------------------------------------------
+HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
+HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+SOURCE_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+SOURCE_FONT = Font(bold=True, italic=True, size=10, name="Calibri", color="1F4E78")
+
+RESULT_COLORS = {
+    VALIDATED: PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
+    MANUAL_VALIDATION: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+    MISSING_IN_CONFIG: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+    MISSING_IN_EXPORT: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+}
+RESULT_FONT_COLORS = {
+    VALIDATED: Font(color="006100", bold=True, name="Calibri"),
+    MANUAL_VALIDATION: Font(color="9C6500", bold=True, name="Calibri"),
+    MISSING_IN_CONFIG: Font(color="9C0006", bold=True, name="Calibri"),
+    MISSING_IN_EXPORT: Font(color="9C0006", bold=True, name="Calibri"),
+}
+
+THIN_SIDE = Side(style="thin", color="B7B7B7")
+THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
+
+
+def style_header_cell(cell):
+    cell.fill = HEADER_FILL
+    cell.font = HEADER_FONT
+    cell.alignment = HEADER_ALIGN
+    cell.border = THIN_BORDER
+
+
+def style_data_cell(cell):
+    cell.border = THIN_BORDER
+    cell.font = Font(name="Calibri", size=10)
+    cell.alignment = Alignment(vertical="center")
+
+
+def autofit_columns(ws, min_width=10, max_width=45):
+    for col_cells in ws.columns:
+        col_letter = None
+        max_len = 0
+        for c in col_cells:
+            if col_letter is None:
+                col_letter = c.column_letter
+            val = c.value
+            if val is not None:
+                max_len = max(max_len, len(str(val)))
+        if col_letter:
+            ws.column_dimensions[col_letter].width = max(min_width, min(max_len + 3, max_width))
 
 
 # ------------------------------------------------------------------
@@ -295,8 +350,7 @@ def load_input_paths(input_file):
 # ------------------------------------------------------------------
 # Report writer
 # ------------------------------------------------------------------
-def write_report(summary_rows, detail_sheets, output_folder, state_name):
-    wb = Workbook()
+def write_summary_sheet(wb, summary_rows):
     ws = wb.active
     ws.title = "Summary of Results"
     headers = [
@@ -308,44 +362,114 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
         "Column Mismatched",
     ]
     ws.append(headers)
+    for col in range(1, len(headers) + 1):
+        style_header_cell(ws.cell(row=1, column=col))
+
     for r in summary_rows:
-        ws.append(
-            [
-                r.get("config_tab", ""),
-                r.get("export_tab", ""),
-                r.get("result", ""),
-                r.get("config_unmatched_rows", "NA"),
-                r.get("export_unmatched_rows", "NA"),
-                r.get("col_mismatch", "NA"),
-            ]
+        row_values = [
+            r.get("config_tab", ""),
+            r.get("export_tab", ""),
+            r.get("result", ""),
+            r.get("config_unmatched_rows", "NA"),
+            r.get("export_unmatched_rows", "NA"),
+            r.get("col_mismatch", "NA"),
+        ]
+        ws.append(row_values)
+        result_row = ws.max_row
+        result_value = r.get("result", "")
+        for col in range(1, len(headers) + 1):
+            cell = ws.cell(row=result_row, column=col)
+            style_data_cell(cell)
+        result_cell = ws.cell(row=result_row, column=3)
+        if result_value in RESULT_COLORS:
+            result_cell.fill = RESULT_COLORS[result_value]
+            result_cell.font = RESULT_FONT_COLORS[result_value]
+
+    # Filters on the header row
+    last_col_letter = get_column_letter(len(headers))
+    ws.auto_filter.ref = f"A1:{last_col_letter}{ws.max_row}"
+
+    # Freeze header row, add row height for header
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 22
+
+    autofit_columns(ws)
+
+
+def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, existing_names):
+    tab_name = sanitize_sheet_name(sheet_name, existing_names)
+    existing_names.add(tab_name)
+    dsheet = wb.create_sheet(tab_name)
+
+    cfg_cols = list(cfg_df.columns) if cfg_df is not None else []
+    exp_cols = list(exp_df.columns) if exp_df is not None else []
+
+    left_width = max(len(cfg_cols), 1)
+    gap = 2
+    start_col_right = left_width + gap + 1
+
+    # ---- Left table: Config source ----
+    label_left = f"Source: Config Tab '{config_tab}' - Unmatched Rows"
+    dsheet.cell(row=1, column=1, value=label_left)
+    dsheet.cell(row=1, column=1).font = SOURCE_FONT
+    dsheet.cell(row=1, column=1).fill = SOURCE_FILL
+    if left_width > 1:
+        dsheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=left_width)
+        for c in range(1, left_width + 1):
+            dsheet.cell(row=1, column=c).fill = SOURCE_FILL
+
+    for j, col in enumerate(cfg_cols, start=1):
+        cell = dsheet.cell(row=2, column=j, value=col)
+        style_header_cell(cell)
+    if cfg_df is not None and not cfg_df.empty:
+        for i, row in enumerate(cfg_df.itertuples(index=False), start=3):
+            for j, val in enumerate(row, start=1):
+                cell = dsheet.cell(row=i, column=j, value=val)
+                style_data_cell(cell)
+
+    # ---- Right table: Export source ----
+    label_right = f"Source: Export Tab '{export_tab}' - Unmatched Rows"
+    dsheet.cell(row=1, column=start_col_right, value=label_right)
+    dsheet.cell(row=1, column=start_col_right).font = SOURCE_FONT
+    dsheet.cell(row=1, column=start_col_right).fill = SOURCE_FILL
+    right_width = max(len(exp_cols), 1)
+    if right_width > 1:
+        dsheet.merge_cells(
+            start_row=1, start_column=start_col_right,
+            end_row=1, end_column=start_col_right + right_width - 1
         )
-    for col_cells in ws.columns:
-        max_len = max(len(str(c.value)) if c.value is not None else 0 for c in col_cells)
-        ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 45)
+        for c in range(start_col_right, start_col_right + right_width):
+            dsheet.cell(row=1, column=c).fill = SOURCE_FILL
+
+    for j, col in enumerate(exp_cols, start=start_col_right):
+        cell = dsheet.cell(row=2, column=j, value=col)
+        style_header_cell(cell)
+    if exp_df is not None and not exp_df.empty:
+        for i, row in enumerate(exp_df.itertuples(index=False), start=3):
+            for j, val in enumerate(row, start=start_col_right):
+                cell = dsheet.cell(row=i, column=j, value=val)
+                style_data_cell(cell)
+
+    dsheet.freeze_panes = "A3"
+    dsheet.row_dimensions[1].height = 20
+    autofit_columns(dsheet)
+
+
+def write_report(summary_rows, detail_sheets, output_folder, state_name):
+    wb = Workbook()
+    write_summary_sheet(wb, summary_rows)
 
     existing_names = {"Summary of Results"}
     for tab_key, res in detail_sheets.items():
-        sheet_name = sanitize_sheet_name(tab_key, existing_names)
-        existing_names.add(sheet_name)
-        dsheet = wb.create_sheet(sheet_name)
-
-        cfg_df = res["unmatched_config_df"]
-        exp_df = res["unmatched_export_df"]
-
-        if not cfg_df.empty:
-            for j, col in enumerate(cfg_df.columns, start=1):
-                dsheet.cell(row=1, column=j, value=col)
-            for i, row in enumerate(cfg_df.itertuples(index=False), start=2):
-                for j, val in enumerate(row, start=1):
-                    dsheet.cell(row=i, column=j, value=val)
-
-        start_col = (len(cfg_df.columns) + 3) if not cfg_df.empty else 3
-        if not exp_df.empty:
-            for j, col in enumerate(exp_df.columns, start=start_col):
-                dsheet.cell(row=1, column=j, value=col)
-            for i, row in enumerate(exp_df.itertuples(index=False), start=2):
-                for j, val in enumerate(row, start=start_col):
-                    dsheet.cell(row=i, column=j, value=val)
+        write_detail_sheet(
+            wb,
+            tab_key,
+            res.get("config_tab", tab_key),
+            res.get("export_tab", ""),
+            res["unmatched_config_df"],
+            res["unmatched_export_df"],
+            existing_names,
+        )
 
     os.makedirs(output_folder, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
