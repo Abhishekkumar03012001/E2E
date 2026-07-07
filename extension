@@ -1,191 +1,453 @@
+"""
+Company Website Scraper
+========================
+
+What this does, compared to the original script:
+
+1. Extracts EVERYTHING from a page (headings, paragraphs, lists, links,
+   images, forms, and full plain-text content) instead of just a few pieces.
+2. Extracts tables properly - not just the visible text, but also any
+   links/images that live *inside* table cells (pandas' read_html silently
+   drops those).
+3. Crawls internal pages: any link found on the starting page that points
+   to the same website is queued up and scraped too (with a depth limit
+   and a page limit so it doesn't run forever).
+4. Adds the plumbing you need for an internal/company site that has
+   restrictions: custom headers, Basic Auth, Bearer tokens, cookies,
+   optional SSL verification bypass for self-signed certs, retries,
+   and a delay between requests so you don't hammer the server.
+5. Writes one consolidated Excel workbook with a summary sheet, combined
+   sheets tagged by source page, and one sheet per table.
+
+>>> IMPORTANT COMPLIANCE NOTE <<<
+Before pointing this at an internal company site, confirm with your
+IT/security or legal team that automated scraping is permitted, and check
+the site's robots.txt / terms of use. This script defaults to respecting
+robots.txt (see RESPECT_ROBOTS_TXT below) and only crawls within the same
+domain. Use your own company credentials responsibly and never hardcode
+secrets in a file you might commit or share - use environment variables
+instead (see the AUTH section).
+"""
+
+import os
+import time
+import logging
+from collections import deque
+from urllib.parse import urljoin, urlparse
+from urllib import robotparser
+
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import pandas as pd
-from urllib.parse import urljoin
 
-# -----------------------------
-# Enter the webpage URL here
-# -----------------------------
-URL = "https://example.com"
+# =====================================================================
+# CONFIG - edit these for your site
+# =====================================================================
 
-headers = {
-    "User-Agent": "Mozilla/5.0"
+START_URL = "https://example.com"          # page to start crawling from
+OUTPUT_FILE = "webpage_contents.xlsx"
+
+MAX_PAGES = 40          # hard cap on total pages scraped
+MAX_DEPTH = 2           # how many link-hops away from START_URL to follow
+SAME_DOMAIN_ONLY = True # only follow links on the same domain as START_URL
+RESPECT_ROBOTS_TXT = True
+REQUEST_DELAY_SECONDS = 1.0   # politeness delay between requests
+REQUEST_TIMEOUT = 20
+
+# Skip links whose path contains any of these (logout links, mailto, etc.)
+EXCLUDE_URL_SUBSTRINGS = ["logout", "signout", "mailto:", "tel:", "javascript:"]
+
+# ---- Auth / restricted-site settings -------------------------------
+# Prefer environment variables over hardcoding credentials.
+BASIC_AUTH_USER = os.environ.get("SCRAPER_USER")        # or "myuser"
+BASIC_AUTH_PASS = os.environ.get("SCRAPER_PASS")        # or "mypass"
+BEARER_TOKEN = os.environ.get("SCRAPER_TOKEN")          # or "eyJhbGciOi..."
+
+# If your company site uses session-cookie auth, log in via your browser,
+# copy the cookies, and put them here instead:
+CUSTOM_COOKIES = {
+    # "session_id": "paste-cookie-value-here",
 }
 
-response = requests.get(URL, headers=headers)
-response.raise_for_status()
-
-soup = BeautifulSoup(response.text, "lxml")
-
-# ====================================================
-# Extract General Information
-# ====================================================
-
-page_data = {
-    "Title": soup.title.text.strip() if soup.title else "",
-    "URL": URL
+CUSTOM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; InternalDocScraper/1.0)",
+    # "X-Company-Api-Key": "...",
 }
 
-print("=" * 60)
-print("TITLE:", page_data["Title"])
-print("=" * 60)
+VERIFY_SSL = True   # set False only if you know the site uses a trusted
+                     # self-signed/internal CA and you accept the risk
 
-# ====================================================
-# Extract Headings
-# ====================================================
+# If the company network requires a proxy to reach the site:
+PROXIES = {
+    # "http": "http://proxy.company.com:8080",
+    # "https": "http://proxy.company.com:8080",
+}
 
-headings = []
+# =====================================================================
+# LOGGING
+# =====================================================================
 
-for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-    for h in soup.find_all(tag):
-        headings.append({
-            "Tag": tag.upper(),
-            "Text": h.get_text(" ", strip=True)
-        })
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("scraper")
 
-# ====================================================
-# Extract Paragraphs
-# ====================================================
+# =====================================================================
+# SESSION SETUP (retries + auth)
+# =====================================================================
 
-paragraphs = []
+def build_session() -> requests.Session:
+    session = requests.Session()
 
-for p in soup.find_all("p"):
-    text = p.get_text(" ", strip=True)
-    if text:
-        paragraphs.append(text)
+    retries = Retry(
+        total=3,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
 
-# ====================================================
-# Extract Lists
-# ====================================================
+    session.headers.update(CUSTOM_HEADERS)
 
-lists = []
+    if BASIC_AUTH_USER and BASIC_AUTH_PASS:
+        session.auth = (BASIC_AUTH_USER, BASIC_AUTH_PASS)
 
-for ul in soup.find_all(["ul", "ol"]):
-    items = [li.get_text(" ", strip=True) for li in ul.find_all("li")]
-    lists.append(items)
+    if BEARER_TOKEN:
+        session.headers["Authorization"] = f"Bearer {BEARER_TOKEN}"
 
-# ====================================================
-# Extract Links
-# ====================================================
+    if CUSTOM_COOKIES:
+        session.cookies.update(CUSTOM_COOKIES)
 
-links = []
+    session.verify = VERIFY_SSL
+    if PROXIES:
+        session.proxies.update(PROXIES)
 
-for a in soup.find_all("a", href=True):
-    links.append({
-        "Text": a.get_text(" ", strip=True),
-        "URL": urljoin(URL, a["href"])
-    })
+    return session
 
-# ====================================================
-# Extract Images
-# ====================================================
 
-images = []
+SESSION = build_session()
 
-for img in soup.find_all("img"):
-    images.append({
-        "Alt": img.get("alt", ""),
-        "Source": urljoin(URL, img.get("src", ""))
-    })
+# =====================================================================
+# ROBOTS.TXT
+# =====================================================================
 
-# ====================================================
-# Extract Tables
-# ====================================================
+_robots_cache = {}
 
-tables = []
+def is_allowed_by_robots(url: str) -> bool:
+    if not RESPECT_ROBOTS_TXT:
+        return True
 
-try:
-    dfs = pd.read_html(response.text)
+    parsed = urlparse(url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
 
-    for i, df in enumerate(dfs):
+    if root not in _robots_cache:
+        rp = robotparser.RobotFileParser()
+        rp.set_url(urljoin(root, "/robots.txt"))
+        try:
+            rp.read()
+        except Exception:
+            # If robots.txt can't be fetched, default to allowing but log it
+            log.warning("Could not read robots.txt for %s - proceeding cautiously", root)
+        _robots_cache[root] = rp
+
+    try:
+        return _robots_cache[root].can_fetch(CUSTOM_HEADERS.get("User-Agent", "*"), url)
+    except Exception:
+        return True
+
+# =====================================================================
+# FETCH
+# =====================================================================
+
+def fetch(url: str):
+    try:
+        resp = SESSION.get(url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        return resp
+    except requests.RequestException as e:
+        log.error("Failed to fetch %s: %s", url, e)
+        return None
+
+# =====================================================================
+# TABLE EXTRACTION (captures links/images inside cells too)
+# =====================================================================
+
+def extract_full_tables(soup: BeautifulSoup, page_url: str):
+    """
+    Returns a list of pandas DataFrames, one per <table> on the page.
+    Each cell's text is combined with any link URLs or image alt/src found
+    inside that cell, so nothing embedded in the table is lost.
+    """
+    tables = []
+
+    for table in soup.find_all("table"):
+        rows_out = []
+
+        # Handle simple thead/tbody or plain <tr> structures
+        trs = table.find_all("tr")
+        for tr in trs:
+            cells = tr.find_all(["td", "th"])
+            row_out = []
+            for cell in cells:
+                text = cell.get_text(" ", strip=True)
+
+                extras = []
+                for a in cell.find_all("a", href=True):
+                    extras.append(f"[link: {urljoin(page_url, a['href'])}]")
+                for img in cell.find_all("img"):
+                    src = urljoin(page_url, img.get("src", ""))
+                    alt = img.get("alt", "")
+                    extras.append(f"[image: {alt} -> {src}]")
+
+                if extras:
+                    text = (text + " " + " ".join(extras)).strip()
+
+                # preserve colspan by repeating the value
+                colspan = int(cell.get("colspan", 1) or 1)
+                row_out.extend([text] * colspan)
+
+            if row_out:
+                rows_out.append(row_out)
+
+        if not rows_out:
+            continue
+
+        max_cols = max(len(r) for r in rows_out)
+        rows_out = [r + [""] * (max_cols - len(r)) for r in rows_out]
+
+        # Use first row as header if it looks like a header row (all <th>)
+        first_tr_is_header = trs[0].find_all("th") and not trs[0].find_all("td")
+        if first_tr_is_header:
+            df = pd.DataFrame(rows_out[1:], columns=rows_out[0])
+        else:
+            df = pd.DataFrame(rows_out)
+
         tables.append(df)
 
-except Exception:
-    print("No tables found.")
+    return tables
 
-# ====================================================
-# Extract Forms
-# ====================================================
+# =====================================================================
+# PAGE EXTRACTION
+# =====================================================================
 
-forms = []
+def extract_page_data(soup: BeautifulSoup, url: str):
+    data = {}
 
-for form in soup.find_all("form"):
+    data["title"] = soup.title.get_text(strip=True) if soup.title else ""
+    data["url"] = url
 
-    form_data = {
-        "Action": form.get("action"),
-        "Method": form.get("method"),
-        "Inputs": []
-    }
+    # Full plain-text dump of the whole page (removes script/style noise)
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    data["full_text"] = soup.get_text("\n", strip=True)
 
-    for inp in form.find_all(["input", "textarea", "select"]):
-        form_data["Inputs"].append({
-            "Name": inp.get("name"),
-            "Type": inp.get("type"),
-            "Value": inp.get("value")
-        })
+    data["headings"] = [
+        {"tag": tag.upper(), "text": h.get_text(" ", strip=True)}
+        for tag in ["h1", "h2", "h3", "h4", "h5", "h6"]
+        for h in soup.find_all(tag)
+    ]
 
-    forms.append(form_data)
+    data["paragraphs"] = [
+        p.get_text(" ", strip=True) for p in soup.find_all("p") if p.get_text(strip=True)
+    ]
 
-# ====================================================
-# Save Everything to Excel
-# ====================================================
+    data["lists"] = []
+    for ul in soup.find_all(["ul", "ol"]):
+        items = [li.get_text(" ", strip=True) for li in ul.find_all("li")]
+        if items:
+            data["lists"].append(items)
 
-with pd.ExcelWriter("webpage_contents.xlsx", engine="openpyxl") as writer:
+    data["links"] = [
+        {"text": a.get_text(" ", strip=True), "url": urljoin(url, a["href"])}
+        for a in soup.find_all("a", href=True)
+    ]
 
-    pd.DataFrame([page_data]).to_excel(
-        writer,
-        sheet_name="General",
-        index=False
-    )
+    data["images"] = [
+        {"alt": img.get("alt", ""), "src": urljoin(url, img.get("src", ""))}
+        for img in soup.find_all("img")
+    ]
 
-    pd.DataFrame(headings).to_excel(
-        writer,
-        sheet_name="Headings",
-        index=False
-    )
+    data["forms"] = []
+    for form in soup.find_all("form"):
+        inputs = [
+            {"name": inp.get("name"), "type": inp.get("type"), "value": inp.get("value")}
+            for inp in form.find_all(["input", "textarea", "select"])
+        ]
+        data["forms"].append(
+            {"action": form.get("action"), "method": form.get("method"), "inputs": inputs}
+        )
 
-    pd.DataFrame({"Paragraph": paragraphs}).to_excel(
-        writer,
-        sheet_name="Paragraphs",
-        index=False
-    )
+    return data
 
-    list_rows = []
+# =====================================================================
+# LINK FILTERING / CRAWL QUEUE
+# =====================================================================
 
-    for i, lst in enumerate(lists):
-        for item in lst:
-            list_rows.append({
-                "List": i + 1,
-                "Item": item
-            })
+def should_queue(url: str, start_netloc: str) -> bool:
+    if any(bad in url for bad in EXCLUDE_URL_SUBSTRINGS):
+        return False
+    if SAME_DOMAIN_ONLY and urlparse(url).netloc != start_netloc:
+        return False
+    if not is_allowed_by_robots(url):
+        log.info("Skipping (robots.txt disallows): %s", url)
+        return False
+    return True
 
-    pd.DataFrame(list_rows).to_excel(
-        writer,
-        sheet_name="Lists",
-        index=False
-    )
+# =====================================================================
+# MAIN CRAWL
+# =====================================================================
 
-    pd.DataFrame(links).to_excel(
-        writer,
-        sheet_name="Links",
-        index=False
-    )
+def crawl():
+    start_netloc = urlparse(START_URL).netloc
 
-    pd.DataFrame(images).to_excel(
-        writer,
-        sheet_name="Images",
-        index=False
-    )
+    visited = set()
+    queue = deque([(START_URL, 0)])
 
-    pd.DataFrame(forms).to_excel(
-        writer,
-        sheet_name="Forms",
-        index=False
-    )
+    all_pages_data = []
+    all_tables = []   # list of (page_url, table_index, dataframe)
+    summary_rows = []
 
-    for i, table in enumerate(tables):
-        sheet = f"Table_{i+1}"
-        table.to_excel(writer, sheet_name=sheet, index=False)
+    while queue and len(visited) < MAX_PAGES:
+        url, depth = queue.popleft()
 
-print("\nExtraction completed successfully!")
-print("Output file: webpage_contents.xlsx")
+        if url in visited:
+            continue
+        visited.add(url)
+
+        log.info("Fetching (depth %d): %s", depth, url)
+        resp = fetch(url)
+
+        if resp is None:
+            summary_rows.append({"URL": url, "Depth": depth, "Status": "FAILED"})
+            continue
+
+        summary_rows.append({"URL": url, "Depth": depth, "Status": resp.status_code})
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        page_data = extract_page_data(soup, url)
+        all_pages_data.append(page_data)
+
+        for i, df in enumerate(extract_full_tables(soup, url)):
+            all_tables.append((url, i + 1, df))
+
+        if depth < MAX_DEPTH:
+            for link in page_data["links"]:
+                target = link["url"].split("#")[0]  # drop fragments
+                if target not in visited and should_queue(target, start_netloc):
+                    queue.append((target, depth + 1))
+
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    return all_pages_data, all_tables, summary_rows
+
+# =====================================================================
+# SAVE TO EXCEL
+# =====================================================================
+
+def safe_sheet_name(name: str, used: set) -> str:
+    name = name[:31] if name else "Sheet"
+    base = name
+    n = 1
+    while name in used:
+        suffix = f"_{n}"
+        name = base[: 31 - len(suffix)] + suffix
+        n += 1
+    used.add(name)
+    return name
+
+
+def save_to_excel(all_pages_data, all_tables, summary_rows, output_file):
+    used_sheet_names = set()
+
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+
+        pd.DataFrame(summary_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Crawl_Summary", used_sheet_names), index=False
+        )
+
+        pd.DataFrame(
+            [{"URL": p["url"], "Title": p["title"]} for p in all_pages_data]
+        ).to_excel(writer, sheet_name=safe_sheet_name("Pages", used_sheet_names), index=False)
+
+        headings_rows = [
+            {"Page URL": p["url"], "Tag": h["tag"], "Text": h["text"]}
+            for p in all_pages_data for h in p["headings"]
+        ]
+        pd.DataFrame(headings_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Headings", used_sheet_names), index=False
+        )
+
+        paragraph_rows = [
+            {"Page URL": p["url"], "Paragraph": para}
+            for p in all_pages_data for para in p["paragraphs"]
+        ]
+        pd.DataFrame(paragraph_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Paragraphs", used_sheet_names), index=False
+        )
+
+        list_rows = [
+            {"Page URL": p["url"], "List #": i + 1, "Item": item}
+            for p in all_pages_data for i, lst in enumerate(p["lists"]) for item in lst
+        ]
+        pd.DataFrame(list_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Lists", used_sheet_names), index=False
+        )
+
+        link_rows = [
+            {"Page URL": p["url"], "Link Text": l["text"], "Target URL": l["url"]}
+            for p in all_pages_data for l in p["links"]
+        ]
+        pd.DataFrame(link_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Links", used_sheet_names), index=False
+        )
+
+        image_rows = [
+            {"Page URL": p["url"], "Alt": img["alt"], "Source": img["src"]}
+            for p in all_pages_data for img in p["images"]
+        ]
+        pd.DataFrame(image_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Images", used_sheet_names), index=False
+        )
+
+        form_rows = [
+            {
+                "Page URL": p["url"],
+                "Action": f["action"],
+                "Method": f["method"],
+                "Inputs": str(f["inputs"]),
+            }
+            for p in all_pages_data for f in p["forms"]
+        ]
+        pd.DataFrame(form_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Forms", used_sheet_names), index=False
+        )
+
+        # Full text of every page, one row per page (long text wraps fine in Excel)
+        fulltext_rows = [{"Page URL": p["url"], "Full Text": p["full_text"]} for p in all_pages_data]
+        pd.DataFrame(fulltext_rows).to_excel(
+            writer, sheet_name=safe_sheet_name("Full_Text", used_sheet_names), index=False
+        )
+
+        # One sheet per table, prefixed with a short page index so names stay unique
+        page_index = {p["url"]: i + 1 for i, p in enumerate(all_pages_data)}
+        for url, table_num, df in all_tables:
+            pidx = page_index.get(url, 0)
+            sheet_name = safe_sheet_name(f"P{pidx}_Table{table_num}", used_sheet_names)
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    log.info("Saved %d pages and %d tables to %s", len(all_pages_data), len(all_tables), output_file)
+
+# =====================================================================
+# ENTRY POINT
+# =====================================================================
+
+if __name__ == "__main__":
+    pages, tables, summary = crawl()
+    save_to_excel(pages, tables, summary, OUTPUT_FILE)
+    print(f"\nDone. Crawled {len(pages)} page(s), extracted {len(tables)} table(s).")
+    print(f"Output file: {OUTPUT_FILE}")
