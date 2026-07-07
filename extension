@@ -35,6 +35,8 @@ import logging
 from collections import deque
 from urllib.parse import urljoin, urlparse
 from urllib import robotparser
+from datetime import datetime
+from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -50,7 +52,12 @@ HTML_PARSER = "html.parser"
 # =====================================================================
 
 START_URL = "https://example.com"          # page to start crawling from
-OUTPUT_FILE = "webpage_contents.xlsx"
+
+# Write to a folder you definitely have write access to (your Documents
+# folder), with a timestamp in the name so it never collides with a file
+# that's already open in Excel or locked by permissions.
+OUTPUT_DIR = Path.home() / "Documents" / "webpage_scraper_output"
+OUTPUT_FILE = str(OUTPUT_DIR / f"webpage_contents_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
 
 MAX_PAGES = 40          # hard cap on total pages scraped
 MAX_DEPTH = 2           # how many link-hops away from START_URL to follow
@@ -367,7 +374,24 @@ def safe_sheet_name(name: str, used: set) -> str:
 def save_to_excel(all_pages_data, all_tables, summary_rows, output_file):
     used_sheet_names = set()
 
-    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+    # Make sure the destination folder exists before trying to write into it
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        writer_ctx = pd.ExcelWriter(output_file, engine="openpyxl")
+    except PermissionError:
+        raise PermissionError(
+            f"\n\nCouldn't write to '{output_file}'.\n"
+            "This almost always means one of the following:\n"
+            "  1. The file is already open in Excel - close it and rerun.\n"
+            "  2. The folder is read-only or managed by your company (e.g. a\n"
+            "     locked network drive) - point OUTPUT_DIR at a folder you\n"
+            "     own, such as your Documents or Desktop folder.\n"
+            "  3. A OneDrive/SharePoint sync conflict is locking the file -\n"
+            "     try a local (non-synced) folder instead.\n"
+        )
+
+    with writer_ctx as writer:
 
         pd.DataFrame(summary_rows).to_excel(
             writer, sheet_name=safe_sheet_name("Crawl_Summary", used_sheet_names), index=False
