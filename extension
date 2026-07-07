@@ -1,0 +1,191 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from urllib.parse import urljoin
+
+# -----------------------------
+# Enter the webpage URL here
+# -----------------------------
+URL = "https://example.com"
+
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
+
+response = requests.get(URL, headers=headers)
+response.raise_for_status()
+
+soup = BeautifulSoup(response.text, "lxml")
+
+# ====================================================
+# Extract General Information
+# ====================================================
+
+page_data = {
+    "Title": soup.title.text.strip() if soup.title else "",
+    "URL": URL
+}
+
+print("=" * 60)
+print("TITLE:", page_data["Title"])
+print("=" * 60)
+
+# ====================================================
+# Extract Headings
+# ====================================================
+
+headings = []
+
+for tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+    for h in soup.find_all(tag):
+        headings.append({
+            "Tag": tag.upper(),
+            "Text": h.get_text(" ", strip=True)
+        })
+
+# ====================================================
+# Extract Paragraphs
+# ====================================================
+
+paragraphs = []
+
+for p in soup.find_all("p"):
+    text = p.get_text(" ", strip=True)
+    if text:
+        paragraphs.append(text)
+
+# ====================================================
+# Extract Lists
+# ====================================================
+
+lists = []
+
+for ul in soup.find_all(["ul", "ol"]):
+    items = [li.get_text(" ", strip=True) for li in ul.find_all("li")]
+    lists.append(items)
+
+# ====================================================
+# Extract Links
+# ====================================================
+
+links = []
+
+for a in soup.find_all("a", href=True):
+    links.append({
+        "Text": a.get_text(" ", strip=True),
+        "URL": urljoin(URL, a["href"])
+    })
+
+# ====================================================
+# Extract Images
+# ====================================================
+
+images = []
+
+for img in soup.find_all("img"):
+    images.append({
+        "Alt": img.get("alt", ""),
+        "Source": urljoin(URL, img.get("src", ""))
+    })
+
+# ====================================================
+# Extract Tables
+# ====================================================
+
+tables = []
+
+try:
+    dfs = pd.read_html(response.text)
+
+    for i, df in enumerate(dfs):
+        tables.append(df)
+
+except Exception:
+    print("No tables found.")
+
+# ====================================================
+# Extract Forms
+# ====================================================
+
+forms = []
+
+for form in soup.find_all("form"):
+
+    form_data = {
+        "Action": form.get("action"),
+        "Method": form.get("method"),
+        "Inputs": []
+    }
+
+    for inp in form.find_all(["input", "textarea", "select"]):
+        form_data["Inputs"].append({
+            "Name": inp.get("name"),
+            "Type": inp.get("type"),
+            "Value": inp.get("value")
+        })
+
+    forms.append(form_data)
+
+# ====================================================
+# Save Everything to Excel
+# ====================================================
+
+with pd.ExcelWriter("webpage_contents.xlsx", engine="openpyxl") as writer:
+
+    pd.DataFrame([page_data]).to_excel(
+        writer,
+        sheet_name="General",
+        index=False
+    )
+
+    pd.DataFrame(headings).to_excel(
+        writer,
+        sheet_name="Headings",
+        index=False
+    )
+
+    pd.DataFrame({"Paragraph": paragraphs}).to_excel(
+        writer,
+        sheet_name="Paragraphs",
+        index=False
+    )
+
+    list_rows = []
+
+    for i, lst in enumerate(lists):
+        for item in lst:
+            list_rows.append({
+                "List": i + 1,
+                "Item": item
+            })
+
+    pd.DataFrame(list_rows).to_excel(
+        writer,
+        sheet_name="Lists",
+        index=False
+    )
+
+    pd.DataFrame(links).to_excel(
+        writer,
+        sheet_name="Links",
+        index=False
+    )
+
+    pd.DataFrame(images).to_excel(
+        writer,
+        sheet_name="Images",
+        index=False
+    )
+
+    pd.DataFrame(forms).to_excel(
+        writer,
+        sheet_name="Forms",
+        index=False
+    )
+
+    for i, table in enumerate(tables):
+        sheet = f"Table_{i+1}"
+        table.to_excel(writer, sheet_name=sheet, index=False)
+
+print("\nExtraction completed successfully!")
+print("Output file: webpage_contents.xlsx")
