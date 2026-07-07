@@ -42,6 +42,14 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import pandas as pd
 
+# Prefer lxml (faster, more lenient), but fall back to the built-in parser
+# so the script still runs on machines where lxml isn't installed.
+try:
+    import lxml  # noqa: F401
+    HTML_PARSER = "lxml"
+except ImportError:
+    HTML_PARSER = "html.parser"
+
 # =====================================================================
 # CONFIG - edit these for your site
 # =====================================================================
@@ -328,7 +336,7 @@ def crawl():
 
         summary_rows.append({"URL": url, "Depth": depth, "Status": resp.status_code})
 
-        soup = BeautifulSoup(resp.text, "lxml")
+        soup = BeautifulSoup(resp.text, HTML_PARSER)
         page_data = extract_page_data(soup, url)
         all_pages_data.append(page_data)
 
