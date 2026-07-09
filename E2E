@@ -25,11 +25,19 @@ ASSUMPTIONS MADE (please confirm / correct once real files are shared):
    used whenever an EQ export tab's name does NOT exactly match a Config
    tab name.
 4. Row matching = exact full-row equality across ALL matched/mapped
-   columns (as you confirmed). Values are normalized (trimmed, 
-   case-insensitive, "5.0" == "5") before comparing, to avoid false
-   mismatches from formatting differences.
+   columns (as you confirmed). Values are normalized (trimmed,
+   case-insensitive) before comparing. Numeric values are additionally
+   rounded to the number of decimal places specified in Inputs!C8
+   before comparison (e.g. C8 = 4 rounds both sides to 4 decimal
+   places), so formatting/precision differences don't cause false
+   mismatches. If C8 is blank, no rounding is applied.
 5. Radar and Roof Limit files: column matching is by exact column name
    only (no mapping sheet), as you confirmed.
+6. "Column Match_EQ" and "Column Match_Tr" sheets have headers named
+   exactly "Config" and "File" in row 1 (each row pairs one Config
+   column name with the corresponding export file's column name, e.g.
+   Config "WaterWinter" <-> File "WinterWater"). Header lookup is
+   case/whitespace-insensitive.
 6. Territory export file has a single sheet named "Sheet1", compared
    against Config's "R_L_Territory" tab.
 7. Roof Limit export file has a single sheet named "Sheet1", compared
@@ -76,8 +84,8 @@ COL_MATCH_TR_SHEET = "Column Match_Tr"
 
 RATE_VAR_FILE_COL = "Input Files Tab Name"
 RATE_VAR_CONFIG_COL = "Config Tab Name"
-MAPPING_FILE_COL = "File Column"
-MAPPING_CONFIG_COL = "Config Column"
+MAPPING_FILE_COL = "File"
+MAPPING_CONFIG_COL = "Config"
 
 TERRITORY_CONFIG_TAB = "R_L_Territory"
 ROOF_CONFIG_TAB = "R_O_RoofLimit"
@@ -181,13 +189,20 @@ def read_df(file_path, sheet_name, header_row=1):
     return df
 
 
-def normalize_value(v):
+def normalize_value(v, decimal_places=None):
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     s = str(v).strip()
     try:
         f = float(s)
-        return str(int(f)) if f.is_integer() else str(f)
+        if decimal_places is not None:
+            f = round(f, decimal_places)
+        # Format without unnecessary trailing zeros, but respect the rounding applied above
+        if f.is_integer():
+            return str(int(f))
+        if decimal_places is not None:
+            return f"{f:.{decimal_places}f}".rstrip("0").rstrip(".")
+        return str(f)
     except ValueError:
         return s.lower()
 
@@ -280,15 +295,17 @@ def match_columns(config_cols, export_cols, col_mapping=None):
     return matched, unmatched
 
 
-def compare_rows(config_df, export_df, matched_cols):
+def compare_rows(config_df, export_df, matched_cols, decimal_places=None):
     config_cols = [m[0] for m in matched_cols]
     export_cols = [m[1] for m in matched_cols]
 
     config_tuples = [
-        tuple(normalize_value(v) for v in row) for row in config_df[config_cols].itertuples(index=False)
+        tuple(normalize_value(v, decimal_places) for v in row)
+        for row in config_df[config_cols].itertuples(index=False)
     ]
     export_tuples = [
-        tuple(normalize_value(v) for v in row) for row in export_df[export_cols].itertuples(index=False)
+        tuple(normalize_value(v, decimal_places) for v in row)
+        for row in export_df[export_cols].itertuples(index=False)
     ]
 
     export_counter = Counter(export_tuples)
@@ -315,13 +332,17 @@ def compare_rows(config_df, export_df, matched_cols):
     )
 
 
-def process_pair(config_df, export_df, config_tab, export_tab, col_mapping=None):
+def process_pair(config_df, export_df, config_tab, export_tab, col_mapping=None, decimal_places=None):
     matched_cols, unmatched_config_cols = match_columns(
         list(config_df.columns), list(export_df.columns), col_mapping
     )
     if matched_cols:
-        unmatched_config_rows, unmatched_export_rows = compare_rows(config_df, export_df, matched_cols)
+        unmatched_config_rows, unmatched_export_rows = compare_rows(
+            config_df, export_df, matched_cols, decimal_places
+        )
     else:
+        # No columns could be matched/mapped at all -> show full tables as unmatched
+        # so the person can see both sides side-by-side and map manually.
         unmatched_config_rows, unmatched_export_rows = config_df.copy(), export_df.copy()
 
     col_mismatch = len(unmatched_config_cols)
@@ -364,6 +385,7 @@ def load_input_paths(input_file):
     ws = wb[resolved_name]
     paths = {
         "state_name": ws["C3"].value,
+        "decimal_places": ws["C8"].value,
         "config_file": ws["C49"].value,
         "radar_file": ws["C50"].value,
         "eq_file": ws["C54"].value,
@@ -512,6 +534,16 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
 def main(input_file):
     paths, input_wb = load_input_paths(input_file)
 
+    raw_decimal = paths.get("decimal_places")
+    try:
+        decimal_places = int(raw_decimal) if raw_decimal is not None and str(raw_decimal).strip() != "" else None
+    except (ValueError, TypeError):
+        print(f"WARNING: Could not parse decimal places from Inputs!C8 (value: {raw_decimal!r}). "
+              f"Proceeding without rounding.")
+        decimal_places = None
+    if decimal_places is not None:
+        print(f"Numeric values will be rounded to {decimal_places} decimal place(s) before comparison.")
+
     eq_tab_map = load_tab_name_mapping(input_wb, RATE_VAR_SHEET, RATE_VAR_FILE_COL, RATE_VAR_CONFIG_COL)
     eq_col_map = load_mapping_sheet(input_wb, COL_MATCH_EQ_SHEET, MAPPING_FILE_COL, MAPPING_CONFIG_COL)
     tr_col_map = load_mapping_sheet(input_wb, COL_MATCH_TR_SHEET, MAPPING_FILE_COL, MAPPING_CONFIG_COL)
@@ -530,7 +562,7 @@ def main(input_file):
             if sheet_name in config_tabs:
                 config_df = read_df(paths["config_file"], sheet_name, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
-                res = process_pair(config_df, export_df, sheet_name, sheet_name)
+                res = process_pair(config_df, export_df, sheet_name, sheet_name, decimal_places=decimal_places)
                 matched_config_tabs.add(sheet_name)
                 summary_rows.append(res)
                 if res["result"] != VALIDATED:
@@ -554,7 +586,9 @@ def main(input_file):
                 header_row = detect_eq_header_row(eq_wb[sheet_name])
                 config_df = read_df(paths["config_file"], target_config_tab, 1)
                 export_df = read_df(paths["eq_file"], sheet_name, header_row)
-                res = process_pair(config_df, export_df, target_config_tab, sheet_name, eq_col_map)
+                res = process_pair(
+                    config_df, export_df, target_config_tab, sheet_name, eq_col_map, decimal_places
+                )
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
                 if res["result"] != VALIDATED:
@@ -569,7 +603,9 @@ def main(input_file):
         if TERRITORY_CONFIG_TAB in config_tabs:
             config_df = read_df(paths["config_file"], TERRITORY_CONFIG_TAB, 1)
             export_df = read_df(paths["territory_file"], EXPORT_SINGLE_SHEET, 1)
-            res = process_pair(config_df, export_df, TERRITORY_CONFIG_TAB, EXPORT_SINGLE_SHEET, tr_col_map)
+            res = process_pair(
+                config_df, export_df, TERRITORY_CONFIG_TAB, EXPORT_SINGLE_SHEET, tr_col_map, decimal_places
+            )
             matched_config_tabs.add(TERRITORY_CONFIG_TAB)
             summary_rows.append(res)
             if res["result"] != VALIDATED:
@@ -584,7 +620,9 @@ def main(input_file):
         if ROOF_CONFIG_TAB in config_tabs:
             config_df = read_df(paths["config_file"], ROOF_CONFIG_TAB, 1)
             export_df = read_df(paths["roof_file"], EXPORT_SINGLE_SHEET, 1)
-            res = process_pair(config_df, export_df, ROOF_CONFIG_TAB, EXPORT_SINGLE_SHEET)
+            res = process_pair(
+                config_df, export_df, ROOF_CONFIG_TAB, EXPORT_SINGLE_SHEET, decimal_places=decimal_places
+            )
             matched_config_tabs.add(ROOF_CONFIG_TAB)
             summary_rows.append(res)
             if res["result"] != VALIDATED:
