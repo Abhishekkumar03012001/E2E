@@ -125,17 +125,17 @@ def style_data_cell(cell):
 
 
 def autofit_columns(ws, min_width=10, max_width=45):
-    for col_cells in ws.columns:
-        col_letter = None
-        max_len = 0
-        for c in col_cells:
-            if col_letter is None:
-                col_letter = c.column_letter
+    widths = {}
+    for row in ws.iter_rows():
+        for c in row:
             val = c.value
-            if val is not None:
-                max_len = max(max_len, len(str(val)))
-        if col_letter:
-            ws.column_dimensions[col_letter].width = max(min_width, min(max_len + 3, max_width))
+            if val is None:
+                continue
+            col_idx = c.column  # works for both Cell and MergedCell
+            widths[col_idx] = max(widths.get(col_idx, 0), len(str(val)))
+    for col_idx, max_len in widths.items():
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = max(min_width, min(max_len + 3, max_width))
 
 
 # ------------------------------------------------------------------
@@ -188,18 +188,26 @@ def normalize_value(v):
         return s.lower()
 
 
+def find_header_index(headers, target):
+    """Case/whitespace-insensitive header lookup. Returns index or None."""
+    target_clean = clean_col(target)
+    for i, h in enumerate(headers):
+        if clean_col(h) == target_clean:
+            return i
+    return None
+
+
 def load_mapping_sheet(wb, sheet_name, file_col_header, config_col_header):
     """Returns dict: {config_col_cleaned: raw_file_col_name}"""
     if sheet_name not in wb.sheetnames:
         return {}
     ws = wb[sheet_name]
     headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    try:
-        file_idx = headers.index(file_col_header)
-        config_idx = headers.index(config_col_header)
-    except ValueError:
+    file_idx = find_header_index(headers, file_col_header)
+    config_idx = find_header_index(headers, config_col_header)
+    if file_idx is None or config_idx is None:
         print(f"WARNING: Could not find '{file_col_header}'/'{config_col_header}' "
-              f"headers in '{sheet_name}'. Skipping this mapping.")
+              f"headers in '{sheet_name}' (found headers: {headers}). Skipping this mapping.")
         return {}
     mapping = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -215,12 +223,11 @@ def load_tab_name_mapping(wb, sheet_name, file_col_header, config_col_header):
         return {}
     ws = wb[sheet_name]
     headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    try:
-        file_idx = headers.index(file_col_header)
-        config_idx = headers.index(config_col_header)
-    except ValueError:
+    file_idx = find_header_index(headers, file_col_header)
+    config_idx = find_header_index(headers, config_col_header)
+    if file_idx is None or config_idx is None:
         print(f"WARNING: Could not find '{file_col_header}'/'{config_col_header}' "
-              f"headers in '{sheet_name}'. Skipping this mapping.")
+              f"headers in '{sheet_name}' (found headers: {headers}). Skipping this mapping.")
         return {}
     mapping = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
