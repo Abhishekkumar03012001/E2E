@@ -103,6 +103,9 @@ HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="s
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
 HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+RED_HEADER_FILL = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+RED_HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
+
 SOURCE_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 SOURCE_FONT = Font(bold=True, italic=True, size=10, name="Calibri", color="1F4E78")
 
@@ -126,6 +129,13 @@ THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN
 def style_header_cell(cell):
     cell.fill = HEADER_FILL
     cell.font = HEADER_FONT
+    cell.alignment = HEADER_ALIGN
+    cell.border = THIN_BORDER
+
+
+def style_unmatched_header_cell(cell):
+    cell.fill = RED_HEADER_FILL
+    cell.font = RED_HEADER_FONT
     cell.alignment = HEADER_ALIGN
     cell.border = THIN_BORDER
 
@@ -336,17 +346,30 @@ def process_pair(config_df, export_df, config_tab, export_tab, col_mapping=None,
     matched_cols, unmatched_config_cols = match_columns(
         list(config_df.columns), list(export_df.columns), col_mapping
     )
-    if matched_cols:
-        unmatched_config_rows, unmatched_export_rows = compare_rows(
-            config_df, export_df, matched_cols, decimal_places
-        )
-    else:
-        # No columns could be matched/mapped at all -> show full tables as unmatched
-        # so the person can see both sides side-by-side and map manually.
-        unmatched_config_rows, unmatched_export_rows = config_df.copy(), export_df.copy()
+    matched_export_set = {e for _, e in matched_cols}
+    unmatched_export_cols = [c for c in list(export_df.columns) if c not in matched_export_set]
 
-    col_mismatch = len(unmatched_config_cols)
-    if len(unmatched_config_rows) == 0 and len(unmatched_export_rows) == 0 and col_mismatch == 0:
+    # Row-level diff computed using only the columns we COULD match -- used for
+    # the Summary sheet counts (best-effort indicator even when some columns
+    # couldn't be aligned).
+    if matched_cols:
+        diff_config_rows, diff_export_rows = compare_rows(config_df, export_df, matched_cols, decimal_places)
+    else:
+        diff_config_rows, diff_export_rows = config_df.copy(), export_df.copy()
+
+    total_col_mismatch = len(unmatched_config_cols) + len(unmatched_export_cols)
+
+    if total_col_mismatch > 0:
+        # Columns don't fully align -> dump the FULL tables (all rows, both sides)
+        # for manual review, with unmatched column headers flagged red, instead
+        # of a partial diff that can misleadingly come back empty.
+        detail_config_df = config_df.copy()
+        detail_export_df = export_df.copy()
+    else:
+        detail_config_df = diff_config_rows
+        detail_export_df = diff_export_rows
+
+    if len(diff_config_rows) == 0 and len(diff_export_rows) == 0 and total_col_mismatch == 0:
         result = VALIDATED
     else:
         result = MANUAL_VALIDATION
@@ -355,11 +378,13 @@ def process_pair(config_df, export_df, config_tab, export_tab, col_mapping=None,
         "config_tab": config_tab,
         "export_tab": export_tab,
         "result": result,
-        "config_unmatched_rows": len(unmatched_config_rows),
-        "export_unmatched_rows": len(unmatched_export_rows),
-        "col_mismatch": col_mismatch if col_mismatch > 0 else "NA",
-        "unmatched_config_df": unmatched_config_rows,
-        "unmatched_export_df": unmatched_export_rows,
+        "config_unmatched_rows": len(diff_config_rows),
+        "export_unmatched_rows": len(diff_export_rows),
+        "col_mismatch": total_col_mismatch if total_col_mismatch > 0 else "NA",
+        "unmatched_config_df": detail_config_df,
+        "unmatched_export_df": detail_export_df,
+        "red_config_cols": set(unmatched_config_cols),
+        "red_export_cols": set(unmatched_export_cols),
     }
 
 
@@ -445,7 +470,11 @@ def write_summary_sheet(wb, summary_rows):
     autofit_columns(ws)
 
 
-def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, existing_names):
+def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, existing_names,
+                        red_config_cols=None, red_export_cols=None, row_label="Unmatched Rows"):
+    red_config_cols = red_config_cols or set()
+    red_export_cols = red_export_cols or set()
+
     tab_name = sanitize_sheet_name(sheet_name, existing_names)
     existing_names.add(tab_name)
     dsheet = wb.create_sheet(tab_name)
@@ -458,7 +487,7 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
     start_col_right = left_width + gap + 1
 
     # ---- Left table: Config source ----
-    label_left = f"Source: Config Tab '{config_tab}' - Unmatched Rows"
+    label_left = f"Source: Config Tab '{config_tab}' - {row_label}"
     dsheet.cell(row=1, column=1, value=label_left)
     dsheet.cell(row=1, column=1).font = SOURCE_FONT
     dsheet.cell(row=1, column=1).fill = SOURCE_FILL
@@ -469,7 +498,10 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
 
     for j, col in enumerate(cfg_cols, start=1):
         cell = dsheet.cell(row=2, column=j, value=col)
-        style_header_cell(cell)
+        if col in red_config_cols:
+            style_unmatched_header_cell(cell)
+        else:
+            style_header_cell(cell)
     if cfg_df is not None and not cfg_df.empty:
         for i, row in enumerate(cfg_df.itertuples(index=False), start=3):
             for j, val in enumerate(row, start=1):
@@ -477,7 +509,7 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
                 style_data_cell(cell)
 
     # ---- Right table: Export source ----
-    label_right = f"Source: Export Tab '{export_tab}' - Unmatched Rows"
+    label_right = f"Source: Export Tab '{export_tab}' - {row_label}"
     dsheet.cell(row=1, column=start_col_right, value=label_right)
     dsheet.cell(row=1, column=start_col_right).font = SOURCE_FONT
     dsheet.cell(row=1, column=start_col_right).fill = SOURCE_FILL
@@ -492,7 +524,10 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
 
     for j, col in enumerate(exp_cols, start=start_col_right):
         cell = dsheet.cell(row=2, column=j, value=col)
-        style_header_cell(cell)
+        if col in red_export_cols:
+            style_unmatched_header_cell(cell)
+        else:
+            style_header_cell(cell)
     if exp_df is not None and not exp_df.empty:
         for i, row in enumerate(exp_df.itertuples(index=False), start=3):
             for j, val in enumerate(row, start=start_col_right):
@@ -510,6 +545,8 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
 
     existing_names = {"Summary of Results"}
     for tab_key, res in detail_sheets.items():
+        has_col_mismatch = res.get("col_mismatch", "NA") != "NA"
+        row_label = "Full Table (column mismatch - manual review)" if has_col_mismatch else "Unmatched Rows"
         write_detail_sheet(
             wb,
             tab_key,
@@ -518,6 +555,9 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
             res["unmatched_config_df"],
             res["unmatched_export_df"],
             existing_names,
+            red_config_cols=res.get("red_config_cols", set()),
+            red_export_cols=res.get("red_export_cols", set()),
+            row_label=row_label,
         )
 
     os.makedirs(output_folder, exist_ok=True)
