@@ -24,6 +24,13 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    treated as the same field, because the pairs given chain them
    together. Same for "Rate" / "Rate per $1000" / "Factor" / "Expense
    Load". Edit EQ_COLUMN_SYNONYM_PAIRS directly to adjust.
+3b. NEW: An EQ export sheet can contain MULTIPLE tables laid out side by
+   side (a second table's headers starting up somewhere to the right of
+   the first table, with no data in between). Only the FIRST table is
+   read/compared -- reading stops at the first blank/empty header cell
+   encountered after the detected header row, and every column from
+   that point on (i.e. the next table) is discarded. This is handled by
+   read_df_first_table() below, used only for the EQ file.
 4. Radar column matching uses the hardcoded synonym list in
    RADAR_COLUMN_SYNONYM_PAIRS below (in addition to exact-name matches).
 5. Territory: the Territory export file (Inputs!C57) is matched to
@@ -31,12 +38,21 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    same as before. A NEW supplemental file (Inputs!C56, single sheet) is
    also read; its columns are assumed to match Config columns by EXACT
    name (no mapping needed) and are combined with the main Territory
-   file's columns before comparing against Config. The two files are
-   combined by matching on any column name they share (e.g. "Territory")
-   ; if they share no column name, columns are combined by row position
-   instead (a warning is printed in that fallback case).
-6. Roof Limit: column matching is by exact column name only (no mapping),
-   unchanged.
+   file's columns before comparing against Config.
+   NEW: the two files are combined specifically by matching on their
+   "Territory" column (present in both the main Territory export file
+   and the C56 supplemental file, matched case/space/punctuation-
+   insensitively) -- NOT on any arbitrary shared column name. If either
+   file is missing a "Territory" column, columns are combined by row
+   position instead as a fallback (a warning is printed in that case).
+6. Roof Limit: column matching is by exact column name only (no
+   mapping), unchanged.
+   NEW: for the "Limit" column specifically, the value "No Limit" (as it
+   may appear in Config) and "No Sub-limit" (as it may appear in the
+   Roof Limit export file) are treated as equal values when comparing
+   rows. See LIMIT_VALUE_SYNONYM_PAIRS below to add more equivalent
+   value pairs if needed -- this only applies to columns that resolve
+   to "Limit", not other columns.
 7. Row matching = exact full-row equality across matched/mapped columns.
    Numeric values are rounded to the decimal places given in Inputs!C8
    before comparing (blank C8 = no rounding).
@@ -86,6 +102,13 @@ MAPPING_CONFIG_COL = "Config"
 TERRITORY_CONFIG_TAB = "R_L_Territory"
 ROOF_CONFIG_TAB = "R_O_RoofLimit"
 
+# Column that the main Territory export file and the C56 supplemental
+# Territory file are combined on.
+TERRITORY_MERGE_COLUMN = "Territory"
+
+# Column in the Roof Limit tab whose values get synonym-normalized.
+ROOF_LIMIT_VALUE_COLUMN = "Limit"
+
 VALIDATED = "Validated - All Rows Match"
 MANUAL_VALIDATION = "Manual validation required"
 MISSING_IN_CONFIG = "Tab missing in config file"
@@ -112,6 +135,19 @@ RADAR_COLUMN_SYNONYM_PAIRS = [
     ("Coverage Amount (Dollar)", "Coverage Amount (Dollar or Percent)"),
     ("Rate", "MinimumSchedProperty"),
     ("NumSqft", "NumSqft (Upper Bound)"),
+]
+
+# ------------------------------------------------------------------
+# Hardcoded VALUE synonym pairs (not column-name synonyms -- these are
+# synonyms for the actual cell VALUES within a specific column). Used
+# for the Roof Limit "Limit" column: "No Limit" (Config) and
+# "No Sub-limit" (Roof Limit export file) are treated as equal.
+# Grouped transitively the same way column synonyms are, via
+# build_synonym_groups(). Add more pairs here if other equivalent
+# phrasings turn up.
+# ------------------------------------------------------------------
+LIMIT_VALUE_SYNONYM_PAIRS = [
+    ("No Limit", "No Sub-limit"),
 ]
 
 # ------------------------------------------------------------------
@@ -222,6 +258,8 @@ def detect_eq_header_row(ws):
 
 
 def read_df(file_path, sheet_name, header_row=1):
+    """Standard reader -- drops any 'Unnamed' (blank-header) columns wherever
+    they occur. Used for Config tabs, Radar, Territory, Roof Limit."""
     df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row - 1, dtype=str)
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
     df.columns = [str(c).strip() for c in df.columns]
@@ -229,10 +267,41 @@ def read_df(file_path, sheet_name, header_row=1):
     return df
 
 
-def normalize_value(v, decimal_places=None):
+def read_df_first_table(file_path, sheet_name, header_row=1):
+    """EQ-only reader. An EQ sheet may contain multiple tables laid out side
+    by side on the same header row (e.g. a second table's headers starting
+    a few columns after the first table ends, with a blank column acting as
+    a separator). This reads starting at the detected header row, then
+    truncates at the FIRST blank/empty header cell -- everything from that
+    column onward (the next table) is discarded, and only the first table's
+    columns/data are kept."""
+    df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row - 1, dtype=str)
+
+    boundary = len(df.columns)
+    for i, c in enumerate(df.columns):
+        c_str = "" if c is None else str(c).strip()
+        if c_str == "" or c_str.lower().startswith("unnamed"):
+            boundary = i
+            break
+
+    df = df.iloc[:, :boundary]
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").reset_index(drop=True)
+    return df
+
+
+def normalize_value(v, decimal_places=None, value_synonym_groups=None):
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
     s = str(v).strip()
+
+    if value_synonym_groups:
+        cs = clean_col(s)
+        if cs in value_synonym_groups:
+            # Return the shared group id so both synonymous values normalize
+            # to the exact same string.
+            return f"__SYN__{value_synonym_groups[cs]}"
+
     try:
         f = float(s)
         if decimal_places is not None:
@@ -260,12 +329,13 @@ def find_sheet_name(wb, target):
 
 
 # ------------------------------------------------------------------
-# Synonym-group based column mapping
+# Synonym-group based mapping (used for BOTH column names and values)
 # ------------------------------------------------------------------
 def build_synonym_groups(pairs):
     """
-    pairs: list of (name_a, name_b) tuples meaning "these refer to the same field".
-    Entries that share a name are chained together transitively (union-find).
+    pairs: list of (name_a, name_b) tuples meaning "these refer to the same
+    field/value". Entries that share a name are chained together
+    transitively (union-find).
     Returns dict: {clean_col(name): group_id}
     """
     parent = {}
@@ -369,18 +439,32 @@ def match_columns(config_cols, export_cols, synonym_groups=None):
     return matched, unmatched
 
 
-def compare_rows(config_df, export_df, matched_cols, decimal_places=None):
+def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_synonym_cols=None):
+    """
+    value_synonym_cols: optional dict {clean_col(config_column_name): synonym_groups}
+    applying value-level synonyms (e.g. "No Limit" == "No Sub-limit") only to
+    specific matched columns.
+    """
+    value_synonym_cols = value_synonym_cols or {}
     config_cols = [m[0] for m in matched_cols]
     export_cols = [m[1] for m in matched_cols]
 
-    config_tuples = [
-        tuple(normalize_value(v, decimal_places) for v in row)
-        for row in config_df[config_cols].itertuples(index=False)
-    ]
-    export_tuples = [
-        tuple(normalize_value(v, decimal_places) for v in row)
-        for row in export_df[export_cols].itertuples(index=False)
-    ]
+    # Per matched-column position, figure out which value-synonym group (if
+    # any) applies -- keyed off the CONFIG side column name.
+    per_col_synonyms = [value_synonym_cols.get(clean_col(c)) for c in config_cols]
+
+    def build_tuples(df, cols):
+        tuples = []
+        for row in df[cols].itertuples(index=False):
+            t = tuple(
+                normalize_value(v, decimal_places, per_col_synonyms[idx])
+                for idx, v in enumerate(row)
+            )
+            tuples.append(t)
+        return tuples
+
+    config_tuples = build_tuples(config_df, config_cols)
+    export_tuples = build_tuples(export_df, export_cols)
 
     export_counter = Counter(export_tuples)
     unmatched_config_idx = []
@@ -406,7 +490,8 @@ def compare_rows(config_df, export_df, matched_cols, decimal_places=None):
     )
 
 
-def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=None, decimal_places=None):
+def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=None,
+                  decimal_places=None, value_synonym_cols=None):
     matched_cols, unmatched_config_cols = match_columns(
         list(config_df.columns), list(export_df.columns), synonym_groups
     )
@@ -417,7 +502,9 @@ def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=No
     # the Summary sheet counts (best-effort indicator even when some columns
     # couldn't be aligned).
     if matched_cols:
-        diff_config_rows, diff_export_rows = compare_rows(config_df, export_df, matched_cols, decimal_places)
+        diff_config_rows, diff_export_rows = compare_rows(
+            config_df, export_df, matched_cols, decimal_places, value_synonym_cols
+        )
     else:
         diff_config_rows, diff_export_rows = config_df.copy(), export_df.copy()
 
@@ -463,16 +550,25 @@ def missing_row(config_tab="", export_tab="", result=""):
     }
 
 
-def merge_export_dataframes(df1, df2):
+def merge_export_dataframes(df1, df2, merge_column=TERRITORY_MERGE_COLUMN):
     """Combine two export dataframes into one, for Territory's dual-file case.
-    Aligns on shared column name(s) if any exist; otherwise falls back to
-    combining by row position (with a warning)."""
-    common_cols = [c for c in df1.columns if c in df2.columns]
-    if common_cols:
-        return pd.merge(df1, df2, on=common_cols, how="outer", suffixes=("_file1", "_file2"))
-    print("WARNING: Territory export file and supplemental file (Inputs!C56) share no "
-          "common column names to align rows on -- combining columns by row position "
-          "instead. Please verify row order matches between the two files.")
+    Specifically aligns on the "Territory" column (present in both files,
+    matched case/space/punctuation-insensitively) -- NOT on just any shared
+    column name. Falls back to combining by row position (with a warning) if
+    either file is missing that column."""
+    col1 = resolve_name(merge_column, df1.columns)
+    col2 = resolve_name(merge_column, df2.columns)
+
+    if col1 and col2:
+        # Merge on the Territory column; rename df2's key to match df1's key
+        # name so pandas merges on a single logical column instead of
+        # producing duplicate Territory_x / Territory_y columns.
+        df2_renamed = df2.rename(columns={col2: col1})
+        return pd.merge(df1, df2_renamed, on=col1, how="outer", suffixes=("_file1", "_file2"))
+
+    print(f"WARNING: Could not find a '{merge_column}' column in both the Territory export "
+          f"file and the supplemental file (Inputs!C56) -- combining columns by row position "
+          f"instead. Please verify row order matches between the two files.")
     n = max(len(df1), len(df2))
     df1r = df1.reindex(range(n)).reset_index(drop=True)
     df2r = df2.reindex(range(n)).reset_index(drop=True)
@@ -669,6 +765,11 @@ def main(input_file):
     eq_synonyms = build_synonym_groups(EQ_COLUMN_SYNONYM_PAIRS)
     radar_synonyms = build_synonym_groups(RADAR_COLUMN_SYNONYM_PAIRS)
 
+    # Value-level synonym groups (not column-name synonyms) applied only to
+    # the Roof Limit tab's "Limit" column.
+    limit_value_synonyms = build_synonym_groups(LIMIT_VALUE_SYNONYM_PAIRS)
+    roof_value_synonym_cols = {clean_col(ROOF_LIMIT_VALUE_COLUMN): limit_value_synonyms}
+
     config_wb = load_workbook(paths["config_file"], data_only=True)
     config_tabs = config_wb.sheetnames
 
@@ -707,7 +808,10 @@ def main(input_file):
             if target_config_tab:
                 header_row = detect_eq_header_row(eq_wb[sheet_name])
                 config_df = read_df(paths["config_file"], target_config_tab, 1)
-                export_df = read_df(paths["eq_file"], sheet_name, header_row)
+                # NOTE: uses read_df_first_table -- an EQ sheet may contain
+                # multiple tables side by side; only the first is kept
+                # (truncated at the first blank/empty header cell).
+                export_df = read_df_first_table(paths["eq_file"], sheet_name, header_row)
                 res = process_pair(config_df, export_df, target_config_tab, sheet_name, eq_synonyms, decimal_places)
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
@@ -736,7 +840,11 @@ def main(input_file):
                 terr_wb2 = load_workbook(territory_file2_path, data_only=True)
                 sheet2_name = terr_wb2.sheetnames[0]
                 export_df2 = read_df(territory_file2_path, sheet2_name, 1)
-                combined_export_df = merge_export_dataframes(export_df1, export_df2)
+                # NOTE: merges specifically on the "Territory" column present
+                # in both files (not just any shared column name).
+                combined_export_df = merge_export_dataframes(
+                    export_df1, export_df2, TERRITORY_MERGE_COLUMN
+                )
                 export_tab_label = f"{sheet1_name} + {sheet2_name}"
 
             res = process_pair(
@@ -759,7 +867,12 @@ def main(input_file):
             roof_wb = load_workbook(paths["roof_file"], data_only=True)
             roof_sheet_name = roof_wb.sheetnames[0]
             export_df = read_df(paths["roof_file"], roof_sheet_name, 1)
-            res = process_pair(config_df, export_df, resolved_roof_cfg, roof_sheet_name, None, decimal_places)
+            # NOTE: passes roof_value_synonym_cols so "No Limit" (Config) and
+            # "No Sub-limit" (export) are treated as equal in the "Limit" column.
+            res = process_pair(
+                config_df, export_df, resolved_roof_cfg, roof_sheet_name, None,
+                decimal_places, roof_value_synonym_cols
+            )
             matched_config_tabs.add(resolved_roof_cfg)
             summary_rows.append(res)
             if res["result"] != VALIDATED:
