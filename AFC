@@ -1,0 +1,198 @@
+"""
+build_report.py
+
+Reads two CSV files (Calib and Prod), builds a 3-sheet Excel workbook that
+compares the distribution of three variables between the two files:
+
+    Sheet 1 : "Protection Class"  -> column Z049_var1   (discrete values 1-10)
+    Sheet 2 : "Roof Appearance"   -> column Z228_var1    (numeric, bucketed)
+    Sheet 3 : "Roof Debris"       -> column Z230_var1    (Yes / No)
+
+Only formatting applied: header row filled dark blue with white text,
+and column widths auto-fit to content. Nothing else is styled.
+"""
+
+import numpy as np
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+# --------------------------------------------------------------------------
+# 1. USER INPUT -- edit these two paths (and the output path) as needed
+# --------------------------------------------------------------------------
+CALIB_PATH = r"calib.csv"   # <-- path to the Calib CSV file
+PROD_PATH = r"prod.csv"     # <-- path to the Prod CSV file
+OUTPUT_PATH = r"Report_Output.xlsx"
+
+# Bucket size for "Roof Appearance" (Sheet 2). Change this single number to
+# make the buckets coarser (e.g. 10.0 -> <=0.0, <=10.0, <=20.0 ...) or finer
+# (e.g. 2.0 -> <=0.0, <=2.0, <=4.0 ...).
+BUCKET_SIZE = 5.0
+
+# Upper bound of the bucketed range. Values above this go in the final
+# ">MAX" bucket. Values <= 0 always fall in the first "<=0.0" bucket.
+BUCKET_MAX = 100.0
+
+# Column names in the source CSVs
+COL_PROTECTION_CLASS = "Z049_var1"
+COL_ROOF_APPEARANCE = "Z228_var1"
+COL_ROOF_DEBRIS = "Z230_var1"
+
+# --------------------------------------------------------------------------
+# Styling constants (header only -- everything else is left unformatted)
+# --------------------------------------------------------------------------
+HEADER_FILL = PatternFill(start_color="00008B", end_color="00008B", fill_type="solid")
+HEADER_FONT = Font(color="FFFFFF")
+
+OUTPUT_COLUMNS = [
+    "measure",
+    "value",
+    "rec_cnt_calib",
+    "rec_pct_calib",
+    "rec_cnt_prod",
+    "rec_pct_prod",
+]
+
+
+# --------------------------------------------------------------------------
+# 2. Helper functions
+# --------------------------------------------------------------------------
+def count_and_pct(series, categories):
+    """
+    Given a pandas Series and an ordered list of category labels (as they
+    should appear, already matching the series' values), return two dicts:
+    counts per category and percentage per category (count / total * 100).
+    Percentages are plain numbers (e.g. 12.34), not Excel-percent formatted.
+    """
+    series = series.dropna()
+    total = len(series)
+    value_counts = series.value_counts()
+
+    counts = {}
+    pcts = {}
+    for cat in categories:
+        cnt = int(value_counts.get(cat, 0))
+        counts[cat] = cnt
+        pcts[cat] = round((cnt / total * 100), 2) if total > 0 else 0.0
+    return counts, pcts
+
+
+def build_summary_table(calib_series, prod_series, measure_name, categories):
+    """
+    Build the standard 6-column summary DataFrame for one measure:
+    measure | value | rec_cnt_calib | rec_pct_calib | rec_cnt_prod | rec_pct_prod
+    """
+    calib_counts, calib_pcts = count_and_pct(calib_series, categories)
+    prod_counts, prod_pcts = count_and_pct(prod_series, categories)
+
+    rows = []
+    for cat in categories:
+        rows.append(
+            {
+                "measure": measure_name,
+                "value": cat,
+                "rec_cnt_calib": calib_counts[cat],
+                "rec_pct_calib": calib_pcts[cat],
+                "rec_cnt_prod": prod_counts[cat],
+                "rec_pct_prod": prod_pcts[cat],
+            }
+        )
+    return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+
+
+def make_bucket_labels_and_bins(bucket_size, bucket_max):
+    """
+    Build bin edges / labels for the Roof Appearance buckets.
+    Bins are: (-inf, 0], (0, bucket_size], (bucket_size, 2*bucket_size], ...
+    ..., (bucket_max - bucket_size, bucket_max], (bucket_max, inf)
+    which matches the requirement that "<=5.0" includes 5 and excludes 0.
+    """
+    edges = [-np.inf, 0.0]
+    val = 0.0
+    while val < bucket_max - 1e-9:
+        val += bucket_size
+        edges.append(round(val, 4))
+    edges.append(np.inf)
+
+    labels = ["<=0.0"]
+    for e in edges[2:-1]:
+        labels.append(f"<={e:.1f}")
+    labels.append(f">{bucket_max:.1f}")
+
+    return edges, labels
+
+
+def bucket_series(series, edges, labels):
+    """Apply pd.cut to bucket a numeric series into the given bins/labels."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    bucketed = pd.cut(numeric, bins=edges, labels=labels, right=True)
+    return bucketed
+
+
+def autofit_columns(ws):
+    """Approximate 'autofit' by sizing each column to its widest cell."""
+    for col_cells in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col_cells[0].column)
+        for cell in col_cells:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max_len + 2
+
+
+def style_header(ws, ncols):
+    """Dark blue fill + white text for the header row only."""
+    for col_idx in range(1, ncols + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+
+
+def write_sheet(wb, sheet_name, df):
+    ws = wb.create_sheet(title=sheet_name)
+    ws.append(list(df.columns))
+    for row in df.itertuples(index=False):
+        ws.append(list(row))
+    style_header(ws, len(df.columns))
+    autofit_columns(ws)
+    return ws
+
+
+# --------------------------------------------------------------------------
+# 3. Main
+# --------------------------------------------------------------------------
+def main():
+    calib_df = pd.read_csv(CALIB_PATH)
+    prod_df = pd.read_csv(PROD_PATH)
+
+    wb = Workbook()
+    wb.remove(wb.active)  # drop the default empty sheet
+
+    # ---- Sheet 1: Protection Class (values 1-10) ----
+    categories_pc = list(range(1, 11))
+    calib_pc = pd.to_numeric(calib_df[COL_PROTECTION_CLASS], errors="coerce")
+    prod_pc = pd.to_numeric(prod_df[COL_PROTECTION_CLASS], errors="coerce")
+    sheet1_df = build_summary_table(calib_pc, prod_pc, "Protection Class", categories_pc)
+    write_sheet(wb, "Protection Class", sheet1_df)
+
+    # ---- Sheet 2: Roof Appearance (bucketed) ----
+    edges, labels = make_bucket_labels_and_bins(BUCKET_SIZE, BUCKET_MAX)
+    calib_ra = bucket_series(calib_df[COL_ROOF_APPEARANCE], edges, labels)
+    prod_ra = bucket_series(prod_df[COL_ROOF_APPEARANCE], edges, labels)
+    sheet2_df = build_summary_table(calib_ra, prod_ra, "Roof Appearance", labels)
+    write_sheet(wb, "Roof Appearance", sheet2_df)
+
+    # ---- Sheet 3: Roof Debris (Yes / No) ----
+    categories_rd = ["Yes", "No"]
+    calib_rd = calib_df[COL_ROOF_DEBRIS].astype(str).str.strip().str.title()
+    prod_rd = prod_df[COL_ROOF_DEBRIS].astype(str).str.strip().str.title()
+    sheet3_df = build_summary_table(calib_rd, prod_rd, "Roof Debris", categories_rd)
+    write_sheet(wb, "Roof Debris", sheet3_df)
+
+    wb.save(OUTPUT_PATH)
+    print(f"Workbook written to: {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
