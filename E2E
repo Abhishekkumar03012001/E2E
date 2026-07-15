@@ -102,6 +102,24 @@ MAPPING_CONFIG_COL = "Config"
 TERRITORY_CONFIG_TAB = "R_L_Territory"
 ROOF_CONFIG_TAB = "R_O_RoofLimit"
 
+# Tab names (config OR export) that should be completely ignored -- never
+# compared, never added to the Summary sheet, never flagged as missing.
+# Matched case/space/punctuation-insensitively, same as all other tab-name
+# matching in this tool.
+EXCLUDED_TAB_NAMES = [
+    "ROC for Home",
+    "ChangeLog",
+    "Index_Summary",
+    "ROC",
+    "CONTROL",
+    "SQL",
+    "Factor Definitions",
+    "All_Pricing_Variables",
+    "Rating_Index",
+    "Tier_Index",
+]
+
+
 # Column that the main Territory export file and the C56 supplemental
 # Territory file are combined on.
 TERRITORY_MERGE_COLUMN = "Territory"
@@ -328,6 +346,26 @@ def find_sheet_name(wb, target):
     return resolve_name(target, wb.sheetnames)
 
 
+_EXCLUDED_TAB_NAMES_CLEAN = {clean_col(n) for n in EXCLUDED_TAB_NAMES}
+
+
+def is_excluded_tab(name):
+    """True if `name` matches one of EXCLUDED_TAB_NAMES (case/space/
+    punctuation-insensitive). Such tabs are fully skipped -- not compared,
+    not added to the Summary sheet, not flagged as missing."""
+    return clean_col(name) in _EXCLUDED_TAB_NAMES_CLEAN
+
+
+def na_if_blank(v):
+    """Used for the Summary sheet's tab-name columns -- these should never
+    be left empty; blank/None becomes 'NA'."""
+    if v is None:
+        return "NA"
+    s = str(v).strip()
+    return s if s != "" else "NA"
+
+
+
 # ------------------------------------------------------------------
 # Synonym-group based mapping (used for BOTH column names and values)
 # ------------------------------------------------------------------
@@ -539,7 +577,7 @@ def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=No
     }
 
 
-def missing_row(config_tab="", export_tab="", result=""):
+def missing_row(config_tab="NA", export_tab="NA", result=""):
     return {
         "config_tab": config_tab,
         "export_tab": export_tab,
@@ -611,6 +649,7 @@ def write_summary_sheet(wb, summary_rows):
         "Config Unmatched Rows",
         "Input File Unmatched Rows",
         "Column Mismatched",
+        "Analyst Comment",
     ]
     ws.append(headers)
     for col in range(1, len(headers) + 1):
@@ -618,12 +657,13 @@ def write_summary_sheet(wb, summary_rows):
 
     for r in summary_rows:
         row_values = [
-            r.get("config_tab", ""),
-            r.get("export_tab", ""),
+            na_if_blank(r.get("config_tab", "")),
+            na_if_blank(r.get("export_tab", "")),
             r.get("result", ""),
             r.get("config_unmatched_rows", "NA"),
             r.get("export_unmatched_rows", "NA"),
             r.get("col_mismatch", "NA"),
+            "",  # Analyst Comment -- left blank for manual entry
         ]
         ws.append(row_values)
         result_row = ws.max_row
@@ -781,7 +821,11 @@ def main(input_file):
     try:
         radar_wb = load_workbook(paths["radar_file"], data_only=True)
         for sheet_name in radar_wb.sheetnames:
+            if is_excluded_tab(sheet_name):
+                continue
             resolved_cfg = resolve_name(sheet_name, config_tabs)
+            if resolved_cfg and is_excluded_tab(resolved_cfg):
+                continue
             if resolved_cfg:
                 config_df = read_df(paths["config_file"], resolved_cfg, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
@@ -799,11 +843,16 @@ def main(input_file):
     try:
         eq_wb = load_workbook(paths["eq_file"], data_only=True)
         for sheet_name in eq_wb.sheetnames:
+            if is_excluded_tab(sheet_name):
+                continue
             target_config_tab = resolve_name(sheet_name, config_tabs)
             if not target_config_tab:
                 mapped_raw = eq_tab_map.get(clean_col(sheet_name))
                 if mapped_raw:
                     target_config_tab = resolve_name(mapped_raw, config_tabs)
+
+            if target_config_tab and is_excluded_tab(target_config_tab):
+                continue
 
             if target_config_tab:
                 header_row = detect_eq_header_row(eq_wb[sheet_name])
@@ -825,7 +874,9 @@ def main(input_file):
     # ---------------- Territory (+ supplemental C56 file) ----------------
     try:
         resolved_terr_cfg = resolve_name(TERRITORY_CONFIG_TAB, config_tabs)
-        if resolved_terr_cfg:
+        if resolved_terr_cfg and is_excluded_tab(resolved_terr_cfg):
+            pass  # excluded tab -- fully neglected, no summary row at all
+        elif resolved_terr_cfg:
             config_df = read_df(paths["config_file"], resolved_terr_cfg, 1)
 
             terr_wb1 = load_workbook(paths["territory_file"], data_only=True)
@@ -862,7 +913,9 @@ def main(input_file):
     # ---------------- Roof Limit ----------------
     try:
         resolved_roof_cfg = resolve_name(ROOF_CONFIG_TAB, config_tabs)
-        if resolved_roof_cfg:
+        if resolved_roof_cfg and is_excluded_tab(resolved_roof_cfg):
+            pass  # excluded tab -- fully neglected, no summary row at all
+        elif resolved_roof_cfg:
             config_df = read_df(paths["config_file"], resolved_roof_cfg, 1)
             roof_wb = load_workbook(paths["roof_file"], data_only=True)
             roof_sheet_name = roof_wb.sheetnames[0]
@@ -884,6 +937,8 @@ def main(input_file):
 
     # ---------------- Config tabs never matched by any export ----------------
     for tab in config_tabs:
+        if is_excluded_tab(tab):
+            continue
         if tab not in matched_config_tabs:
             summary_rows.append(missing_row(config_tab=tab, result=MISSING_IN_EXPORT))
 
