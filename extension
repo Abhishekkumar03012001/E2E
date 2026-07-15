@@ -6,5 +6,248 @@
   "action": {
     "default_popup": "popup.html"
   },
-  "permissions": ["activeTab", "scripting", "downloads"]
+  "permissions": ["activeTab", "scripting", "downloads", "tabs"],
+  "host_permissions": ["<all_urls>"]
+}
+
+
+
+
+
+
+document.getElementById('extractBtn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'Extracting page content...';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: extractPageData
+    });
+
+    statusEl.textContent = 'Checking links for matches...';
+    const linkedPages = await extractLinkedPages(result.links, statusEl);
+    result.linkedPages = linkedPages;
+
+    statusEl.textContent = 'Building Excel file...';
+    await downloadAsExcel(result, tab.title || 'page');
+    statusEl.textContent = 'Done! Check your Downloads folder.';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+});
+
+// ---- This function is injected into the actual webpage ----
+function extractPageData() {
+  const headers = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+    .map(h => ({ level: h.tagName, text: h.innerText.trim() }))
+    .filter(h => h.text);
+
+  const paragraphs = Array.from(document.querySelectorAll('p'))
+    .map(p => p.innerText.trim())
+    .filter(t => t);
+
+  const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
+    text: a.innerText.trim() || '(no text)',
+    href: a.href
+  }));
+
+  const tables = Array.from(document.querySelectorAll('table')).map(table =>
+    Array.from(table.querySelectorAll('tr')).map(tr =>
+      Array.from(tr.querySelectorAll('th,td')).map(cell => cell.innerText.trim())
+    )
+  );
+
+  return {
+    headers,
+    paragraphs,
+    links,
+    tables,
+    url: location.href,
+    title: document.title
+  };
+}
+
+// Matches URLs ending in something like "AB+Oasis+2.0+Filing+QC+Checklist"
+// where AB is any two letters (captured as group 1). Allows an optional
+// trailing "/", "?", or "#".
+const LINK_PATTERN = /([a-zA-Z]{2})\+Oasis\+2\.0\+Filing\+QC\+Checklist(?:[\/?#]|$)/;
+
+async function extractLinkedPages(links, statusEl) {
+  const matches = [];
+  links.forEach(l => {
+    if (!/^https?:\/\//i.test(l.href)) return;
+    const m = LINK_PATTERN.exec(l.href);
+    if (m) matches.push({ href: l.href, code: m[1].toUpperCase() });
+  });
+
+  const results = [];
+  for (let i = 0; i < matches.length; i++) {
+    const { href, code } = matches[i];
+    if (statusEl) {
+      statusEl.textContent = `Reading linked page ${i + 1} of ${matches.length} (${code})...`;
+    }
+    try {
+      const headers = await extractHeadersFromUrl(href);
+      results.push({ code, source: href, headers });
+    } catch (err) {
+      results.push({ code, source: href, headers: [], error: 'Could not read this page: ' + err.message });
+    }
+  }
+  return results;
+}
+
+function extractHeadersFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create({ url, active: false }, tab => {
+      const tabId = tab.id;
+
+      const timeoutId = setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        chrome.tabs.remove(tabId).catch(() => {});
+        reject(new Error('Timed out loading page'));
+      }, 25000);
+
+      function listener(updatedTabId, info) {
+        if (updatedTabId !== tabId || info.status !== 'complete') return;
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeoutId);
+
+        // Small delay lets any JS-rendered content on the linked page finish loading
+        setTimeout(async () => {
+          try {
+            const [{ result }] = await chrome.scripting.executeScript({
+              target: { tabId },
+              func: () =>
+                Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+                  .map(h => ({ level: h.tagName, text: h.innerText.trim() }))
+                  .filter(h => h.text)
+            });
+            chrome.tabs.remove(tabId).catch(() => {});
+            resolve(result);
+          } catch (err) {
+            chrome.tabs.remove(tabId).catch(() => {});
+            reject(err);
+          }
+        }, 1500);
+      }
+
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  });
+}
+
+// ---- Everything below runs in the popup, not the page ----
+
+function uniqueSheetName(rawName, usedNames) {
+  // Excel sheet names: max 31 chars, can't contain \ / ? * [ ] :
+  let base = String(rawName).replace(/[\\/?*[\]:]/g, '').substring(0, 28) || 'LK';
+  let name = base;
+  let n = 2;
+  while (usedNames.has(name)) {
+    name = `${base}_${n}`;
+    n++;
+  }
+  return name;
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function buildSheetTable(rows) {
+  let html = '<table border="1">';
+  rows.forEach(row => {
+    html += '<tr>' + row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('') + '</tr>';
+  });
+  html += '</table>';
+  return html;
+}
+
+async function downloadAsExcel(data, pageTitle) {
+  const sheetNames = [];
+  const sheetTables = [];
+
+  // Sheet 1: Headers (current page only)
+  const headerRows = [['Level', 'Text'], ...data.headers.map(h => [h.level, h.text])];
+  sheetNames.push('Headers');
+  sheetTables.push(buildSheetTable(headerRows));
+
+  // Sheet 2: Text (paragraphs)
+  const textRows = [['Paragraph Text'], ...data.paragraphs.map(t => [t])];
+  sheetNames.push('Text');
+  sheetTables.push(buildSheetTable(textRows));
+
+  // Sheet 3: Links
+  const linkRows = [['Link Text', 'URL'], ...data.links.map(l => [l.text, l.href])];
+  sheetNames.push('Links');
+  sheetTables.push(buildSheetTable(linkRows));
+
+  // One sheet per <table> found on the page (capped at 20 for safety)
+  data.tables.slice(0, 20).forEach((tbl, i) => {
+    sheetNames.push(`Table${i + 1}`);
+    sheetTables.push(buildSheetTable(tbl));
+  });
+
+  // One sheet per matching linked page, named after its two-letter code
+  const usedNames = new Set(sheetNames);
+  (data.linkedPages || []).forEach(page => {
+    const name = uniqueSheetName(page.code || 'LK', usedNames);
+    usedNames.add(name);
+    sheetNames.push(name);
+
+    const rows = [
+      ['Source URL', page.source],
+      ['Level', 'Text'],
+      ...(page.error
+        ? [['ERROR', page.error]]
+        : page.headers.map(h => [h.level, h.text]))
+    ];
+    sheetTables.push(buildSheetTable(rows));
+  });
+
+  const worksheetXml = sheetNames
+    .map(
+      name => `
+    <x:ExcelWorksheet>
+      <x:Name>${name}</x:Name>
+      <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+    </x:ExcelWorksheet>`
+    )
+    .join('');
+
+  const html = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="UTF-8">
+<!--[if gte mso 9]>
+<xml>
+<x:ExcelWorkbook>
+<x:ExcelWorksheets>
+${worksheetXml}
+</x:ExcelWorksheets>
+</x:ExcelWorkbook>
+</xml>
+<![endif]-->
+</head>
+<body>
+${sheetTables.join('\n')}
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const safeName = (pageTitle || 'page').replace(/[^a-z0-9]/gi, '_').substring(0, 50);
+
+  await chrome.downloads.download({
+    url: url,
+    filename: `${safeName}_extracted.xls`,
+    saveAs: false
+  });
 }
