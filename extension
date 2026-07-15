@@ -1,20 +1,3 @@
-{
-  "manifest_version": 3,
-  "name": "Page Content to Excel",
-  "version": "1.0",
-  "description": "Extracts headers, text, links, and tables from the current webpage into an Excel file.",
-  "action": {
-    "default_popup": "popup.html"
-  },
-  "permissions": ["activeTab", "scripting", "downloads", "tabs"],
-  "host_permissions": ["<all_urls>"]
-}
-
-
-
-
-
-
 document.getElementById('extractBtn').addEventListener('click', async () => {
   const statusEl = document.getElementById('status');
   statusEl.textContent = 'Extracting page content...';
@@ -91,16 +74,16 @@ async function extractLinkedPages(links, statusEl) {
       statusEl.textContent = `Reading linked page ${i + 1} of ${matches.length} (${code})...`;
     }
     try {
-      const headers = await extractHeadersFromUrl(href);
-      results.push({ code, source: href, headers });
+      const pageData = await extractDataFromUrl(href);
+      results.push({ code, source: href, data: pageData });
     } catch (err) {
-      results.push({ code, source: href, headers: [], error: 'Could not read this page: ' + err.message });
+      results.push({ code, source: href, data: null, error: 'Could not read this page: ' + err.message });
     }
   }
   return results;
 }
 
-function extractHeadersFromUrl(url) {
+function extractDataFromUrl(url) {
   return new Promise((resolve, reject) => {
     chrome.tabs.create({ url, active: false }, tab => {
       const tabId = tab.id;
@@ -121,10 +104,7 @@ function extractHeadersFromUrl(url) {
           try {
             const [{ result }] = await chrome.scripting.executeScript({
               target: { tabId },
-              func: () =>
-                Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-                  .map(h => ({ level: h.tagName, text: h.innerText.trim() }))
-                  .filter(h => h.text)
+              func: extractPageData
             });
             chrome.tabs.remove(tabId).catch(() => {});
             resolve(result);
@@ -161,6 +141,47 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+function buildLinkedPageSheet(page) {
+  const rows = [];
+  rows.push(['Source URL', page.source]);
+  rows.push(['']);
+
+  if (page.error || !page.data) {
+    rows.push(['ERROR', page.error || 'Unknown error']);
+    return buildSheetTable(rows);
+  }
+
+  const d = page.data;
+
+  // Headers section
+  rows.push(['HEADERS']);
+  rows.push(['Level', 'Text']);
+  d.headers.forEach(h => rows.push([h.level, h.text]));
+  rows.push(['']);
+
+  // Paragraphs section
+  rows.push(['TEXT']);
+  rows.push(['Paragraph Text']);
+  d.paragraphs.forEach(t => rows.push([t]));
+  rows.push(['']);
+
+  // Links section
+  rows.push(['LINKS']);
+  rows.push(['Link Text', 'URL']);
+  d.links.forEach(l => rows.push([l.text, l.href]));
+  rows.push(['']);
+
+  // Tables section
+  rows.push(['TABLES']);
+  d.tables.forEach((tbl, i) => {
+    rows.push([`Table ${i + 1}`]);
+    tbl.forEach(r => rows.push(r));
+    rows.push(['']);
+  });
+
+  return buildSheetTable(rows);
+}
+
 function buildSheetTable(rows) {
   let html = '<table border="1">';
   rows.forEach(row => {
@@ -195,21 +216,14 @@ async function downloadAsExcel(data, pageTitle) {
     sheetTables.push(buildSheetTable(tbl));
   });
 
-  // One sheet per matching linked page, named after its two-letter code
+  // One sheet per matching linked page, named after its two-letter code.
+  // Each sheet contains everything from that page: headers, paragraphs, links, tables.
   const usedNames = new Set(sheetNames);
   (data.linkedPages || []).forEach(page => {
     const name = uniqueSheetName(page.code || 'LK', usedNames);
     usedNames.add(name);
     sheetNames.push(name);
-
-    const rows = [
-      ['Source URL', page.source],
-      ['Level', 'Text'],
-      ...(page.error
-        ? [['ERROR', page.error]]
-        : page.headers.map(h => [h.level, h.text]))
-    ];
-    sheetTables.push(buildSheetTable(rows));
+    sheetTables.push(buildLinkedPageSheet(page));
   });
 
   const worksheetXml = sheetNames
