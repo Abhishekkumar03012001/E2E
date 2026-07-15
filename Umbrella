@@ -418,80 +418,36 @@ End Sub
 '==============================
 ' Apply filter only on columns that have at least one value in data rows
 '==============================
+'==============================
+' Apply filter on contiguous range from first to last data column
+'==============================
 Private Sub ApplySmartFilter(ws As Worksheet, headerRow As Long, _
                               e1Start As Long, nc1 As Long, _
                               statusCol As Long, _
                               e2Start As Long, nc2 As Long)
 
-    Dim lastDataRow As Long
-    Dim fc As Range
-    On Error Resume Next
-    Set fc = ws.Cells.Find("*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
-    On Error GoTo 0
-    If fc Is Nothing Then Exit Sub
-    lastDataRow = fc.Row
-    If lastDataRow <= headerRow Then Exit Sub
-
-    ' Collect columns that have at least one non-empty data cell
-    Dim colsWithData As Object
-    Set colsWithData = CreateObject("Scripting.Dictionary")
-
-    Dim c As Long, r As Long
-
-    ' Check Excel1 columns
-    For c = e1Start To e1Start + nc1 - 1
-        For r = headerRow + 1 To lastDataRow
-            If Trim(CStr(ws.Cells(r, c).Value)) <> "" Then
-                If Not colsWithData.Exists(c) Then colsWithData.Add c, 1
-                Exit For
-            End If
-        Next r
-    Next c
-
-    ' Check Status column
-    For r = headerRow + 1 To lastDataRow
-        If Trim(CStr(ws.Cells(r, statusCol).Value)) <> "" Then
-            If Not colsWithData.Exists(statusCol) Then colsWithData.Add statusCol, 1
-            Exit For
-        End If
-    Next r
-
-    ' Check Excel2 columns
-    For c = e2Start To e2Start + nc2 - 1
-        For r = headerRow + 1 To lastDataRow
-            If Trim(CStr(ws.Cells(r, c).Value)) <> "" Then
-                If Not colsWithData.Exists(c) Then colsWithData.Add c, 1
-                Exit For
-            End If
-        Next r
-    Next c
-
-    ' Apply autofilter only to header cells of columns that have data
-    Dim colKey As Variant
-    For Each colKey In colsWithData.Keys
-        ws.Cells(headerRow, colKey).AutoFilter Field:=1
-    Next colKey
-
-    ' Proper approach - build union of header cells with data and apply filter
     If ws.AutoFilterMode Then ws.AutoFilterMode = False
 
-    Dim firstCol As Long, lastCol As Long
+    ' Apply filter from first col of Excel1 to last col of Excel2
+    ' This is one contiguous range so AutoFilter works
+    Dim firstCol As Long
+    Dim lastCol As Long
     firstCol = e1Start
     lastCol = e2Start + nc2 - 1
 
-    ' Apply filter to full header row range but only where data exists
-    Dim filterCols As Range
-    For Each colKey In colsWithData.Keys
-        If filterCols Is Nothing Then
-            Set filterCols = ws.Cells(headerRow, colKey)
-        Else
-            Set filterCols = Union(filterCols, ws.Cells(headerRow, colKey))
-        End If
-    Next colKey
+    ws.Range(ws.Cells(headerRow, firstCol), ws.Cells(headerRow, lastCol)).AutoFilter
 
-    If Not filterCols Is Nothing Then
-        filterCols.AutoFilter
-    End If
+    ' Now hide filter dropdowns on gap columns (they have no header)
+    Dim c As Long
+    For c = firstCol To lastCol
+        If Trim(CStr(ws.Cells(headerRow, c).Value)) = "" Then
+            ' Turn off dropdown for this blank header column
+            ws.Range(ws.Cells(headerRow, firstCol), _
+                     ws.Cells(headerRow, lastCol)).AutoFilter _
+                     Field:=(c - firstCol + 1), _
+                     VisibleDropDown:=False
+        End If
+    Next c
 
 End Sub
 
