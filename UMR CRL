@@ -1,36 +1,421 @@
-' ---- Source workbook / sheets ----
-    Set srcWB = ThisWorkbook
+Option Explicit
+
+'=====================================================================
+' MAIN ENTRY POINT
+' Reads file paths from the "Read Me" sheet:
+'   D4 = Excel1 (source) full file path
+'   D5 = Excel2 (target) full file path
+'   D6 = Base name for the new output file
+'
+' Opens both files as READ-ONLY, copies matching values from
+' Excel1 into Excel2 (in memory), then SAVES the result as a NEW
+' file named "<D6> UMR Current Rates Tables.<ext>" in the same
+' folder as Excel2.
+'=====================================================================
+Sub CopyDataBetweenWorkbooks()
+
+    Dim wbSrc As Workbook, wbDst As Workbook
+    Dim srcPath As String, dstPath As String
+    Dim newFileBaseName As String, newFilePath As String
+    Dim wsReadMe As Worksheet
+    Dim regularSheets As Variant, limitSheets As Variant
+    Dim i As Long
+    Dim ext As String, saveFormat As Long
+
     On Error Resume Next
-    Set srcWS = srcWB.Worksheets("Current Rates")
-    Set srcDiscount = srcWB.Worksheets("Discount")
+    Set wsReadMe = ThisWorkbook.Sheets("Read Me")
     On Error GoTo 0
 
-    ' ---- Destination workbook by chosen full path ----
-    Set dstWB = GetOrOpenWorkbookByFullPath(dstFullPath)
-    If dstWB Is Nothing Then
-        MsgBox "Could not open destination workbook:" & vbCrLf & dstFullPath, vbCritical
+    If wsReadMe Is Nothing Then
+        MsgBox "Could not find a sheet named 'Read Me' in this workbook.", vbCritical
         Exit Sub
     End If
 
-    ' If "Current Rates" / "Discount" weren't found in ThisWorkbook,
-    ' they're likely in the destination workbook itself (source == destination file).
-    If srcWS Is Nothing Then
-        On Error Resume Next
-        Set srcWS = dstWB.Worksheets("Current Rates")
-        On Error GoTo 0
-        If Not srcWS Is Nothing Then Set srcWB = dstWB
+    srcPath = Trim(wsReadMe.Range("D4").Value)
+    dstPath = Trim(wsReadMe.Range("D5").Value)
+    newFileBaseName = Trim(wsReadMe.Range("D6").Value)
+
+    If Len(srcPath) = 0 Or Dir(srcPath) = "" Then
+        MsgBox "Excel1 file path in 'Read Me'!D4 is missing or invalid:" & vbCrLf & srcPath, vbCritical
+        Exit Sub
     End If
-    If srcDiscount Is Nothing Then
-        On Error Resume Next
-        Set srcDiscount = dstWB.Worksheets("Discount")
-        On Error GoTo 0
+    If Len(dstPath) = 0 Or Dir(dstPath) = "" Then
+        MsgBox "Excel2 file path in 'Read Me'!D5 is missing or invalid:" & vbCrLf & dstPath, vbCritical
+        Exit Sub
+    End If
+    If Len(newFileBaseName) = 0 Then
+        MsgBox "New file name in 'Read Me'!D6 is missing.", vbCritical
+        Exit Sub
     End If
 
-    If srcWS Is Nothing Then
-        MsgBox "Source sheet 'Current Rates' not found in either " & ThisWorkbook.Name & " or " & dstWB.Name & ".", vbCritical
-        Exit Sub
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.DisplayAlerts = False
+
+    On Error GoTo CleanFail
+
+    ' Open BOTH source files as read-only
+    Set wbSrc = Workbooks.Open(Filename:=srcPath, ReadOnly:=True, UpdateLinks:=False)
+    Set wbDst = Workbooks.Open(Filename:=dstPath, ReadOnly:=True, UpdateLinks:=False)
+
+    ' Sheets that use the "heading + key columns" logic
+    regularSheets = Array("Auto", "Residence", "Motorcycle Rec Veh", "Boats")
+    ' Sheets that use the "Limit column header" logic
+    limitSheets = Array("Limits", "Discount")
+
+    For i = LBound(regularSheets) To UBound(regularSheets)
+        If SheetExists(wbSrc, CStr(regularSheets(i))) And SheetExists(wbDst, CStr(regularSheets(i))) Then
+            ProcessRegularSheet wbSrc.Sheets(CStr(regularSheets(i))), wbDst.Sheets(CStr(regularSheets(i)))
+        Else
+            Debug.Print "Skipped (sheet missing in one file): " & regularSheets(i)
+        End If
+    Next i
+
+    For i = LBound(limitSheets) To UBound(limitSheets)
+        If SheetExists(wbSrc, CStr(limitSheets(i))) And SheetExists(wbDst, CStr(limitSheets(i))) Then
+            ProcessLimitSheet wbSrc.Sheets(CStr(limitSheets(i))), wbDst.Sheets(CStr(limitSheets(i)))
+        Else
+            Debug.Print "Skipped (sheet missing in one file): " & limitSheets(i)
+        End If
+    Next i
+
+    ' Build the new output file path (same folder as Excel2 / target file)
+    ext = GetFileExtension(dstPath)
+    newFilePath = GetFolderFromPath(dstPath) & newFileBaseName & " UMR Current Rates Tables." & ext
+
+    Select Case LCase(ext)
+        Case "xlsm"
+            saveFormat = xlOpenXMLWorkbookMacroEnabled
+        Case "xlsb"
+            saveFormat = xlExcel12
+        Case "xls"
+            saveFormat = xlExcel8
+        Case Else
+            saveFormat = xlOpenXMLWorkbook   ' xlsx
+    End Select
+
+    ' Save the in-memory updated workbook as a brand-new file
+    wbDst.SaveAs Filename:=newFilePath, FileFormat:=saveFormat
+
+    ' Close both workbooks without saving changes back to the originals
+    wbSrc.Close SaveChanges:=False
+    wbDst.Close SaveChanges:=False
+
+    Application.DisplayAlerts = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "Done!" & vbCrLf & _
+           "New file saved as:" & vbCrLf & newFilePath, vbInformation
+
+    Exit Sub
+
+CleanFail:
+    Dim errMsg As String
+    errMsg = Err.Description
+
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
+    If Not wbDst Is Nothing Then wbDst.Close SaveChanges:=False
+    On Error GoTo 0
+
+    Application.DisplayAlerts = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "Error: " & errMsg, vbCritical
+End Sub
+
+'=====================================================================
+' Does a sheet with this name exist in the workbook?
+'=====================================================================
+Function SheetExists(wb As Workbook, sn As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Sheets(sn)
+    On Error GoTo 0
+    SheetExists = Not ws Is Nothing
+End Function
+
+'=====================================================================
+' Returns the folder path (including trailing backslash) from a full file path
+'=====================================================================
+Function GetFolderFromPath(fullPath As String) As String
+    Dim pos As Long
+    pos = InStrRev(fullPath, "\")
+    If pos > 0 Then
+        GetFolderFromPath = Left(fullPath, pos)
+    Else
+        GetFolderFromPath = ""
     End If
-    If srcDiscount Is Nothing Then
-        MsgBox "Source sheet 'Discount' not found in either " & ThisWorkbook.Name & " or " & dstWB.Name & ".", vbCritical
-        Exit Sub
+End Function
+
+'=====================================================================
+' Returns the file extension (without the dot) from a full file path
+'=====================================================================
+Function GetFileExtension(fullPath As String) As String
+    Dim pos As Long
+    pos = InStrRev(fullPath, ".")
+    If pos > 0 Then
+        GetFileExtension = Mid(fullPath, pos + 1)
+    Else
+        GetFileExtension = "xlsx"
     End If
+End Function
+
+'=====================================================================
+' REGULAR SHEETS (Auto, Residence, Motorcycle Rec Veh, Boats)
+'
+' Layout assumption (matches your files):
+'   Heading row   : Col A = "Some Text: CODE"   (heading text contains ":")
+'   Header row    : Col E = "Terr"  (marks the start of "block 2")
+'   Data rows     : Block 1 -> Col A + Col B = key   -> Col C = value
+'                    Block 2 -> Col E          = key   -> Col F..last = values
+'
+' For every heading found in the source sheet, the same heading text is
+' located in the target sheet. Then every data row's key (A+B, or E) is
+' matched to a row under that SAME heading in the target sheet, and the
+' value column(s) are copied across. Rows that don't have a matching key
+' in the target are left untouched.
+'=====================================================================
+Sub ProcessRegularSheet(wsSrc As Worksheet, wsDst As Worksheet)
+
+    Dim lastRowSrc As Long, r As Long, r2 As Long
+    Dim headingText As String, headingRowDst As Long
+    Dim targetRow As Long, c As Long
+    Dim lastColBlock2 As Long
+
+    lastRowSrc = GetLastRow(wsSrc, 1)
+    If GetLastRow(wsSrc, 5) > lastRowSrc Then lastRowSrc = GetLastRow(wsSrc, 5)
+
+    r = 1
+    Do While r <= lastRowSrc
+
+        If IsHeadingCell(wsSrc.Cells(r, 1).Value) Then
+
+            headingText = Trim(CStr(wsSrc.Cells(r, 1).Value))
+            headingRowDst = FindHeadingRow(wsDst, headingText)
+
+            ' Work out how many columns "block 2" (Terr / limit codes) uses,
+            ' by reading the header row that sits right under the heading.
+            lastColBlock2 = 0
+            If Trim(CStr(wsSrc.Cells(r + 1, 5).Value)) = "Terr" Then
+                c = wsSrc.Columns.Count
+                Do While c > 5 And Len(Trim(CStr(wsSrc.Cells(r + 1, c).Value))) = 0
+                    c = c - 1
+                Loop
+                lastColBlock2 = c
+            End If
+
+            If headingRowDst > 0 Then
+
+                r2 = r + 1
+                Do While r2 <= lastRowSrc
+
+                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do ' next heading -> stop this section
+
+                    ' skip the sub-header row itself (Col E = "Terr")
+                    Dim isSubHeaderRow As Boolean
+                    isSubHeaderRow = (Trim(CStr(wsSrc.Cells(r2, 5).Value)) = "Terr")
+
+                    ' ---------- Block 1: Col A + Col B key -> Col C value ----------
+                    If Not isSubHeaderRow Then
+                        If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) > 0 And _
+                           Len(Trim(CStr(wsSrc.Cells(r2, 2).Value))) > 0 Then
+
+                            targetRow = FindKeyRow2Col(wsDst, headingRowDst, 1, 2, _
+                                        wsSrc.Cells(r2, 1).Value, wsSrc.Cells(r2, 2).Value)
+
+                            If targetRow > 0 Then
+                                wsDst.Cells(targetRow, 3).Value = wsSrc.Cells(r2, 3).Value
+                            End If
+                        End If
+                    End If
+
+                    ' ---------- Block 2: Col E key -> Col F..lastColBlock2 values ----------
+                    If Not isSubHeaderRow And lastColBlock2 >= 6 Then
+                        If Len(Trim(CStr(wsSrc.Cells(r2, 5).Value))) > 0 Then
+
+                            targetRow = FindKeyRow1Col(wsDst, headingRowDst, 5, wsSrc.Cells(r2, 5).Value)
+
+                            If targetRow > 0 Then
+                                For c = 6 To lastColBlock2
+                                    wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
+                                Next c
+                            End If
+                        End If
+                    End If
+
+                    r2 = r2 + 1
+                Loop
+
+                r = r2 - 1 ' continue scanning from where this section ended
+            End If
+        End If
+
+        r = r + 1
+    Loop
+
+End Sub
+
+'=====================================================================
+' LIMITS / DISCOUNT SHEETS
+'
+' Layout assumption (matches your files):
+'   Somewhere in Col A there is a header cell whose value is "Limit"
+'   (e.g. row 6: "Limit" | "Factor").
+'   Below that, each row has a Limit amount in Col A and one or more
+'   values (Factor, etc.) in Col B onward.
+'
+' We locate the "Limit" header in both the source and target sheet,
+' then for every Limit value in the source table we find the SAME
+' Limit value in the target table and copy across all value columns.
+'=====================================================================
+Sub ProcessLimitSheet(wsSrc As Worksheet, wsDst As Worksheet)
+
+    Dim lastRowSrc As Long, r As Long, r2 As Long
+    Dim headerRowDst As Long
+    Dim lastColHdr As Long, c As Long
+    Dim targetRow As Long
+
+    lastRowSrc = GetLastRow(wsSrc, 1)
+
+    r = 1
+    Do While r <= lastRowSrc
+
+        If Trim(CStr(wsSrc.Cells(r, 1).Value)) = "Limit" Then
+
+            headerRowDst = FindLimitHeaderRow(wsDst)
+
+            If headerRowDst > 0 Then
+
+                ' last column of this Limit table, based on the header row
+                c = wsSrc.Columns.Count
+                Do While c > 1 And Len(Trim(CStr(wsSrc.Cells(r, c).Value))) = 0
+                    c = c - 1
+                Loop
+                lastColHdr = c
+
+                r2 = r + 1
+                Do While r2 <= lastRowSrc
+
+                    If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) = 0 Then Exit Do   ' blank row = end of table
+                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do          ' next section
+
+                    If IsNumeric(wsSrc.Cells(r2, 1).Value) Then
+
+                        targetRow = FindLimitValueRow(wsDst, headerRowDst, wsSrc.Cells(r2, 1).Value)
+
+                        If targetRow > 0 Then
+                            For c = 2 To lastColHdr
+                                wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
+                            Next c
+                        End If
+                    End If
+
+                    r2 = r2 + 1
+                Loop
+            End If
+        End If
+
+        r = r + 1
+    Loop
+
+End Sub
+
+'=====================================================================
+' HELPER FUNCTIONS
+'=====================================================================
+
+Function GetLastRow(ws As Worksheet, col As Long) As Long
+    GetLastRow = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
+End Function
+
+' A "heading" row is one where Col A is text containing a colon,
+' e.g. "Auto - Initial Coverage: AUTO"
+Function IsHeadingCell(v As Variant) As Boolean
+    If IsError(v) Then
+        IsHeadingCell = False
+    ElseIf VarType(v) = vbString Then
+        IsHeadingCell = (InStr(v, ":") > 0)
+    Else
+        IsHeadingCell = False
+    End If
+End Function
+
+Function FindHeadingRow(ws As Worksheet, headingText As String) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = GetLastRow(ws, 1)
+    FindHeadingRow = 0
+    For r = 1 To lastRow
+        If IsHeadingCell(ws.Cells(r, 1).Value) Then
+            If Trim(CStr(ws.Cells(r, 1).Value)) = headingText Then
+                FindHeadingRow = r
+                Exit Function
+            End If
+        End If
+    Next r
+End Function
+
+' Finds a row (after startRow, before the next heading) where
+' Col(col1) = val1 AND Col(col2) = val2
+Function FindKeyRow2Col(ws As Worksheet, startRow As Long, col1 As Long, col2 As Long, _
+                         val1 As Variant, val2 As Variant) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = GetLastRow(ws, 1)
+    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
+
+    FindKeyRow2Col = 0
+    For r = startRow + 1 To lastRow
+        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
+        If CStr(ws.Cells(r, col1).Value) = CStr(val1) And CStr(ws.Cells(r, col2).Value) = CStr(val2) Then
+            FindKeyRow2Col = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+' Finds a row (after startRow, before the next heading) where Col(col1) = val1
+Function FindKeyRow1Col(ws As Worksheet, startRow As Long, col1 As Long, val1 As Variant) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = GetLastRow(ws, 1)
+    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
+
+    FindKeyRow1Col = 0
+    For r = startRow + 1 To lastRow
+        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
+        If Trim(CStr(ws.Cells(r, col1).Value)) = "Terr" Then GoTo NextR   ' skip sub-header row
+        If CStr(ws.Cells(r, col1).Value) = CStr(val1) Then
+            FindKeyRow1Col = r
+            Exit Function
+        End If
+NextR:
+    Next r
+End Function
+
+Function FindLimitHeaderRow(ws As Worksheet) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = GetLastRow(ws, 1)
+    FindLimitHeaderRow = 0
+    For r = 1 To lastRow
+        If Trim(CStr(ws.Cells(r, 1).Value)) = "Limit" Then
+            FindLimitHeaderRow = r
+            Exit Function
+        End If
+    Next r
+End Function
+
+Function FindLimitValueRow(ws As Worksheet, startRow As Long, limitVal As Variant) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = GetLastRow(ws, 1)
+    FindLimitValueRow = 0
+    For r = startRow + 1 To lastRow
+        If Len(Trim(CStr(ws.Cells(r, 1).Value))) = 0 Then Exit For
+        If IsNumeric(ws.Cells(r, 1).Value) Then
+            If CDbl(ws.Cells(r, 1).Value) = CDbl(limitVal) Then
+                FindLimitValueRow = r
+                Exit Function
+            End If
+        End If
+    Next r
+End Function
