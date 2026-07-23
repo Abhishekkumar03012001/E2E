@@ -1,6 +1,24 @@
 Option Explicit
 
-Sub Compare_Workbooks()
+' ============================================================
+' Compare_Workbooks
+' Now accepts two optional file path parameters so it can be
+' called from another module, e.g.:
+'
+'     Call Compare_Workbooks("C:\Data\File1.xlsx", "C:\Data\File2.xlsx")
+'
+' If either parameter is omitted (or blank), the file picker
+' dialog is shown for that file, same as before.
+'
+' Existing sheets are NO LONGER wiped at the start of the run.
+' Instead, when a sheet is about to be (re)created (the
+' "Summary" sheet, or a per-tab comparison sheet), if a sheet
+' with that exact name already exists it is deleted and
+' replaced with the freshly generated one. Any other sheets
+' you have in the workbook (README, DESC, or anything else)
+' are left completely untouched.
+' ============================================================
+Sub Compare_Workbooks(Optional ByVal filePath1 As String = "", Optional ByVal filePath2 As String = "")
 
     Dim wb1 As Workbook, wb2 As Workbook
     Dim wbResult As Workbook
@@ -8,8 +26,7 @@ Sub Compare_Workbooks()
     Dim wsOut As Worksheet, wsSummary As Worksheet
     Dim file1 As Variant, file2 As Variant
     Dim allSheets As Object, shtName As Variant
-    Dim summaryRow As Long, i As Long, sName As String
-    Dim tempSheet As Worksheet
+    Dim summaryRow As Long
 
     ' Sheets to exclude from comparison
     Dim excludeSheets As Object
@@ -26,23 +43,29 @@ Sub Compare_Workbooks()
 
     Set wbResult = ThisWorkbook
 
-    Set tempSheet = wbResult.Worksheets.Add
-    tempSheet.Name = "_TEMP_DELETE_"
-
-    For i = wbResult.Worksheets.Count To 1 Step -1
-        sName = UCase(wbResult.Worksheets(i).Name)
-        If sName <> "README" And sName <> "DESC" And sName <> "_TEMP_DELETE_" Then
-            wbResult.Worksheets(i).Delete
+    ' ---- Resolve file 1 ----
+    If Len(Trim(filePath1)) = 0 Then
+        file1 = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select First Excel File")
+        If file1 = False Then GoTo CleanExit
+    Else
+        If Dir(filePath1) = "" Then
+            MsgBox "File not found: " & filePath1, vbExclamation
+            GoTo CleanExit
         End If
-    Next i
+        file1 = filePath1
+    End If
 
-    Application.DisplayAlerts = True
-
-    file1 = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select First Excel File")
-    If file1 = False Then GoTo CleanExit
-
-    file2 = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select Second Excel File")
-    If file2 = False Then GoTo CleanExit
+    ' ---- Resolve file 2 ----
+    If Len(Trim(filePath2)) = 0 Then
+        file2 = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select Second Excel File")
+        If file2 = False Then GoTo CleanExit
+    Else
+        If Dir(filePath2) = "" Then
+            MsgBox "File not found: " & filePath2, vbExclamation
+            GoTo CleanExit
+        End If
+        file2 = filePath2
+    End If
 
     If LCase(CStr(file1)) = LCase(CStr(file2)) Then
         MsgBox "You selected the same file twice.", vbExclamation
@@ -52,8 +75,8 @@ Sub Compare_Workbooks()
     Set wb1 = Workbooks.Open(CStr(file1), ReadOnly:=True)
     Set wb2 = Workbooks.Open(CStr(file2), ReadOnly:=True)
 
-    Set wsSummary = wbResult.Worksheets.Add(After:=wbResult.Sheets(wbResult.Sheets.Count))
-    wsSummary.Name = "Summary"
+    ' Replace (or create) the Summary sheet
+    Set wsSummary = ReplaceOrAddSheet(wbResult, "Summary")
 
     With wsSummary.Range("A1:G1")
         .Value = Array("Sheets In Excel 1", "Sheets In Excel 2", "Analyst View", _
@@ -63,12 +86,6 @@ Sub Compare_Workbooks()
         .Font.Color = RGB(255, 255, 255)
     End With
     summaryRow = 2
-
-    Application.DisplayAlerts = False
-    On Error Resume Next
-    wbResult.Worksheets("_TEMP_DELETE_").Delete
-    On Error GoTo 0
-    Application.DisplayAlerts = False
 
     Set allSheets = CreateObject("Scripting.Dictionary")
     For Each ws1 In wb1.Worksheets
@@ -242,8 +259,10 @@ SkipDict2:
 
         If notMatchedCount = 0 And factorMismatchCount = 0 Then GoTo NextSheet
 
-        Set wsOut = wbResult.Worksheets.Add(After:=wbResult.Sheets(wbResult.Sheets.Count))
-        wsOut.Name = SafeSheetName(CStr(shtName), wbResult)
+        ' Replace (or create) the per-sheet comparison tab
+        Dim outSheetName As String
+        outSheetName = SafeSheetName(CStr(shtName))
+        Set wsOut = ReplaceOrAddSheet(wbResult, outSheetName)
 
         Dim e1Start As Long, statusColOut As Long, e2Start As Long
         e1Start = 1
@@ -381,6 +400,29 @@ CleanExit:
 End Sub
 
 '==============================
+' Deletes a sheet with the given name if it already exists,
+' then adds a brand-new sheet with that name at the end of
+' the workbook. All other sheets are left untouched.
+'==============================
+Private Function ReplaceOrAddSheet(wb As Workbook, sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    Dim wasAlerts As Boolean
+
+    wasAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+
+    If WorksheetExists(sheetName, wb) Then
+        wb.Worksheets(sheetName).Delete
+    End If
+
+    Application.DisplayAlerts = wasAlerts
+
+    Set ws = wb.Worksheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+    ws.Name = sheetName
+    Set ReplaceOrAddSheet = ws
+End Function
+
+'==============================
 ' Apply outer and inner borders to a table range
 '==============================
 Private Sub ApplyTableBorders(ws As Worksheet, startRow As Long, startCol As Long, _
@@ -416,9 +458,6 @@ Private Sub ApplyTableBorders(ws As Worksheet, startRow As Long, startCol As Lon
 End Sub
 
 '==============================
-' Apply filter only on columns that have at least one value in data rows
-'==============================
-'==============================
 ' Apply filter on contiguous range from first to last data column
 '==============================
 Private Sub ApplySmartFilter(ws As Worksheet, headerRow As Long, _
@@ -428,8 +467,6 @@ Private Sub ApplySmartFilter(ws As Worksheet, headerRow As Long, _
 
     If ws.AutoFilterMode Then ws.AutoFilterMode = False
 
-    ' Apply filter from first col of Excel1 to last col of Excel2
-    ' This is one contiguous range so AutoFilter works
     Dim firstCol As Long
     Dim lastCol As Long
     firstCol = e1Start
@@ -437,11 +474,9 @@ Private Sub ApplySmartFilter(ws As Worksheet, headerRow As Long, _
 
     ws.Range(ws.Cells(headerRow, firstCol), ws.Cells(headerRow, lastCol)).AutoFilter
 
-    ' Now hide filter dropdowns on gap columns (they have no header)
     Dim c As Long
     For c = firstCol To lastCol
         If Trim(CStr(ws.Cells(headerRow, c).Value)) = "" Then
-            ' Turn off dropdown for this blank header column
             ws.Range(ws.Cells(headerRow, firstCol), _
                      ws.Cells(headerRow, lastCol)).AutoFilter _
                      Field:=(c - firstCol + 1), _
@@ -639,10 +674,12 @@ Private Function WorksheetExists(sheetName As String, wb As Workbook) As Boolean
 End Function
 
 '==============================
-' Safe sheet name
+' Safe sheet name (just cleans illegal characters / truncates to 31 chars;
+' uniqueness is no longer needed here since ReplaceOrAddSheet handles
+' replacing any existing sheet with the same name)
 '==============================
-Private Function SafeSheetName(baseName As String, wb As Workbook) As String
-    Dim nm As String, i As Long
+Private Function SafeSheetName(baseName As String) As String
+    Dim nm As String
     nm = Replace(baseName, "/", "-")
     nm = Replace(nm, "\", "-")
     nm = Replace(nm, "?", "")
@@ -651,11 +688,5 @@ Private Function SafeSheetName(baseName As String, wb As Workbook) As String
     nm = Replace(nm, "]", ")")
     nm = Replace(nm, ":", "-")
     nm = Left(nm, 31)
-    If Not WorksheetExists(nm, wb) Then SafeSheetName = nm : Exit Function
-    i = 1
-    Do While WorksheetExists(Left(nm, 28) & "_" & i, wb)
-        i = i + 1
-        If i > 999 Then Exit Do
-    Loop
-    SafeSheetName = Left(nm, 28) & "_" & i
+    SafeSheetName = nm
 End Function
