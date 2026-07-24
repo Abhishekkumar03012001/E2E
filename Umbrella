@@ -1,3 +1,10 @@
-If Len(Trim(path1)) > 0 Then
-        Call Compare_Workbooks(path1, path2)
-    Else
+Dim cellList As Variant
+    Dim i As Integer
+    
+    Set ws = ThisWorkbook.Sheets("Results")
+    
+    cellList = Array("A1", "B5", "C10", "D15", "E20")
+    
+    For i = LBound(cellList) To UBound(cellList)
+        ws.Range(cellList(i)).Interior.ColorIndex = xlNone
+    Next i
