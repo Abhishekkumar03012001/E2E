@@ -2,6 +2,7 @@ Sub CreateResults2Sheet()
 
     Dim wsSrc As Worksheet, wsNew As Worksheet, wsReadMe As Worksheet
     Dim ws As Worksheet
+    Dim wasHidden As XlSheetVisibility
 
     On Error GoTo ErrHandler
 
@@ -17,7 +18,6 @@ Sub CreateResults2Sheet()
     Next ws
 
     ' Make source temporarily visible so Copy works cleanly, then re-hide at the end
-    Dim wasHidden As XlSheetVisibility
     wasHidden = wsSrc.Visible
     wsSrc.Visible = xlSheetVisible
 
@@ -40,7 +40,10 @@ Sub CreateResults2Sheet()
     wsNew.Range("B3").HorizontalAlignment = xlCenter
     wsNew.Range("B3").VerticalAlignment = xlCenter
 
-    wsNew.Range("E4:F5").ClearContents
+    With wsNew.Range("E4:F5")
+        .ClearContents
+        .ClearFormats
+    End With
 
     '=========================================================
     ' Section 2: FD QC header (J3:N3) -> shrink to J3:L3
@@ -53,7 +56,10 @@ Sub CreateResults2Sheet()
     wsNew.Range("J3").HorizontalAlignment = xlCenter
     wsNew.Range("J3").VerticalAlignment = xlCenter
 
-    wsNew.Range("M4:N5").ClearContents
+    With wsNew.Range("M4:N5")
+        .ClearContents
+        .ClearFormats
+    End With
 
     '=========================================================
     ' Section 3: Tab QC sub-headers (G9:H9 and I9:J9) -> single cells
@@ -68,7 +74,16 @@ Sub CreateResults2Sheet()
     wsNew.Range("I9:J9").UnMerge
     wsNew.Range("I9").Value = v3b
 
-    wsNew.Range("H10:I11").ClearContents
+    ' Corrected ranges: G10:G11 and I10:I11 (not H10:H11)
+    With wsNew.Range("G10:G11")
+        .ClearContents
+        .ClearFormats
+    End With
+
+    With wsNew.Range("I10:I11")
+        .ClearContents
+        .ClearFormats
+    End With
 
     wsNew.Activate
     wsNew.Range("A1").Select
