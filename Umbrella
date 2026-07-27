@@ -1,8 +1,6 @@
-Sub CreateTabQCSheets()
+Sub CreateResults2Sheet()
 
-    Dim wsRowSrc As Worksheet, wsColSrc As Worksheet
-    Dim wsRowNew As Worksheet, wsColNew As Worksheet
-    Dim wsPropFD As Worksheet
+    Dim wsSrc As Worksheet, wsNew As Worksheet, wsReadMe As Worksheet
     Dim ws As Worksheet
 
     On Error GoTo ErrHandler
@@ -10,108 +8,84 @@ Sub CreateTabQCSheets()
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
 
-    Set wsRowSrc = ThisWorkbook.Sheets("TabQCRow")
-    Set wsColSrc = ThisWorkbook.Sheets("TabQCCol")
-    Set wsPropFD = ThisWorkbook.Sheets("Prop_FD")
+    Set wsSrc = ThisWorkbook.Sheets("Results")
+    Set wsReadMe = ThisWorkbook.Sheets("Read Me")
 
-    ' Remove existing new sheets if the macro is re-run
+    ' Remove existing Results2 if re-running
     For Each ws In ThisWorkbook.Sheets
-        If ws.Name = "TabQC_Row" Or ws.Name = "TabQC_Col" Then ws.Delete
+        If ws.Name = "Results2" Then ws.Delete
     Next ws
 
-    Set wsRowNew = ThisWorkbook.Sheets.Add(After:=wsPropFD)
-    wsRowNew.Name = "TabQC_Row"
+    ' Make source temporarily visible so Copy works cleanly, then re-hide at the end
+    Dim wasHidden As XlSheetVisibility
+    wasHidden = wsSrc.Visible
+    wsSrc.Visible = xlSheetVisible
 
-    Set wsColNew = ThisWorkbook.Sheets.Add(After:=wsRowNew)
-    wsColNew.Name = "TabQC_Col"
+    wsSrc.Copy After:=wsReadMe
+    Set wsNew = ThisWorkbook.Sheets(wsReadMe.Index + 1)
+    wsNew.Name = "Results2"
+    wsNew.Visible = xlSheetVisible
 
-    BuildQCSheet wsRowSrc, wsRowNew
-    BuildQCSheet wsColSrc, wsColNew
+    ' Restore original hidden state of the source sheet
+    wsSrc.Visible = wasHidden
 
-    ' Keep originals hidden, show the new ones
-    wsRowSrc.Visible = xlSheetHidden
-    wsColSrc.Visible = xlSheetHidden
-    wsRowNew.Visible = xlSheetVisible
-    wsColNew.Visible = xlSheetVisible
+    '=========================================================
+    ' Section 1: ROC QC header (B3:F3) -> shrink to B3:D3
+    '=========================================================
+    Dim v1 As Variant
+    v1 = wsNew.Range("B3").Value
+    wsNew.Range("B3:F3").UnMerge
+    wsNew.Range("B3:D3").Merge
+    wsNew.Range("B3").Value = v1
+    wsNew.Range("B3").HorizontalAlignment = xlCenter
+    wsNew.Range("B3").VerticalAlignment = xlCenter
 
-    wsRowNew.Activate
+    wsNew.Range("E4:F5").ClearContents
+
+    '=========================================================
+    ' Section 2: FD QC header (J3:N3) -> shrink to J3:L3
+    '=========================================================
+    Dim v2 As Variant
+    v2 = wsNew.Range("J3").Value
+    wsNew.Range("J3:N3").UnMerge
+    wsNew.Range("J3:L3").Merge
+    wsNew.Range("J3").Value = v2
+    wsNew.Range("J3").HorizontalAlignment = xlCenter
+    wsNew.Range("J3").VerticalAlignment = xlCenter
+
+    wsNew.Range("M4:N5").ClearContents
+
+    '=========================================================
+    ' Section 3: Tab QC sub-headers (G9:H9 and I9:J9) -> single cells
+    '=========================================================
+    Dim v3a As Variant, v3b As Variant
+    v3a = wsNew.Range("G9").Value
+    v3b = wsNew.Range("I9").Value
+
+    wsNew.Range("G9:H9").UnMerge
+    wsNew.Range("G9").Value = v3a
+
+    wsNew.Range("I9:J9").UnMerge
+    wsNew.Range("I9").Value = v3b
+
+    wsNew.Range("H10:I11").ClearContents
+
+    wsNew.Activate
+    wsNew.Range("A1").Select
 
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Done! 'TabQC_Row' and 'TabQC_Col' created after 'Prop_FD'.", vbInformation
+    MsgBox "Done! 'Results2' created after 'Read Me'. 'Results' remains hidden.", vbInformation
     Exit Sub
 
 ErrHandler:
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
+    ' Make sure source sheet visibility is restored even on error
+    On Error Resume Next
+    wsSrc.Visible = wasHidden
+    On Error GoTo 0
     MsgBox "Error: " & Err.Description, vbCritical
-
-End Sub
-
-Private Sub BuildQCSheet(srcWs As Worksheet, destWs As Worksheet)
-
-    Dim lastRow As Long
-    lastRow = srcWs.Cells(srcWs.Rows.Count, "A").End(xlUp).Row
-    If lastRow < 2 Then lastRow = 2
-
-    Dim srcCols As Variant, destCols As Variant
-    srcCols = Array("B", "D", "F", "H", "J", "L")
-    destCols = Array("B", "C", "D", "E", "F", "G")
-
-    Dim c As Long
-
-    ' --- Copy row 2 (sub-headers) through last data row for B/D/F/H/J/L -> B/C/D/E/F/G ---
-    For c = 0 To UBound(srcCols)
-        srcWs.Range(srcCols(c) & "2:" & srcCols(c) & lastRow).Copy
-        destWs.Range(destCols(c) & "2").PasteSpecial xlPasteAll
-    Next c
-    Application.CutCopyMode = False
-
-    ' --- Column A: copy from row 3 onward (row 1/2 handled separately below to dodge the A1:A2 merge) ---
-    If lastRow >= 3 Then
-        srcWs.Range("A3:A" & lastRow).Copy
-        destWs.Range("A3").PasteSpecial xlPasteAll
-        Application.CutCopyMode = False
-    End If
-    destWs.Range("A2").Value = srcWs.Range("A2").Value
-
-    ' --- Row 1 headers (pull the value out of each merged source cell) ---
-    Dim mergedSrcCells As Variant, destTargets As Variant
-    mergedSrcCells = Array("A1", "B1", "E1", "G1", "I1", "K1")
-    destTargets = Array("A1", "B1", "D1", "E1", "F1", "G1")
-
-    Dim i As Long
-    For i = 0 To UBound(mergedSrcCells)
-        destWs.Range(destTargets(i)).Value = srcWs.Range(mergedSrcCells(i)).Value
-        srcWs.Range(mergedSrcCells(i)).Copy
-        destWs.Range(destTargets(i)).PasteSpecial xlPasteFormats
-    Next i
-    Application.CutCopyMode = False
-
-    ' Merge B1:C1 (covers original B/D pair now in B/C)
-    If destWs.Range("B1:C1").MergeCells Then destWs.Range("B1:C1").UnMerge
-    destWs.Range("B1:C1").Merge
-    destWs.Range("B1").HorizontalAlignment = xlCenter
-    destWs.Range("B1").VerticalAlignment = xlCenter
-
-    ' Mirror A1:A2 merge from source, if present
-    If srcWs.Range("A1").MergeCells Then
-        If srcWs.Range("A1").MergeArea.Address = srcWs.Range("A1:A2").Address Then
-            If destWs.Range("A1:A2").MergeCells Then destWs.Range("A1:A2").UnMerge
-            destWs.Range("A1:A2").Merge
-            destWs.Range("A1").HorizontalAlignment = xlCenter
-            destWs.Range("A1").VerticalAlignment = xlCenter
-        End If
-    End If
-
-    ' --- Column widths / row heights to match source ---
-    destWs.Columns("A").ColumnWidth = srcWs.Columns("A").ColumnWidth
-    Dim w As Long
-    For w = 0 To UBound(srcCols)
-        destWs.Columns(destCols(w)).ColumnWidth = srcWs.Columns(srcCols(w)).ColumnWidth
-    Next w
-    destWs.Rows(1).RowHeight = srcWs.Rows(1).RowHeight
-    destWs.Rows(2).RowHeight = srcWs.Rows(2).RowHeight
 
 End Sub
