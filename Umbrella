@@ -11,106 +11,64 @@ Sub CreateResults2()
     On Error GoTo 0
     Application.DisplayAlerts = True
 
-    ' Copy "Results" and place it immediately after "Read Me"
+    ' Copy "Results" and place it right after "Read Me"
     wsSrc.Copy After:=wsReadMe
     Set ws = wbk.Sheets(wsReadMe.Index + 1)
     ws.Name = "Results2"
 
-    ' ===== ADJUST these if your actual column letters differ from the photo =====
-    CompactBlock ws, Array(3, 4, 5), "B", "H", Array("E", "F"), True      ' ROC QC block
-    CompactBlock ws, Array(3, 4, 5), "J", "N", Array("M", "N"), True      ' FD QC block
-    CompactBlock ws, Array(8, 9, 10, 11), "F", "L", Array("G", "I"), True ' Row QC + Column QC block
-    ' =============================================================================
+    ' ---- Convert formulas to static values (keeps hyperlinks intact) ----
+    Dim rng As Range
+    Set rng = ws.UsedRange
+    rng.Value = rng.Value
+
+    ' ---- Remove target cells & auto-shrink related header merges ----
+    ' Row 3 = title row for ROC QC / FD QC sections
+    RemoveCellsInRow ws, 3, Array("F", "E", "N", "M")
+    RemoveCellsInRow ws, 4, Array("F", "E", "N", "M")
+    RemoveCellsInRow ws, 5, Array("F", "E", "N", "M")
+
+    ' Row 14 = title row for the Row QC / Column QC sub-sections
+    RemoveCellsInRow ws, 14, Array("I", "G")
+    RemoveCellsInRow ws, 10, Array("I", "G")
+    RemoveCellsInRow ws, 11, Array("I", "G")
 
     Application.CutCopyMode = False
     Application.ScreenUpdating = True
-    MsgBox "Results2 created (placed after Read Me).", vbInformation
+    MsgBox "Results2 created successfully.", vbInformation
 End Sub
 
-Sub CompactBlock(ws As Worksheet, rowsArr As Variant, startCol As String, endCol As String, _
-                  removeCols As Variant, hasTitleRow As Boolean)
-
-    Dim sc As Long, ec As Long
-    sc = ws.Range(startCol & "1").Column
-    ec = ws.Range(endCol & "1").Column
-
-    Dim removeSet As Object
-    Set removeSet = CreateObject("Scripting.Dictionary")
+' Removes a list of column letters from one row, always processing
+' right-to-left so column positions stay valid mid-loop.
+Sub RemoveCellsInRow(ws As Worksheet, rowNum As Long, colsDescOrder As Variant)
     Dim v As Variant
-    For Each v In removeCols
-        removeSet(ws.Range(v & "1").Column) = True
+    For Each v In colsDescOrder
+        RemoveSingleCell ws, rowNum, CStr(v)
     Next v
+End Sub
 
-    Dim keptCount As Long
-    keptCount = (ec - sc + 1) - removeSet.Count
+' Deletes one cell (shifting the rest of that row left).
+' If the cell is part of a merged header, the merge is unmerged,
+' the cell deleted, then re-merged at the new (shorter) width.
+Sub RemoveSingleCell(ws As Worksheet, r As Long, colLetter As String)
+    Dim col As Long
+    col = ws.Range(colLetter & "1").Column
 
-    Dim rIdx As Variant
-    For Each rIdx In rowsArr
-        Dim rw As Long
-        rw = CLng(rIdx)
-        Dim c As Long
+    Dim cel As Range
+    Set cel = ws.Cells(r, col)
 
-        ' Step 1: rescue merge-title text before it gets wiped
-        For c = sc To ec
-            Dim cel As Range, ma As Range
-            Set cel = ws.Cells(rw, c)
-            If cel.MergeCells Then
-                Set ma = cel.MergeArea
-                If ma.Cells(1, 1).Column = c And removeSet.Exists(c) And Len(ma.Cells(1, 1).Value) > 0 Then
-                    Dim mc As Long, txt As Variant, moved As Boolean
-                    txt = ma.Cells(1, 1).Value
-                    moved = False
-                    For mc = ma.Cells(1, 1).Column To ma.Cells(1, ma.Columns.Count).Column
-                        If Not removeSet.Exists(mc) Then
-                            ma.UnMerge
-                            ws.Cells(rw, mc).Value = txt
-                            moved = True
-                            Exit For
-                        End If
-                    Next mc
-                    If Not moved Then ma.UnMerge
-                End If
-            End If
-        Next c
+    If cel.MergeCells Then
+        Dim ma As Range, leftCol As Long, rightCol As Long
+        Set ma = cel.MergeArea
+        leftCol = ma.Cells(1, 1).Column
+        rightCol = ma.Cells(1, ma.Columns.Count).Column
 
-        ' Step 2: unmerge everything else in range so compacting is clean
-        On Error Resume Next
-        ws.Range(ws.Cells(rw, sc), ws.Cells(rw, ec)).UnMerge
-        On Error GoTo 0
+        ma.UnMerge
+        ws.Cells(r, col).Delete Shift:=xlToLeft
 
-        ' Step 3: compact - copy kept cells (with formatting) to a scratch area, clear, paste back
-        Dim keepCols As Collection
-        Set keepCols = New Collection
-        For c = sc To ec
-            If Not removeSet.Exists(c) Then keepCols.Add c
-        Next c
-
-        Dim bufCol As Long
-        bufCol = ws.Columns.Count - 60
-        Dim i As Long, kc As Variant
-        i = 0
-        For Each kc In keepCols
-            ws.Cells(rw, CLng(kc)).Copy
-            ws.Cells(rw, bufCol + i).PasteSpecial xlPasteAll
-            i = i + 1
-        Next kc
-
-        ws.Range(ws.Cells(rw, sc), ws.Cells(rw, ec)).Clear
-
-        For i = 0 To keepCols.Count - 1
-            ws.Cells(rw, bufCol + i).Copy
-            ws.Cells(rw, sc + i).PasteSpecial xlPasteAll
-        Next i
-
-        ws.Range(ws.Cells(rw, bufCol), ws.Cells(rw, bufCol + keepCols.Count - 1)).Clear
-    Next rIdx
-
-    ' Step 4: re-merge the title bar (first row in the array) to the new width
-    If hasTitleRow Then
-        On Error Resume Next
-        ws.Range(ws.Cells(rowsArr(0), sc), ws.Cells(rowsArr(0), sc + keptCount - 1)).Merge
-        On Error GoTo 0
+        If rightCol - 1 > leftCol Then
+            ws.Range(ws.Cells(r, leftCol), ws.Cells(r, rightCol - 1)).Merge
+        End If
+    Else
+        ws.Cells(r, col).Delete Shift:=xlToLeft
     End If
-
-    Application.CutCopyMode = False
 End Sub
