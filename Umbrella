@@ -1,7 +1,8 @@
 Sub CreateResults2()
-    Dim wbk As Workbook, wsSrc As Worksheet, ws As Worksheet
+    Dim wbk As Workbook, wsSrc As Worksheet, ws As Worksheet, wsReadMe As Worksheet
     Set wbk = ThisWorkbook
     Set wsSrc = wbk.Sheets("Results")
+    Set wsReadMe = wbk.Sheets("Read Me")
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -10,19 +11,20 @@ Sub CreateResults2()
     On Error GoTo 0
     Application.DisplayAlerts = True
 
-    wsSrc.Copy After:=wbk.Sheets(wsSrc.Index)
-    Set ws = wbk.Sheets(wsSrc.Index + 1)
+    ' Copy "Results" and place it immediately after "Read Me"
+    wsSrc.Copy After:=wsReadMe
+    Set ws = wbk.Sheets(wsReadMe.Index + 1)
     ws.Name = "Results2"
 
     ' ===== ADJUST these if your actual column letters differ from the photo =====
-    CompactBlock ws, Array(3, 4, 5), "B", "H", Array("E", "F"), True   ' ROC QC block
-    CompactBlock ws, Array(3, 4, 5), "J", "N", Array("M", "N"), True   ' FD QC block
+    CompactBlock ws, Array(3, 4, 5), "B", "H", Array("E", "F"), True      ' ROC QC block
+    CompactBlock ws, Array(3, 4, 5), "J", "N", Array("M", "N"), True      ' FD QC block
     CompactBlock ws, Array(8, 9, 10, 11), "F", "L", Array("G", "I"), True ' Row QC + Column QC block
     ' =============================================================================
 
     Application.CutCopyMode = False
     Application.ScreenUpdating = True
-    MsgBox "Results2 created.", vbInformation
+    MsgBox "Results2 created (placed after Read Me).", vbInformation
 End Sub
 
 Sub CompactBlock(ws As Worksheet, rowsArr As Variant, startCol As String, endCol As String, _
