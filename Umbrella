@@ -1,10 +1,114 @@
-Dim cellList As Variant
-    Dim i As Integer
-    
-    Set ws = ThisWorkbook.Sheets("Results")
-    
-    cellList = Array("A1", "B5", "C10", "D15", "E20")
-    
-    For i = LBound(cellList) To UBound(cellList)
-        ws.Range(cellList(i)).Interior.ColorIndex = xlNone
-    Next i
+Sub CreateResults2()
+    Dim wbk As Workbook, wsSrc As Worksheet, ws As Worksheet
+    Set wbk = ThisWorkbook
+    Set wsSrc = wbk.Sheets("Results")
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    wbk.Sheets("Results2").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    wsSrc.Copy After:=wbk.Sheets(wsSrc.Index)
+    Set ws = wbk.Sheets(wsSrc.Index + 1)
+    ws.Name = "Results2"
+
+    ' ===== ADJUST these if your actual column letters differ from the photo =====
+    CompactBlock ws, Array(3, 4, 5), "B", "H", Array("E", "F"), True   ' ROC QC block
+    CompactBlock ws, Array(3, 4, 5), "J", "N", Array("M", "N"), True   ' FD QC block
+    CompactBlock ws, Array(8, 9, 10, 11), "F", "L", Array("G", "I"), True ' Row QC + Column QC block
+    ' =============================================================================
+
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = True
+    MsgBox "Results2 created.", vbInformation
+End Sub
+
+Sub CompactBlock(ws As Worksheet, rowsArr As Variant, startCol As String, endCol As String, _
+                  removeCols As Variant, hasTitleRow As Boolean)
+
+    Dim sc As Long, ec As Long
+    sc = ws.Range(startCol & "1").Column
+    ec = ws.Range(endCol & "1").Column
+
+    Dim removeSet As Object
+    Set removeSet = CreateObject("Scripting.Dictionary")
+    Dim v As Variant
+    For Each v In removeCols
+        removeSet(ws.Range(v & "1").Column) = True
+    Next v
+
+    Dim keptCount As Long
+    keptCount = (ec - sc + 1) - removeSet.Count
+
+    Dim rIdx As Variant
+    For Each rIdx In rowsArr
+        Dim rw As Long
+        rw = CLng(rIdx)
+        Dim c As Long
+
+        ' Step 1: rescue merge-title text before it gets wiped
+        For c = sc To ec
+            Dim cel As Range, ma As Range
+            Set cel = ws.Cells(rw, c)
+            If cel.MergeCells Then
+                Set ma = cel.MergeArea
+                If ma.Cells(1, 1).Column = c And removeSet.Exists(c) And Len(ma.Cells(1, 1).Value) > 0 Then
+                    Dim mc As Long, txt As Variant, moved As Boolean
+                    txt = ma.Cells(1, 1).Value
+                    moved = False
+                    For mc = ma.Cells(1, 1).Column To ma.Cells(1, ma.Columns.Count).Column
+                        If Not removeSet.Exists(mc) Then
+                            ma.UnMerge
+                            ws.Cells(rw, mc).Value = txt
+                            moved = True
+                            Exit For
+                        End If
+                    Next mc
+                    If Not moved Then ma.UnMerge
+                End If
+            End If
+        Next c
+
+        ' Step 2: unmerge everything else in range so compacting is clean
+        On Error Resume Next
+        ws.Range(ws.Cells(rw, sc), ws.Cells(rw, ec)).UnMerge
+        On Error GoTo 0
+
+        ' Step 3: compact - copy kept cells (with formatting) to a scratch area, clear, paste back
+        Dim keepCols As Collection
+        Set keepCols = New Collection
+        For c = sc To ec
+            If Not removeSet.Exists(c) Then keepCols.Add c
+        Next c
+
+        Dim bufCol As Long
+        bufCol = ws.Columns.Count - 60
+        Dim i As Long, kc As Variant
+        i = 0
+        For Each kc In keepCols
+            ws.Cells(rw, CLng(kc)).Copy
+            ws.Cells(rw, bufCol + i).PasteSpecial xlPasteAll
+            i = i + 1
+        Next kc
+
+        ws.Range(ws.Cells(rw, sc), ws.Cells(rw, ec)).Clear
+
+        For i = 0 To keepCols.Count - 1
+            ws.Cells(rw, bufCol + i).Copy
+            ws.Cells(rw, sc + i).PasteSpecial xlPasteAll
+        Next i
+
+        ws.Range(ws.Cells(rw, bufCol), ws.Cells(rw, bufCol + keepCols.Count - 1)).Clear
+    Next rIdx
+
+    ' Step 4: re-merge the title bar (first row in the array) to the new width
+    If hasTitleRow Then
+        On Error Resume Next
+        ws.Range(ws.Cells(rowsArr(0), sc), ws.Cells(rowsArr(0), sc + keptCount - 1)).Merge
+        On Error GoTo 0
+    End If
+
+    Application.CutCopyMode = False
+End Sub
