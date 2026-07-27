@@ -16,39 +16,59 @@ Sub CreateResults2()
     Set ws = wbk.Sheets(wsReadMe.Index + 1)
     ws.Name = "Results2"
 
-    ' ---- Convert formulas to static values (keeps hyperlinks intact) ----
-    Dim rng As Range
-    Set rng = ws.UsedRange
-    rng.Value = rng.Value
+    ' ---- Safely convert formulas to static values (merge-safe, keeps hyperlinks) ----
+    ConvertFormulasToValuesSafe ws
 
-    ' ---- Remove target cells & auto-shrink related header merges ----
-    ' Row 3 = title row for ROC QC / FD QC sections
-    RemoveCellsInRow ws, 3, Array("F", "E", "N", "M")
+    ' ---- Remove target cells (row-by-row, shifting left within that row only) ----
     RemoveCellsInRow ws, 4, Array("F", "E", "N", "M")
     RemoveCellsInRow ws, 5, Array("F", "E", "N", "M")
-
-    ' Row 14 = title row for the Row QC / Column QC sub-sections
-    RemoveCellsInRow ws, 14, Array("I", "G")
     RemoveCellsInRow ws, 10, Array("I", "G")
     RemoveCellsInRow ws, 11, Array("I", "G")
+
+    ' ---- Resize header merges to match new widths ----
+    ResizeMerge ws, 3, "B", "H"    ' ROC QC title row (adjust if needed)
+    ResizeMerge ws, 3, "J", "N"    ' FD QC title row (adjust if needed)
+
+    ' Explicit fix you requested: F8:J8 and F9:J9 -> F:H
+    ResizeMergeExact ws, 8, "F", "J", "F", "H"
+    ResizeMergeExact ws, 9, "F", "J", "F", "H"
 
     Application.CutCopyMode = False
     Application.ScreenUpdating = True
     MsgBox "Results2 created successfully.", vbInformation
 End Sub
 
-' Removes a list of column letters from one row, always processing
-' right-to-left so column positions stay valid mid-loop.
-Sub RemoveCellsInRow(ws As Worksheet, rowNum As Long, colsDescOrder As Variant)
+' Converts every formula in UsedRange to a static value,
+' safely handling merged cells (only writes to the merge anchor).
+Sub ConvertFormulasToValuesSafe(ws As Worksheet)
+    Dim ur As Range, cel As Range
+    Set ur = ws.UsedRange
+
+    Dim r As Long, c As Long
+    For r = 1 To ur.Rows.Count
+        For c = 1 To ur.Columns.Count
+            Set cel = ur.Cells(r, c)
+            If cel.MergeCells Then
+                If cel.MergeArea.Cells(1, 1).Address = cel.Address Then
+                    cel.Value = cel.Value
+                End If
+            Else
+                cel.Value = cel.Value
+            End If
+        Next c
+    Next r
+End Sub
+
+' Removes a list of column letters from one row, shifting that row left.
+Sub RemoveCellsInRow(ws As Worksheet, rowNum As Long, colsOrder As Variant)
     Dim v As Variant
-    For Each v In colsDescOrder
+    For Each v In colsOrder
         RemoveSingleCell ws, rowNum, CStr(v)
     Next v
 End Sub
 
-' Deletes one cell (shifting the rest of that row left).
-' If the cell is part of a merged header, the merge is unmerged,
-' the cell deleted, then re-merged at the new (shorter) width.
+' Deletes one cell (row-only shift left). Handles merged header cells
+' by unmerging, deleting, then re-merging at the reduced width.
 Sub RemoveSingleCell(ws As Worksheet, r As Long, colLetter As String)
     Dim col As Long
     col = ws.Range(colLetter & "1").Column
@@ -71,4 +91,69 @@ Sub RemoveSingleCell(ws As Worksheet, r As Long, colLetter As String)
     Else
         ws.Cells(r, col).Delete Shift:=xlToLeft
     End If
+End Sub
+
+' Auto-detects a merge starting at startCol in a given row and shrinks
+' it to only span currently-non-empty / surviving cells up to endCol.
+Sub ResizeMerge(ws As Worksheet, rowNum As Long, startCol As String, endCol As String)
+    Dim sc As Long, ec As Long
+    sc = ws.Range(startCol & "1").Column
+    ec = ws.Range(endCol & "1").Column
+
+    Dim cel As Range
+    Set cel = ws.Cells(rowNum, sc)
+
+    If cel.MergeCells Then
+        Dim ma As Range
+        Set ma = cel.MergeArea
+        Dim txt As Variant
+        txt = ma.Cells(1, 1).Value
+        ma.UnMerge
+
+        ' Find last surviving column with content up to ec (basic heuristic)
+        Dim lastCol As Long, c As Long
+        lastCol = sc
+        For c = sc To ec
+            If Len(ws.Cells(rowNum + 1, c).Value) > 0 Or Len(ws.Cells(rowNum + 2, c).Value) > 0 Then
+                lastCol = c
+            End If
+        Next c
+
+        If lastCol > sc Then
+            ws.Range(ws.Cells(rowNum, sc), ws.Cells(rowNum, lastCol)).Merge
+            ws.Cells(rowNum, sc).Value = txt
+        Else
+            ws.Cells(rowNum, sc).Value = txt
+        End If
+    End If
+End Sub
+
+' Explicitly force-resizes a known merge (e.g. F8:J8 -> F8:H8),
+' regardless of surrounding content - use when you know the exact target.
+Sub ResizeMergeExact(ws As Worksheet, rowNum As Long, oldStart As String, oldEnd As String, _
+                      newStart As String, newEnd As String)
+    Dim oldSc As Long, oldEc As Long, newSc As Long, newEc As Long
+    oldSc = ws.Range(oldStart & "1").Column
+    oldEc = ws.Range(oldEnd & "1").Column
+    newSc = ws.Range(newStart & "1").Column
+    newEc = ws.Range(newEnd & "1").Column
+
+    Dim cel As Range
+    Set cel = ws.Cells(rowNum, oldSc)
+
+    Dim txt As Variant
+    txt = ""
+
+    If cel.MergeCells Then
+        txt = cel.MergeArea.Cells(1, 1).Value
+        cel.MergeArea.UnMerge
+    Else
+        txt = cel.Value
+    End If
+
+    On Error Resume Next
+    ws.Range(ws.Cells(rowNum, newSc), ws.Cells(rowNum, newEc)).Merge
+    On Error GoTo 0
+
+    ws.Cells(rowNum, newSc).Value = txt
 End Sub
