@@ -29,7 +29,7 @@ Sub CreateResults2()
     ResizeMerge ws, 3, "B", "H"    ' ROC QC title row (adjust if needed)
     ResizeMerge ws, 3, "J", "N"    ' FD QC title row (adjust if needed)
 
-    ' Explicit fix you requested: F8:J8 and F9:J9 -> F:H
+    ' Explicit fix: F8:J8 and F9:J9 -> F:H
     ResizeMergeExact ws, 8, "F", "J", "F", "H"
     ResizeMergeExact ws, 9, "F", "J", "F", "H"
 
@@ -39,7 +39,8 @@ Sub CreateResults2()
 End Sub
 
 ' Converts every formula in UsedRange to a static value,
-' safely handling merged cells (only writes to the merge anchor).
+' safely handling merged cells (only writes to the merge anchor)
+' and error values (skips them instead of crashing).
 Sub ConvertFormulasToValuesSafe(ws As Worksheet)
     Dim ur As Range, cel As Range
     Set ur = ws.UsedRange
@@ -48,6 +49,7 @@ Sub ConvertFormulasToValuesSafe(ws As Worksheet)
     For r = 1 To ur.Rows.Count
         For c = 1 To ur.Columns.Count
             Set cel = ur.Cells(r, c)
+            On Error Resume Next
             If cel.MergeCells Then
                 If cel.MergeArea.Cells(1, 1).Address = cel.Address Then
                     cel.Value = cel.Value
@@ -55,6 +57,7 @@ Sub ConvertFormulasToValuesSafe(ws As Worksheet)
             Else
                 cel.Value = cel.Value
             End If
+            On Error GoTo 0
         Next c
     Next r
 End Sub
@@ -114,7 +117,7 @@ Sub ResizeMerge(ws As Worksheet, rowNum As Long, startCol As String, endCol As S
         Dim lastCol As Long, c As Long
         lastCol = sc
         For c = sc To ec
-            If Len(ws.Cells(rowNum + 1, c).Value) > 0 Or Len(ws.Cells(rowNum + 2, c).Value) > 0 Then
+            If SafeLen(ws.Cells(rowNum + 1, c)) > 0 Or SafeLen(ws.Cells(rowNum + 2, c)) > 0 Then
                 lastCol = c
             End If
         Next c
@@ -157,3 +160,13 @@ Sub ResizeMergeExact(ws As Worksheet, rowNum As Long, oldStart As String, oldEnd
 
     ws.Cells(rowNum, newSc).Value = txt
 End Sub
+
+' Returns the length of a cell's displayed value.
+' Returns 0 for error values (#REF!, #VALUE!, etc.) instead of crashing.
+Function SafeLen(cel As Range) As Long
+    If IsError(cel.Value) Then
+        SafeLen = 0
+    Else
+        SafeLen = Len(CStr(cel.Value))
+    End If
+End Function
