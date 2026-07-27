@@ -74,7 +74,6 @@ Sub CreateResults2Sheet()
     wsNew.Range("I9:J9").UnMerge
     wsNew.Range("I9").Value = v3b
 
-    ' Corrected ranges: G10:G11 and I10:I11 (not H10:H11)
     With wsNew.Range("G10:G11")
         .ClearContents
         .ClearFormats
@@ -83,6 +82,25 @@ Sub CreateResults2Sheet()
     With wsNew.Range("I10:I11")
         .ClearContents
         .ClearFormats
+    End With
+
+    '=========================================================
+    ' Section 4: Clear color/border on E3, F3, M3, N3
+    ' and add a dark right border on N3 and N4
+    '=========================================================
+    With wsNew.Range("E3:F3")
+        .ClearFormats
+    End With
+
+    With wsNew.Range("M3:N3")
+        .ClearFormats
+    End With
+
+    With wsNew.Range("N3:N4").Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlMedium
+        .ColorIndex = xlAutomatic
+        .Color = RGB(0, 0, 0)
     End With
 
     wsNew.Activate
