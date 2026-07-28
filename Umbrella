@@ -1,124 +1,38 @@
-Sub CreateResults2Sheet()
+Sub DeleteSpecificSheets()
 
-    Dim wsSrc As Worksheet, wsNew As Worksheet, wsReadMe As Worksheet
     Dim ws As Worksheet
-    Dim wasHidden As XlSheetVisibility
-
-    On Error GoTo ErrHandler
-
+    Dim i As Long
+    Dim regex As Object
+    Dim deletedList As String
+    
+    ' Create regex object: 1 or 2 letters followed by 2 or 3 digits
+    Set regex = CreateObject("VBScript.RegExp")
+    regex.IgnoreCase = True
+    regex.Pattern = "^[A-Za-z]{1,2}[0-9]{2,3}$"
+    
     Application.ScreenUpdating = False
-    Application.DisplayAlerts = False
-
-    Set wsSrc = ThisWorkbook.Sheets("Results")
-    Set wsReadMe = ThisWorkbook.Sheets("Read Me")
-
-    ' Remove existing Results2 if re-running
-    For Each ws In ThisWorkbook.Sheets
-        If ws.Name = "Results2" Then ws.Delete
-    Next ws
-
-    ' Make source temporarily visible so Copy works cleanly, then re-hide at the end
-    wasHidden = wsSrc.Visible
-    wsSrc.Visible = xlSheetVisible
-
-    wsSrc.Copy After:=wsReadMe
-    Set wsNew = ThisWorkbook.Sheets(wsReadMe.Index + 1)
-    wsNew.Name = "Results2"
-    wsNew.Visible = xlSheetVisible
-
-    ' Restore original hidden state of the source sheet
-    wsSrc.Visible = wasHidden
-
-    '=========================================================
-    ' Section 1: ROC QC header (B3:F3) -> shrink to B3:D3
-    '=========================================================
-    Dim v1 As Variant
-    v1 = wsNew.Range("B3").Value
-    wsNew.Range("B3:F3").UnMerge
-    wsNew.Range("B3:D3").Merge
-    wsNew.Range("B3").Value = v1
-    wsNew.Range("B3").HorizontalAlignment = xlCenter
-    wsNew.Range("B3").VerticalAlignment = xlCenter
-
-    With wsNew.Range("E4:F5")
-        .ClearContents
-        .ClearFormats
-    End With
-
-    '=========================================================
-    ' Section 2: FD QC header (J3:N3) -> shrink to J3:L3
-    '=========================================================
-    Dim v2 As Variant
-    v2 = wsNew.Range("J3").Value
-    wsNew.Range("J3:N3").UnMerge
-    wsNew.Range("J3:L3").Merge
-    wsNew.Range("J3").Value = v2
-    wsNew.Range("J3").HorizontalAlignment = xlCenter
-    wsNew.Range("J3").VerticalAlignment = xlCenter
-
-    With wsNew.Range("M4:N5")
-        .ClearContents
-        .ClearFormats
-    End With
-
-    '=========================================================
-    ' Section 3: Tab QC sub-headers (G9:H9 and I9:J9) -> single cells
-    '=========================================================
-    Dim v3a As Variant, v3b As Variant
-    v3a = wsNew.Range("G9").Value
-    v3b = wsNew.Range("I9").Value
-
-    wsNew.Range("G9:H9").UnMerge
-    wsNew.Range("G9").Value = v3a
-
-    wsNew.Range("I9:J9").UnMerge
-    wsNew.Range("I9").Value = v3b
-
-    With wsNew.Range("G10:G11")
-        .ClearContents
-        .ClearFormats
-    End With
-
-    With wsNew.Range("I10:I11")
-        .ClearContents
-        .ClearFormats
-    End With
-
-    '=========================================================
-    ' Section 4: Clear color/border on E3, F3, M3, N3
-    ' and add a dark right border on N3 and N4
-    '=========================================================
-    With wsNew.Range("E3:F3")
-        .ClearFormats
-    End With
-
-    With wsNew.Range("M3:N3")
-        .ClearFormats
-    End With
-
-    With wsNew.Range("N3:N4").Borders(xlEdgeRight)
-        .LineStyle = xlContinuous
-        .Weight = xlMedium
-        .ColorIndex = xlAutomatic
-        .Color = RGB(0, 0, 0)
-    End With
-
-    wsNew.Activate
-    wsNew.Range("A1").Select
-
+    Application.DisplayAlerts = False  ' Suppress "Delete sheet" confirmation prompts
+    
+    ' Loop backwards since we are deleting sheets
+    For i = ThisWorkbook.Worksheets.Count To 1 Step -1
+        Set ws = ThisWorkbook.Worksheets(i)
+        
+        If ws.Name = "Summary_RD" Then
+            deletedList = deletedList & ws.Name & vbNewLine
+            ws.Delete
+        ElseIf regex.Test(ws.Name) Then
+            deletedList = deletedList & ws.Name & vbNewLine
+            ws.Delete
+        End If
+    Next i
+    
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
-
-    MsgBox "Done! 'Results2' created after 'Read Me'. 'Results' remains hidden.", vbInformation
-    Exit Sub
-
-ErrHandler:
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
-    ' Make sure source sheet visibility is restored even on error
-    On Error Resume Next
-    wsSrc.Visible = wasHidden
-    On Error GoTo 0
-    MsgBox "Error: " & Err.Description, vbCritical
+    
+    If deletedList = "" Then
+        MsgBox "No matching sheets were found.", vbInformation
+    Else
+        MsgBox "Deleted the following sheets:" & vbNewLine & vbNewLine & deletedList, vbInformation
+    End If
 
 End Sub
