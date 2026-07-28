@@ -1,38 +1,51 @@
-Sub DeleteSpecificSheets()
+Sub MergeAndFormatResultsSheet()
 
     Dim ws As Worksheet
-    Dim i As Long
-    Dim regex As Object
-    Dim deletedList As String
+    Set ws = ThisWorkbook.Sheets("Results")
     
-    ' Create regex object: 1 or 2 letters followed by 2 or 3 digits
-    Set regex = CreateObject("VBScript.RegExp")
-    regex.IgnoreCase = True
-    regex.Pattern = "^[A-Za-z]{1,2}[0-9]{2,3}$"
+    Dim hyperlinkSheet As String
+    hyperlinkSheet = "TabQC_Row"
     
-    Application.ScreenUpdating = False
-    Application.DisplayAlerts = False  ' Suppress "Delete sheet" confirmation prompts
+    Application.DisplayAlerts = False  ' Suppress "merge will keep only upper-left value" warning
     
-    ' Loop backwards since we are deleting sheets
-    For i = ThisWorkbook.Worksheets.Count To 1 Step -1
-        Set ws = ThisWorkbook.Worksheets(i)
-        
-        If ws.Name = "Summary_RD" Then
-            deletedList = deletedList & ws.Name & vbNewLine
-            ws.Delete
-        ElseIf regex.Test(ws.Name) Then
-            deletedList = deletedList & ws.Name & vbNewLine
-            ws.Delete
-        End If
-    Next i
+    '--- Step 1: Merge G11:H11, keeping H11's text and color ---
+    With ws
+        .Range("H11").Copy
+        .Range("G11").PasteSpecial Paste:=xlPasteAll   ' copies value + formatting from H11 into G11
+        Application.CutCopyMode = False
+        .Range("H11").ClearContents
+        .Range("G11:H11").Merge
+    End With
+    
+    '--- Step 2: Merge I11:J11, keeping J11's text and color ---
+    With ws
+        .Range("J11").Copy
+        .Range("I11").PasteSpecial Paste:=xlPasteAll   ' copies value + formatting from J11 into I11
+        Application.CutCopyMode = False
+        .Range("J11").ClearContents
+        .Range("I11:J11").Merge
+    End With
+    
+    '--- Step 3: Merge G10:H10, clear old content, add hyperlink "Prop to FR" ---
+    With ws
+        .Range("G10:H10").ClearContents
+        .Range("G10:H10").Merge
+        .Hyperlinks.Add Anchor:=.Range("G10"), Address:="", _
+            SubAddress:="'" & hyperlinkSheet & "'!A1", _
+            TextToDisplay:="Prop to FR"
+    End With
+    
+    '--- Step 4: Merge I10:J10, clear old content, add hyperlink "Prop to FR" ---
+    With ws
+        .Range("I10:J10").ClearContents
+        .Range("I10:J10").Merge
+        .Hyperlinks.Add Anchor:=.Range("I10"), Address:="", _
+            SubAddress:="'" & hyperlinkSheet & "'!A1", _
+            TextToDisplay:="Prop to FR"
+    End With
     
     Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
     
-    If deletedList = "" Then
-        MsgBox "No matching sheets were found.", vbInformation
-    Else
-        MsgBox "Deleted the following sheets:" & vbNewLine & vbNewLine & deletedList, vbInformation
-    End If
+    MsgBox "Merging and hyperlinks completed on 'Results' sheet.", vbInformation
 
 End Sub
