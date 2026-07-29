@@ -160,24 +160,37 @@ RADAR_COLUMN_SYNONYM_PAIRS = [
 ]
 
 # ------------------------------------------------------------------
-# EQ per-CONFIG-TAB extra synonym pairs. These are added ON TOP OF
-# EQ_COLUMN_SYNONYM_PAIRS, but ONLY when comparing the specific config
-# tab named as the dict key -- every other EQ tab still uses only the
-# plain EQ_COLUMN_SYNONYM_PAIRS list. Matched case/space/punctuation-
-# insensitively, same as tab names everywhere else in this tool.
+# EQ per-CONFIG-TAB "post read" adjustments. These are applied directly
+# to the dataframe right after it's read from Excel -- BEFORE any column
+# matching/synonym logic runs -- so the fix is a simple, self-contained
+# drop/rename rather than a change to the core matching engine.
 #
-# R_O_EQYearBuilt: "County Code" (config) should also match a column
-# literally named "County.1" in the export (this happens when the EQ
-# export sheet has two columns that both read "County" and pandas
-# auto-suffixes the second one ".1" on read). "EQ Construction Type"
-# already chains to "Construction Type" via EQ_COLUMN_SYNONYM_PAIRS, but
-# it's listed here too for clarity/documentation.
+#   "drop":   column names to remove entirely from BOTH the config tab
+#             and the export sheet for that tab (never matched, never
+#             shown, never flagged red).
+#   "rename": export/config column names to rename so they read EXACTLY
+#             like the other side's name -- once renamed, a normal exact
+#             -name match succeeds, no synonym list needed for these.
+#
+# Two spellings of the Loss Assessment tab are listed as a safety net,
+# in case the actual Config tab is spelled either way.
 # ------------------------------------------------------------------
-EQ_PER_TAB_EXTRA_SYNONYM_PAIRS = {
-    "R_O_EQYearBuilt": [
-        ("County Code", "County.1"),
-        ("EQ Construction Type", "Construction Type"),
-    ],
+EQ_TAB_POST_READ_ADJUSTMENTS = {
+    "R_O_EQExpense": {
+        "drop": ["State"],
+    },
+    "R_O_LossAsessmentEQ": {
+        "drop": ["State"],
+    },
+    "R_O_LossAssessmentEQ": {
+        "drop": ["State"],
+    },
+    "R_O_EQYearBuilt": {
+        "rename": {
+            "County.1": "County Code",
+            "Construction Type": "EQ Construction Type",
+        },
+    },
 }
 
 # ------------------------------------------------------------------
@@ -201,17 +214,7 @@ EQ_PER_TAB_VALUE_SYNONYM_COLUMNS = {
     },
 }
 
-# ------------------------------------------------------------------
-# EQ per-CONFIG-TAB columns to fully drop/ignore before comparison --
-# these columns are removed from BOTH the config tab and the export
-# sheet before matching/comparing, so they are never mapped, never
-# flagged as an unmatched/red column, and never shown in the detail
-# tables for that tab.
-# ------------------------------------------------------------------
-EQ_DROP_COLUMNS_PER_TAB = {
-    "R_O_EQExpense": ["State"],
-    "R_O_LossAsessmentEQ": ["State"],
-}
+
 
 # ------------------------------------------------------------------
 # Hardcoded VALUE synonym pairs (not column-name synonyms -- these are
@@ -650,15 +653,32 @@ def missing_row(config_tab="NA", export_tab="NA", result=""):
     }
 
 
-def get_eq_synonyms_for_tab(config_tab_name, default_eq_synonyms):
-    """Returns the synonym-groups dict to use for a given EQ config tab --
-    the plain EQ_COLUMN_SYNONYM_PAIRS-based groups for most tabs, or those
-    pairs PLUS the tab's entry in EQ_PER_TAB_EXTRA_SYNONYM_PAIRS when the
-    tab has one."""
-    for tab_name, extra_pairs in EQ_PER_TAB_EXTRA_SYNONYM_PAIRS.items():
-        if clean_col(tab_name) == clean_col(config_tab_name):
-            return build_synonym_groups(EQ_COLUMN_SYNONYM_PAIRS + extra_pairs)
-    return default_eq_synonyms
+def apply_eq_post_read_adjustments(df, config_tab_name):
+    """Applies EQ_TAB_POST_READ_ADJUSTMENTS to `df` (whichever EQ config
+    tab is currently being processed) -- dropping any configured columns
+    and renaming any configured columns, right after the dataframe is
+    read from Excel and before any matching/comparison logic runs. A
+    no-op if the tab has no entry, or if a configured column isn't
+    actually present in this particular dataframe."""
+    for tab_name, adjustments in EQ_TAB_POST_READ_ADJUSTMENTS.items():
+        if clean_col(tab_name) != clean_col(config_tab_name):
+            continue
+
+        drop_cols = adjustments.get("drop")
+        if drop_cols:
+            df = drop_columns_if_present(df, drop_cols)
+
+        rename_map = adjustments.get("rename")
+        if rename_map:
+            actual_rename = {}
+            for old_name, new_name in rename_map.items():
+                resolved_old = resolve_name(old_name, df.columns)
+                if resolved_old:
+                    actual_rename[resolved_old] = new_name
+            if actual_rename:
+                df = df.rename(columns=actual_rename)
+
+    return df
 
 
 def get_eq_value_synonym_cols_for_tab(config_tab_name):
@@ -668,16 +688,6 @@ def get_eq_value_synonym_cols_for_tab(config_tab_name):
     for tab_name, col_map in EQ_PER_TAB_VALUE_SYNONYM_COLUMNS.items():
         if clean_col(tab_name) == clean_col(config_tab_name):
             return {clean_col(col_name): build_synonym_groups(pairs) for col_name, pairs in col_map.items()}
-    return None
-
-
-def get_eq_drop_columns_for_tab(config_tab_name):
-    """Returns the list of column names to drop (ignore entirely) for a
-    given EQ config tab, per EQ_DROP_COLUMNS_PER_TAB, or None if that tab
-    has no columns configured to be dropped."""
-    for tab_name, cols in EQ_DROP_COLUMNS_PER_TAB.items():
-        if clean_col(tab_name) == clean_col(config_tab_name):
-            return cols
     return None
 
 
@@ -987,20 +997,16 @@ def main(input_file):
                 # (truncated at the first blank/empty header cell).
                 export_df = read_df_first_table(paths["eq_file"], sheet_name, header_row)
 
-                # Per-tab column drops (e.g. "State" ignored entirely for
-                # R_O_EQExpense / R_O_LossAsessmentEQ) -- removed from BOTH
-                # sides before matching/comparing.
-                drop_cols = get_eq_drop_columns_for_tab(target_config_tab)
-                if drop_cols:
-                    config_df = drop_columns_if_present(config_df, drop_cols)
-                    export_df = drop_columns_if_present(export_df, drop_cols)
-
-                # Per-tab synonym overrides (e.g. R_O_EQYearBuilt's
-                # "County Code" <-> "County.1"). Column-name synonyms are
-                # inherently bidirectional -- whichever side (config or
-                # export) has which spelling, the shared synonym group
-                # still links them.
-                current_eq_synonyms = get_eq_synonyms_for_tab(target_config_tab, eq_synonyms)
+                # Per-tab "post read" fixes -- applied directly to the
+                # dataframe right after reading, before any matching runs:
+                #   - drops "State" entirely (both sides) for
+                #     R_O_EQExpense / R_O_LossAsessmentEQ (or "R_O_LossAssessmentEQ"),
+                #   - renames R_O_EQYearBuilt's "County.1" -> "County Code"
+                #     and "Construction Type" -> "EQ Construction Type" so
+                #     they match Config's names exactly (no synonym lookup
+                #     needed once renamed).
+                config_df = apply_eq_post_read_adjustments(config_df, target_config_tab)
+                export_df = apply_eq_post_read_adjustments(export_df, target_config_tab)
 
                 # Per-tab, per-column VALUE synonyms (e.g. R_O_EQYearBuilt's
                 # "Retrofit" column treating Yes/Y and No/N as equal).
@@ -1008,7 +1014,7 @@ def main(input_file):
 
                 res = process_pair(
                     config_df, export_df, target_config_tab, sheet_name,
-                    current_eq_synonyms, decimal_places, current_eq_value_synonym_cols,
+                    eq_synonyms, decimal_places, current_eq_value_synonym_cols,
                 )
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
