@@ -181,6 +181,27 @@ EQ_PER_TAB_EXTRA_SYNONYM_PAIRS = {
 }
 
 # ------------------------------------------------------------------
+# EQ per-CONFIG-TAB, per-COLUMN value synonym pairs -- same idea as
+# LIMIT_VALUE_SYNONYM_PAIRS below, but scoped to a specific column within
+# a specific EQ config tab. Matching is case/space/punctuation-insensitive
+# (via clean_col), so "Yes"/"yes"/"YES" and "Y"/"y" etc. all normalize the
+# same regardless of case.
+#
+# R_O_EQYearBuilt, "Retrofit" column: some files use Yes/No, others use
+# Y/N for the same field -- these pairs mean Yes==Y and No==N.
+# ------------------------------------------------------------------
+RETROFIT_VALUE_SYNONYM_PAIRS = [
+    ("Yes", "Y"),
+    ("No", "N"),
+]
+
+EQ_PER_TAB_VALUE_SYNONYM_COLUMNS = {
+    "R_O_EQYearBuilt": {
+        "Retrofit": RETROFIT_VALUE_SYNONYM_PAIRS,
+    },
+}
+
+# ------------------------------------------------------------------
 # EQ per-CONFIG-TAB columns to fully drop/ignore before comparison --
 # these columns are removed from BOTH the config tab and the export
 # sheet before matching/comparing, so they are never mapped, never
@@ -208,9 +229,9 @@ LIMIT_VALUE_SYNONYM_PAIRS = [
 # ------------------------------------------------------------------
 # Styling constants
 # ------------------------------------------------------------------
-HEADER_FILL = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+HEADER_FILL = PatternFill(start_color="00005A", end_color="00005A", fill_type="solid")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
-HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+HEADER_ALIGN = Alignment(horizontal="left", vertical="center", wrap_text=False, indent=0)
 
 RED_HEADER_FILL = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
 RED_HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
@@ -249,7 +270,7 @@ def style_header_cell(cell):
 def style_unmatched_header_cell(cell):
     cell.fill = RED_HEADER_FILL
     cell.font = RED_HEADER_FONT
-    cell.alignment = HEADER_ALIGN
+    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False, indent=0)
     cell.border = THIN_BORDER
 
 
@@ -640,6 +661,16 @@ def get_eq_synonyms_for_tab(config_tab_name, default_eq_synonyms):
     return default_eq_synonyms
 
 
+def get_eq_value_synonym_cols_for_tab(config_tab_name):
+    """Returns a {clean_col(column_name): synonym_groups} dict for EQ
+    per-tab VALUE synonyms (e.g. R_O_EQYearBuilt's Retrofit Yes/Y, No/N),
+    or None if the tab has none configured."""
+    for tab_name, col_map in EQ_PER_TAB_VALUE_SYNONYM_COLUMNS.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return {clean_col(col_name): build_synonym_groups(pairs) for col_name, pairs in col_map.items()}
+    return None
+
+
 def get_eq_drop_columns_for_tab(config_tab_name):
     """Returns the list of column names to drop (ignore entirely) for a
     given EQ config tab, per EQ_DROP_COLUMNS_PER_TAB, or None if that tab
@@ -754,7 +785,6 @@ def write_summary_sheet(ws, summary_rows):
     last_col_letter = get_column_letter(len(headers))
     ws.auto_filter.ref = f"A1:{last_col_letter}{ws.max_row}"
     ws.freeze_panes = "A2"
-    ws.row_dimensions[1].height = 22
 
     autofit_columns(ws)
 
@@ -966,10 +996,20 @@ def main(input_file):
                     export_df = drop_columns_if_present(export_df, drop_cols)
 
                 # Per-tab synonym overrides (e.g. R_O_EQYearBuilt's
-                # "County Code" <-> "County.1").
+                # "County Code" <-> "County.1"). Column-name synonyms are
+                # inherently bidirectional -- whichever side (config or
+                # export) has which spelling, the shared synonym group
+                # still links them.
                 current_eq_synonyms = get_eq_synonyms_for_tab(target_config_tab, eq_synonyms)
 
-                res = process_pair(config_df, export_df, target_config_tab, sheet_name, current_eq_synonyms, decimal_places)
+                # Per-tab, per-column VALUE synonyms (e.g. R_O_EQYearBuilt's
+                # "Retrofit" column treating Yes/Y and No/N as equal).
+                current_eq_value_synonym_cols = get_eq_value_synonym_cols_for_tab(target_config_tab)
+
+                res = process_pair(
+                    config_df, export_df, target_config_tab, sheet_name,
+                    current_eq_synonyms, decimal_places, current_eq_value_synonym_cols,
+                )
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
                 if res["result"] != VALIDATED:
