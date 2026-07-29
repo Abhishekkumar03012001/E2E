@@ -63,6 +63,10 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    the genuinely mismatched rows are shown.
 9. Output file name: "Comparison_Report_<State>_<timestamp>.xlsx" saved
    to the output folder path given in the Inputs tab (C58).
+10. The "Summary of Results" sheet is written LAST in the sheet order
+   (i.e. it appears as the final tab), but is still set as the ACTIVE
+   sheet, so it's the first thing the user sees when the workbook is
+   opened.
 
 Run:
     Edit INPUT_FILE_PATH below, then: python compare_tool.py
@@ -130,7 +134,7 @@ ROOF_LIMIT_VALUE_COLUMN = "Limit"
 VALIDATED = "Validated - All Rows Match"
 MANUAL_VALIDATION = "Manual validation required"
 MISSING_IN_CONFIG = "Tab missing in config file"
-MISSING_IN_EXPORT = "Tab missing in Export file"
+MISSING_IN_EXPORT = "Factor Tab not Found in export"
 
 # ------------------------------------------------------------------
 # Hardcoded column synonym pairs (each pair means: treat these two
@@ -154,6 +158,39 @@ RADAR_COLUMN_SYNONYM_PAIRS = [
     ("Rate", "MinimumSchedProperty"),
     ("NumSqft", "NumSqft (Upper Bound)"),
 ]
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB extra synonym pairs. These are added ON TOP OF
+# EQ_COLUMN_SYNONYM_PAIRS, but ONLY when comparing the specific config
+# tab named as the dict key -- every other EQ tab still uses only the
+# plain EQ_COLUMN_SYNONYM_PAIRS list. Matched case/space/punctuation-
+# insensitively, same as tab names everywhere else in this tool.
+#
+# R_O_EQYearBuilt: "County Code" (config) should also match a column
+# literally named "County.1" in the export (this happens when the EQ
+# export sheet has two columns that both read "County" and pandas
+# auto-suffixes the second one ".1" on read). "EQ Construction Type"
+# already chains to "Construction Type" via EQ_COLUMN_SYNONYM_PAIRS, but
+# it's listed here too for clarity/documentation.
+# ------------------------------------------------------------------
+EQ_PER_TAB_EXTRA_SYNONYM_PAIRS = {
+    "R_O_EQYearBuilt": [
+        ("County Code", "County.1"),
+        ("EQ Construction Type", "Construction Type"),
+    ],
+}
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB columns to fully drop/ignore before comparison --
+# these columns are removed from BOTH the config tab and the export
+# sheet before matching/comparing, so they are never mapped, never
+# flagged as an unmatched/red column, and never shown in the detail
+# tables for that tab.
+# ------------------------------------------------------------------
+EQ_DROP_COLUMNS_PER_TAB = {
+    "R_O_EQExpense": ["State"],
+    "R_O_LossAsessmentEQ": ["State"],
+}
 
 # ------------------------------------------------------------------
 # Hardcoded VALUE synonym pairs (not column-name synonyms -- these are
@@ -182,16 +219,20 @@ SOURCE_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="s
 SOURCE_FONT = Font(bold=True, italic=True, size=10, name="Calibri", color="1F4E78")
 
 RESULT_COLORS = {
-    VALIDATED: PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
+    # Validated rows are now WHITE by default (was green) -- everything
+    # else (Manual validation / Missing tabs) keeps its color coding.
+    VALIDATED: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
     MANUAL_VALIDATION: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
     MISSING_IN_CONFIG: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
     MISSING_IN_EXPORT: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
 }
+# NOTE: font is plain black, not bold -- only the cell BACKGROUND fill
+# communicates the result now (see RESULT_COLORS above).
 RESULT_FONT_COLORS = {
-    VALIDATED: Font(color="006100", bold=True, name="Calibri"),
-    MANUAL_VALIDATION: Font(color="9C6500", bold=True, name="Calibri"),
-    MISSING_IN_CONFIG: Font(color="9C0006", bold=True, name="Calibri"),
-    MISSING_IN_EXPORT: Font(color="9C0006", bold=True, name="Calibri"),
+    VALIDATED: Font(color="000000", bold=False, name="Calibri"),
+    MANUAL_VALIDATION: Font(color="000000", bold=False, name="Calibri"),
+    MISSING_IN_CONFIG: Font(color="000000", bold=False, name="Calibri"),
+    MISSING_IN_EXPORT: Font(color="000000", bold=False, name="Calibri"),
 }
 
 THIN_SIDE = Side(style="thin", color="B7B7B7")
@@ -588,6 +629,39 @@ def missing_row(config_tab="NA", export_tab="NA", result=""):
     }
 
 
+def get_eq_synonyms_for_tab(config_tab_name, default_eq_synonyms):
+    """Returns the synonym-groups dict to use for a given EQ config tab --
+    the plain EQ_COLUMN_SYNONYM_PAIRS-based groups for most tabs, or those
+    pairs PLUS the tab's entry in EQ_PER_TAB_EXTRA_SYNONYM_PAIRS when the
+    tab has one."""
+    for tab_name, extra_pairs in EQ_PER_TAB_EXTRA_SYNONYM_PAIRS.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return build_synonym_groups(EQ_COLUMN_SYNONYM_PAIRS + extra_pairs)
+    return default_eq_synonyms
+
+
+def get_eq_drop_columns_for_tab(config_tab_name):
+    """Returns the list of column names to drop (ignore entirely) for a
+    given EQ config tab, per EQ_DROP_COLUMNS_PER_TAB, or None if that tab
+    has no columns configured to be dropped."""
+    for tab_name, cols in EQ_DROP_COLUMNS_PER_TAB.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return cols
+    return None
+
+
+def drop_columns_if_present(df, columns_to_drop):
+    """Drops `columns_to_drop` from `df` (matched case/space/punctuation-
+    insensitively) if present. Columns not found are silently ignored."""
+    if df is None or not columns_to_drop:
+        return df
+    resolved = [resolve_name(c, df.columns) for c in columns_to_drop]
+    resolved = [c for c in resolved if c is not None]
+    if resolved:
+        df = df.drop(columns=resolved)
+    return df
+
+
 def merge_export_dataframes(df1, df2, merge_column=TERRITORY_MERGE_COLUMN):
     """Combine two export dataframes into one, for Territory's dual-file case.
     Specifically aligns on the "Territory" column (present in both files,
@@ -639,15 +713,16 @@ def load_input_paths(input_file):
 # ------------------------------------------------------------------
 # Report writer
 # ------------------------------------------------------------------
-def write_summary_sheet(wb, summary_rows):
-    ws = wb.active
-    ws.title = "Summary of Results"
+def write_summary_sheet(ws, summary_rows):
+    """Populates the given (already-created) worksheet with the Summary
+    of Results content. Kept as a separate function from sheet creation so
+    the caller controls WHERE in the workbook this sheet ends up."""
     headers = [
         "Config Tab Name",
-        "Exports Tab Name",
+        "Ratabase Tab Name",
         "Result",
         "Config Unmatched Rows",
-        "Input File Unmatched Rows",
+        "Ratabase Unmatched Rows",
         "Column Mismatched",
         "Analyst Comment",
     ]
@@ -755,9 +830,13 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
 
 def write_report(summary_rows, detail_sheets, output_folder, state_name):
     wb = Workbook()
-    write_summary_sheet(wb, summary_rows)
+    default_sheet = wb.active  # the initial blank "Sheet" openpyxl creates
 
+    # Reserve the "Summary of Results" name up front so no detail sheet can
+    # collide with it, even though the Summary sheet itself is physically
+    # created LAST (see below) so it ends up as the final tab in the file.
     existing_names = {"Summary of Results"}
+
     for tab_key, res in detail_sheets.items():
         has_col_mismatch = res.get("col_mismatch", "NA") != "NA"
         row_label = "Full Table (column mismatch - manual review)" if has_col_mismatch else "Unmatched Rows"
@@ -773,6 +852,17 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
             red_export_cols=res.get("red_export_cols", set()),
             row_label=row_label,
         )
+
+    # Create the Summary sheet LAST so it's the final tab in the workbook...
+    summary_ws = wb.create_sheet("Summary of Results")
+    write_summary_sheet(summary_ws, summary_rows)
+
+    # ...then drop the original blank default sheet...
+    wb.remove(default_sheet)
+
+    # ...and mark Summary as the ACTIVE sheet, so it's what the user sees
+    # first when they open the file, regardless of its tab position.
+    wb.active = wb.sheetnames.index("Summary of Results")
 
     os.makedirs(output_folder, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -826,6 +916,11 @@ def main(input_file):
             resolved_cfg = resolve_name(sheet_name, config_tabs)
             if resolved_cfg and is_excluded_tab(resolved_cfg):
                 continue
+            # R_O_RoofLimit is handled exclusively by the dedicated Roof
+            # Limit export file/section below -- skip it here even if the
+            # Radar export file also happens to contain a same-named tab.
+            if resolved_cfg and clean_col(resolved_cfg) == clean_col(ROOF_CONFIG_TAB):
+                continue
             if resolved_cfg:
                 config_df = read_df(paths["config_file"], resolved_cfg, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
@@ -861,7 +956,20 @@ def main(input_file):
                 # multiple tables side by side; only the first is kept
                 # (truncated at the first blank/empty header cell).
                 export_df = read_df_first_table(paths["eq_file"], sheet_name, header_row)
-                res = process_pair(config_df, export_df, target_config_tab, sheet_name, eq_synonyms, decimal_places)
+
+                # Per-tab column drops (e.g. "State" ignored entirely for
+                # R_O_EQExpense / R_O_LossAsessmentEQ) -- removed from BOTH
+                # sides before matching/comparing.
+                drop_cols = get_eq_drop_columns_for_tab(target_config_tab)
+                if drop_cols:
+                    config_df = drop_columns_if_present(config_df, drop_cols)
+                    export_df = drop_columns_if_present(export_df, drop_cols)
+
+                # Per-tab synonym overrides (e.g. R_O_EQYearBuilt's
+                # "County Code" <-> "County.1").
+                current_eq_synonyms = get_eq_synonyms_for_tab(target_config_tab, eq_synonyms)
+
+                res = process_pair(config_df, export_df, target_config_tab, sheet_name, current_eq_synonyms, decimal_places)
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
                 if res["result"] != VALIDATED:
@@ -941,6 +1049,25 @@ def main(input_file):
             continue
         if tab not in matched_config_tabs:
             summary_rows.append(missing_row(config_tab=tab, result=MISSING_IN_EXPORT))
+
+    # ---------------- Order the Summary rows by Config tab order ----------------
+    # Rows whose "config_tab" matches an actual Config workbook tab are sorted
+    # to follow that tab's position in the Config file. Any row that doesn't
+    # correspond to a Config tab (e.g. "Factor Tab not Found in export" rows,
+    # which only have an export_tab) is left where it was -- sorted() is
+    # stable, so all such rows simply keep their original relative order,
+    # placed after every row that DID match a Config tab.
+    config_tab_order = {clean_col(t): i for i, t in enumerate(config_tabs)}
+
+    def summary_sort_key(row):
+        tab = row.get("config_tab", "NA")
+        if tab and tab != "NA":
+            idx = config_tab_order.get(clean_col(tab))
+            if idx is not None:
+                return (0, idx)
+        return (1, 0)
+
+    summary_rows = sorted(summary_rows, key=summary_sort_key)
 
     out_path = write_report(summary_rows, detail_sheets, paths["output_folder"], paths["state_name"])
     print(f"Report saved to: {out_path}")
