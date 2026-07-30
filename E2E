@@ -217,12 +217,13 @@ EQ_TAB_POST_READ_ADJUSTMENTS = {
         # Column-NAME matching for "EQ Deductible Percent" <-> "Earthquake
         # Deduct Percentage" is already handled by EQ_COLUMN_SYNONYM_PAIRS
         # above -- no rename needed here.
-        # Config holds whole percentages (5, 10, 30) while the export's
-        # "Earthquake Deduct Percentage" column holds the same thing as a
-        # decimal fraction (0.05, 0.1, 0.3) -- multiply the EXPORT side by
-        # 100 so both sides land on the same number before comparing.
+        # Config holds a decimal fraction (0.05, 0.1, 0.3) while the
+        # export's "Earthquake Deduct Percentage" column holds the same
+        # thing as a whole percentage (5, 10, 30) -- DIVIDE the EXPORT
+        # side by 100 (i.e. multiply by 0.01) so both sides land on the
+        # same number before comparing.
         "scale_export": {
-            "Earthquake Deduct Percentage": 100,
+            "Earthquake Deduct Percentage": 0.01,
         },
     },
 }
@@ -1124,9 +1125,9 @@ def main(input_file):
                 #     Construction Type" so they match Config's names
                 #     exactly (no synonym lookup needed once renamed),
                 #   - scales R_Q_EQDed's "Earthquake Deduct Percentage"
-                #     (export side) x100 so 0.05/0.1/0.3 lines up with
-                #     Config's 5/10/30 -- the column-NAME match itself is
-                #     already handled by EQ_COLUMN_SYNONYM_PAIRS.
+                #     (export side) /100 so 5/10/30 lines up with
+                #     Config's 0.05/0.1/0.3 -- the column-NAME match itself
+                #     is already handled by EQ_COLUMN_SYNONYM_PAIRS.
                 config_df = apply_eq_post_read_adjustments(config_df, target_config_tab, "config")
                 export_df = apply_eq_post_read_adjustments(export_df, target_config_tab, "export")
 
