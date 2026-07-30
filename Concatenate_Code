@@ -3,16 +3,21 @@ Concatenate adjacent rows with matching values (in all columns except the first)
 across every tab of an Excel file.
 
 Usage:
-    python concatenate_rows.py "/path/to/your/file.xlsx"
+    1. Set INPUT_FILE_PATH below to your Excel file's path.
+    2. Run: python concatenate_rows.py
 
 Output:
     "/path/to/your/file_Concatenated_rows.xlsx"
     (original file is left untouched)
 """
 
-import sys
 import os
 import pandas as pd
+
+# ---------------------------------------------------------------------
+# SET YOUR INPUT FILE PATH HERE
+INPUT_FILE_PATH = "/path/to/your/file.xlsx"
+# ---------------------------------------------------------------------
 
 
 def merge_adjacent_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -71,14 +76,8 @@ def process_workbook(input_path: str) -> str:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python concatenate_rows.py <path_to_excel_file>")
-        sys.exit(1)
+    if not os.path.isfile(INPUT_FILE_PATH):
+        raise FileNotFoundError(f"Error: file not found -> {INPUT_FILE_PATH}")
 
-    input_file = sys.argv[1]
-    if not os.path.isfile(input_file):
-        print(f"Error: file not found -> {input_file}")
-        sys.exit(1)
-
-    out_file = process_workbook(input_file)
+    out_file = process_workbook(INPUT_FILE_PATH)
     print(f"Done. Output written to: {out_file}")
