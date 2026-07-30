@@ -213,19 +213,6 @@ EQ_TAB_POST_READ_ADJUSTMENTS = {
             "Contruction Type": "EQ Construction Type",
         },
     },
-    "R_Q_EQDed": {
-        # Column-NAME matching for "EQ Deductible Percent" <-> "Earthquake
-        # Deduct Percentage" is already handled by EQ_COLUMN_SYNONYM_PAIRS
-        # above -- no rename needed here.
-        # Config holds a decimal fraction (0.05, 0.1, 0.3) while the
-        # export's "Earthquake Deduct Percentage" column holds the same
-        # thing as a whole percentage (5, 10, 30) -- DIVIDE the EXPORT
-        # side by 100 (i.e. multiply by 0.01) so both sides land on the
-        # same number before comparing.
-        "scale_export": {
-            "Earthquake Deduct Percentage": 0.01,
-        },
-    },
 }
 
 # ------------------------------------------------------------------
@@ -246,6 +233,26 @@ RETROFIT_VALUE_SYNONYM_PAIRS = [
 EQ_PER_TAB_VALUE_SYNONYM_COLUMNS = {
     "R_O_EQYearBuilt": {
         "Retrofit": RETROFIT_VALUE_SYNONYM_PAIRS,
+    },
+}
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB, per-COLUMN numeric scale factors used ONLY during
+# row-comparison (never applied to the actual displayed data). The
+# column name given here is the CONFIG side's column name; its value is
+# multiplied by the factor purely to figure out whether a row matches --
+# if a row is flagged as unmatched, the ORIGINAL (unscaled) value is
+# still what shows up in the output detail sheet.
+#
+# R_Q_EQDed: Config's "EQ Deductible Percent" holds a whole percentage
+# (5, 10, 30); its mapped export column "Earthquake Deduct Percentage"
+# (matched via EQ_COLUMN_SYNONYM_PAIRS) holds the same thing as a decimal
+# fraction (0.05, 0.1, 0.3) -- dividing Config's value by 100 (factor
+# 0.01) before comparing lines the two up.
+# ------------------------------------------------------------------
+EQ_PER_TAB_VALUE_SCALE_COLUMNS = {
+    "R_Q_EQDed": {
+        "EQ Deductible Percent": 0.01,
     },
 }
 
@@ -596,32 +603,56 @@ def match_columns(config_cols, export_cols, synonym_groups=None):
     return matched, unmatched
 
 
-def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_synonym_cols=None):
+def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_synonym_cols=None,
+                  config_value_scale_cols=None):
     """
     value_synonym_cols: optional dict {clean_col(config_column_name): synonym_groups}
     applying value-level synonyms (e.g. "No Limit" == "No Sub-limit") only to
     specific matched columns.
+
+    config_value_scale_cols: optional dict {clean_col(config_column_name): factor}
+    -- multiplies the CONFIG side's value by `factor` ONLY for the purpose of
+    this comparison (e.g. Config's raw percent x0.01 to compare against an
+    export column already expressed as a decimal fraction). The dataframe
+    itself is never modified, so if a row ends up flagged as unmatched, the
+    ORIGINAL (unscaled) Config value is still what gets returned/displayed --
+    only the in-memory comparison uses the scaled number. Non-numeric values
+    are left as-is (the scale is simply skipped for that cell) rather than
+    raising, so string vs. number typing never breaks the comparison.
     """
     value_synonym_cols = value_synonym_cols or {}
+    config_value_scale_cols = config_value_scale_cols or {}
     config_cols = [m[0] for m in matched_cols]
     export_cols = [m[1] for m in matched_cols]
 
     # Per matched-column position, figure out which value-synonym group (if
     # any) applies -- keyed off the CONFIG side column name.
     per_col_synonyms = [value_synonym_cols.get(clean_col(c)) for c in config_cols]
+    # Per matched-column position, figure out which numeric scale factor (if
+    # any) applies to the CONFIG side -- also keyed off the CONFIG column name.
+    per_col_scale = [config_value_scale_cols.get(clean_col(c)) for c in config_cols]
 
-    def build_tuples(df, cols):
+    def build_tuples(df, cols, scale_factors=None):
         tuples = []
         for row in df[cols].itertuples(index=False):
-            t = tuple(
-                normalize_value(v, decimal_places, per_col_synonyms[idx])
-                for idx, v in enumerate(row)
-            )
-            tuples.append(t)
+            vals = []
+            for idx, v in enumerate(row):
+                val = v
+                factor = scale_factors[idx] if scale_factors else None
+                if factor is not None:
+                    # Ignore data type (string vs number) -- just try to
+                    # parse it; if it isn't numeric, leave it unscaled and
+                    # let normalize_value handle it as-is.
+                    try:
+                        val = float(v) * factor
+                    except (TypeError, ValueError):
+                        val = v
+                vals.append(normalize_value(val, decimal_places, per_col_synonyms[idx]))
+            tuples.append(tuple(vals))
         return tuples
 
-    config_tuples = build_tuples(config_df, config_cols)
-    export_tuples = build_tuples(export_df, export_cols)
+    config_tuples = build_tuples(config_df, config_cols, per_col_scale)
+    export_tuples = build_tuples(export_df, export_cols, None)
 
     export_counter = Counter(export_tuples)
     unmatched_config_idx = []
@@ -641,6 +672,8 @@ def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_
         else:
             unmatched_export_idx.append(i)
 
+    # NOTE: sourced from the ORIGINAL config_df/export_df (never the scaled
+    # values used above) -- so unmatched rows always display real data.
     return (
         config_df.iloc[unmatched_config_idx].copy(),
         export_df.iloc[unmatched_export_idx].copy(),
@@ -648,7 +681,7 @@ def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_
 
 
 def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=None,
-                  decimal_places=None, value_synonym_cols=None):
+                  decimal_places=None, value_synonym_cols=None, config_value_scale_cols=None):
     matched_cols, unmatched_config_cols = match_columns(
         list(config_df.columns), list(export_df.columns), synonym_groups
     )
@@ -660,7 +693,7 @@ def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=No
     # couldn't be aligned).
     if matched_cols:
         diff_config_rows, diff_export_rows = compare_rows(
-            config_df, export_df, matched_cols, decimal_places, value_synonym_cols
+            config_df, export_df, matched_cols, decimal_places, value_synonym_cols, config_value_scale_cols
         )
     else:
         diff_config_rows, diff_export_rows = config_df.copy(), export_df.copy()
@@ -798,6 +831,16 @@ def get_eq_value_synonym_cols_for_tab(config_tab_name):
     for tab_name, col_map in EQ_PER_TAB_VALUE_SYNONYM_COLUMNS.items():
         if clean_col(tab_name) == clean_col(config_tab_name):
             return {clean_col(col_name): build_synonym_groups(pairs) for col_name, pairs in col_map.items()}
+    return None
+
+
+def get_eq_value_scale_cols_for_tab(config_tab_name):
+    """Returns a {clean_col(config_column_name): factor} dict for EQ
+    per-tab comparison-only numeric scaling (e.g. R_Q_EQDed's "EQ
+    Deductible Percent" x0.01), or None if the tab has none configured."""
+    for tab_name, col_map in EQ_PER_TAB_VALUE_SCALE_COLUMNS.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return {clean_col(col_name): factor for col_name, factor in col_map.items()}
     return None
 
 
@@ -1123,11 +1166,7 @@ def main(input_file):
                 #   - renames R_O_EQYearBuilt's "County.1" -> "County Code"
                 #     and "Construction Type"/"Contruction Type" -> "EQ
                 #     Construction Type" so they match Config's names
-                #     exactly (no synonym lookup needed once renamed),
-                #   - scales R_Q_EQDed's "Earthquake Deduct Percentage"
-                #     (export side) /100 so 5/10/30 lines up with
-                #     Config's 0.05/0.1/0.3 -- the column-NAME match itself
-                #     is already handled by EQ_COLUMN_SYNONYM_PAIRS.
+                #     exactly (no synonym lookup needed once renamed).
                 config_df = apply_eq_post_read_adjustments(config_df, target_config_tab, "config")
                 export_df = apply_eq_post_read_adjustments(export_df, target_config_tab, "export")
 
@@ -1135,9 +1174,21 @@ def main(input_file):
                 # "Retrofit" column treating Yes/Y and No/N as equal).
                 current_eq_value_synonym_cols = get_eq_value_synonym_cols_for_tab(target_config_tab)
 
+                # Per-tab, per-column numeric scale applied ONLY during
+                # comparison (e.g. R_Q_EQDed's "EQ Deductible Percent" x0.01
+                # so Config's 5/10/30 lines up with the export's 0.05/0.1/0.3
+                # -- name matching for that pair is already handled by
+                # EQ_COLUMN_SYNONYM_PAIRS). If the row still doesn't match,
+                # the ORIGINAL unscaled Config value is what shows in the
+                # output detail sheet, since the dataframe itself is never
+                # touched -- only the in-memory comparison uses the scaled
+                # number.
+                current_eq_value_scale_cols = get_eq_value_scale_cols_for_tab(target_config_tab)
+
                 res = process_pair(
                     config_df, export_df, target_config_tab, sheet_name,
                     eq_synonyms, decimal_places, current_eq_value_synonym_cols,
+                    current_eq_value_scale_cols,
                 )
                 matched_config_tabs.add(target_config_tab)
                 summary_rows.append(res)
