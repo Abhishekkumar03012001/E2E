@@ -61,7 +61,7 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    table (all rows, both sides) rather than a partial diff, with the
    unmatched column's header colored red. When all columns match, only
    the genuinely mismatched rows are shown.
-9. Output file name: "Comparison_Report_<State>_<timestamp>.xlsx" saved
+9. Output file name: "<State>_Config_Builder_QC_<timestamp>.xlsx" saved
    to the output folder path given in the Inputs tab (C58).
 10. The "Summary of Results" sheet is written LAST in the sheet order
    (i.e. it appears as the final tab), but is still set as the ACTIVE
@@ -214,18 +214,15 @@ EQ_TAB_POST_READ_ADJUSTMENTS = {
         },
     },
     "R_Q_EQDed": {
-        # Export's column is literally named "Deductible Factors" --
-        # rename it to match Config's "EQ Deductible Percent" so an exact
-        # -name match succeeds.
-        "rename": {
-            "Deductible Factors": "EQ Deductible Percent",
-        },
-        # Config holds whole percentages (5, 10, 30) while the (now
-        # renamed) export column holds the same thing as a decimal
-        # fraction (0.05, 0.1, 0.3) -- multiply the EXPORT side by 100 so
-        # both sides land on the same number before comparing.
+        # Column-NAME matching for "EQ Deductible Percent" <-> "Earthquake
+        # Deduct Percentage" is already handled by EQ_COLUMN_SYNONYM_PAIRS
+        # above -- no rename needed here.
+        # Config holds whole percentages (5, 10, 30) while the export's
+        # "Earthquake Deduct Percentage" column holds the same thing as a
+        # decimal fraction (0.05, 0.1, 0.3) -- multiply the EXPORT side by
+        # 100 so both sides land on the same number before comparing.
         "scale_export": {
-            "EQ Deductible Percent": 100,
+            "Earthquake Deduct Percentage": 100,
         },
     },
 }
@@ -1018,8 +1015,8 @@ def write_report(summary_rows, detail_sheets, output_folder, state_name):
 
     os.makedirs(output_folder, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    state_part = f"_{state_name}" if state_name else ""
-    out_path = os.path.join(output_folder, f"Comparison_Report{state_part}_{ts}.xlsx")
+    state_str = str(state_name).strip() if state_name else "UnknownState"
+    out_path = os.path.join(output_folder, f"{state_str}_Config_Builder_QC_{ts}.xlsx")
     wb.save(out_path)
     return out_path
 
@@ -1126,9 +1123,10 @@ def main(input_file):
                 #     and "Construction Type"/"Contruction Type" -> "EQ
                 #     Construction Type" so they match Config's names
                 #     exactly (no synonym lookup needed once renamed),
-                #   - renames R_Q_EQDed's "Deductible Factors" -> "EQ
-                #     Deductible Percent" and scales the (renamed) export
-                #     column x100 so 0.05/0.1/0.3 lines up with 5/10/30.
+                #   - scales R_Q_EQDed's "Earthquake Deduct Percentage"
+                #     (export side) x100 so 0.05/0.1/0.3 lines up with
+                #     Config's 5/10/30 -- the column-NAME match itself is
+                #     already handled by EQ_COLUMN_SYNONYM_PAIRS.
                 config_df = apply_eq_post_read_adjustments(config_df, target_config_tab, "config")
                 export_df = apply_eq_post_read_adjustments(export_df, target_config_tab, "export")
 
