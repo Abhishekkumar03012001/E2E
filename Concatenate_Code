@@ -1,1 +1,84 @@
+"""
+Concatenate adjacent rows with matching values (in all columns except the first)
+across every tab of an Excel file.
 
+Usage:
+    python concatenate_rows.py "/path/to/your/file.xlsx"
+
+Output:
+    "/path/to/your/file_Concatenated_rows.xlsx"
+    (original file is left untouched)
+"""
+
+import sys
+import os
+import pandas as pd
+
+
+def merge_adjacent_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Group consecutive rows that have identical values in every column
+    except the first one. The first column's values for each group are
+    joined together with ', '.
+    """
+    if df.empty:
+        return df
+
+    first_col = df.columns[0]
+    other_cols = df.columns[1:]
+
+    # Build a comparison key for "other columns" that treats NaN consistently
+    # (NaN != NaN by default, so we fill NaN with a placeholder string just
+    # for comparison purposes).
+    compare_df = df[other_cols].fillna("__NA__").astype(str)
+
+    # Identify where a new group starts: first row, or any row whose
+    # "other columns" differ from the immediately preceding row.
+    is_new_group = (compare_df != compare_df.shift()).any(axis=1)
+    is_new_group.iloc[0] = True
+    group_id = is_new_group.cumsum()
+
+    # Aggregate: join first column values with ', ', keep first value of
+    # every other column (they're identical within a group by definition).
+    agg_dict = {col: "first" for col in other_cols}
+    grouped = df.groupby(group_id, sort=False).agg(
+        **{
+            first_col: (first_col, lambda x: ", ".join(x.astype(str))),
+            **{col: (col, "first") for col in other_cols},
+        }
+    )
+
+    # Restore original column order
+    grouped = grouped[[first_col, *other_cols]].reset_index(drop=True)
+    return grouped
+
+
+def process_workbook(input_path: str) -> str:
+    base, ext = os.path.splitext(input_path)
+    output_path = f"{base}_Concatenated_rows.xlsx"
+
+    # Read every sheet (header assumed to be the first row of each tab)
+    all_sheets = pd.read_excel(input_path, sheet_name=None, header=0)
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        for sheet_name, df in all_sheets.items():
+            result_df = merge_adjacent_rows(df)
+            # Excel sheet names max 31 chars
+            safe_name = sheet_name[:31]
+            result_df.to_excel(writer, sheet_name=safe_name, index=False)
+
+    return output_path
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python concatenate_rows.py <path_to_excel_file>")
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    if not os.path.isfile(input_file):
+        print(f"Error: file not found -> {input_file}")
+        sys.exit(1)
+
+    out_file = process_workbook(input_file)
+    print(f"Done. Output written to: {out_file}")
