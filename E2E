@@ -77,6 +77,7 @@ import os
 import re
 from collections import Counter
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -121,6 +122,8 @@ EXCLUDED_TAB_NAMES = [
     "All_Pricing_Variables",
     "Rating_Index",
     "Tier_Index",
+    "County",
+    "Expense Load LL",
 ]
 
 
@@ -133,7 +136,7 @@ ROOF_LIMIT_VALUE_COLUMN = "Limit"
 
 VALIDATED = "Validated - All Rows Match"
 MANUAL_VALIDATION = "Manual validation required"
-MISSING_IN_CONFIG = "Tab missing in config file"
+MISSING_IN_CONFIG = "Factor Tab not found in Config"
 MISSING_IN_EXPORT = "Factor Tab not Found in export"
 
 # ------------------------------------------------------------------
@@ -158,6 +161,22 @@ RADAR_COLUMN_SYNONYM_PAIRS = [
     ("Rate", "MinimumSchedProperty"),
     ("NumSqft", "NumSqft (Upper Bound)"),
 ]
+
+# ------------------------------------------------------------------
+# Water Backup tabs: optionally skip rows whose coverage amount is low.
+# Set SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS to False to turn this off
+# entirely and compare every row as normal.
+# ------------------------------------------------------------------
+SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS = True
+
+WATER_BACKUP_TABS = [
+    "R_O_WaterBackup_Contents",
+    "R_O_WaterBackup_Listed",
+]
+WATER_BACKUP_COVERAGE_COLUMN = "Coverage Amount (Dollar or Percent)"
+# Rows where the coverage column's value is <= this threshold are skipped
+# (not compared, not counted as unmatched) for the tabs above.
+WATER_BACKUP_COVERAGE_THRESHOLD = 100
 
 # ------------------------------------------------------------------
 # EQ per-CONFIG-TAB "post read" adjustments. These are applied directly
@@ -189,6 +208,24 @@ EQ_TAB_POST_READ_ADJUSTMENTS = {
         "rename": {
             "County.1": "County Code",
             "Construction Type": "EQ Construction Type",
+            # Export file has a spelling error ("Contruction" missing the
+            # "s") -- mapped here too so the rename still fires.
+            "Contruction Type": "EQ Construction Type",
+        },
+    },
+    "R_Q_EQDed": {
+        # Export's column is literally named "Deductible Factors" --
+        # rename it to match Config's "EQ Deductible Percent" so an exact
+        # -name match succeeds.
+        "rename": {
+            "Deductible Factors": "EQ Deductible Percent",
+        },
+        # Config holds whole percentages (5, 10, 30) while the (now
+        # renamed) export column holds the same thing as a decimal
+        # fraction (0.05, 0.1, 0.3) -- multiply the EXPORT side by 100 so
+        # both sides land on the same number before comparing.
+        "scale_export": {
+            "EQ Deductible Percent": 100,
         },
     },
 }
@@ -243,12 +280,14 @@ SOURCE_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="s
 SOURCE_FONT = Font(bold=True, italic=True, size=10, name="Calibri", color="1F4E78")
 
 RESULT_COLORS = {
-    # Validated rows are now WHITE by default (was green) -- everything
-    # else (Manual validation / Missing tabs) keeps its color coding.
+    # Validated rows are WHITE by default. The "Manual validation" and
+    # "Factor Tab not found" colors are SWAPPED from before: missing-tab
+    # rows now get the (former) manual-validation yellow, and manual
+    # validation rows now get the (former) missing-tab red/pink.
     VALIDATED: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
-    MANUAL_VALIDATION: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
-    MISSING_IN_CONFIG: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
-    MISSING_IN_EXPORT: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+    MANUAL_VALIDATION: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+    MISSING_IN_CONFIG: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+    MISSING_IN_EXPORT: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
 }
 # NOTE: font is plain black, not bold -- only the cell BACKGROUND fill
 # communicates the result now (see RESULT_COLORS above).
@@ -373,6 +412,22 @@ def read_df_first_table(file_path, sheet_name, header_row=1):
     return df
 
 
+DEFAULT_COMPARISON_DECIMAL_PLACES = 4
+
+
+def round_half_up(value, decimals):
+    """Rounds `value` to `decimals` decimal places using ROUND HALF UP
+    (traditional rounding: 0.5 always rounds away from zero), unlike
+    Python's built-in round() which uses banker's rounding (half-to-even).
+    Uses Decimal internally for precision. Returns a float."""
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return value
+    quant = Decimal("1").scaleb(-decimals) if decimals > 0 else Decimal("1")
+    return float(d.quantize(quant, rounding=ROUND_HALF_UP))
+
+
 def normalize_value(v, decimal_places=None, value_synonym_groups=None):
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
@@ -385,15 +440,16 @@ def normalize_value(v, decimal_places=None, value_synonym_groups=None):
             # to the exact same string.
             return f"__SYN__{value_synonym_groups[cs]}"
 
+    # Numeric comparisons always round -- using ROUND HALF UP -- to
+    # `decimal_places` if given (from Inputs!C8), otherwise to a default
+    # of DEFAULT_COMPARISON_DECIMAL_PLACES (4) places.
+    dp = decimal_places if decimal_places is not None else DEFAULT_COMPARISON_DECIMAL_PLACES
     try:
         f = float(s)
-        if decimal_places is not None:
-            f = round(f, decimal_places)
-        if f.is_integer():
+        f = round_half_up(f, dp)
+        if f == int(f):
             return str(int(f))
-        if decimal_places is not None:
-            return f"{f:.{decimal_places}f}".rstrip("0").rstrip(".")
-        return str(f)
+        return f"{f:.{dp}f}".rstrip("0").rstrip(".")
     except ValueError:
         return s.lower()
 
@@ -653,13 +709,48 @@ def missing_row(config_tab="NA", export_tab="NA", result=""):
     }
 
 
-def apply_eq_post_read_adjustments(df, config_tab_name):
+def filter_low_coverage_rows(df, column_name=WATER_BACKUP_COVERAGE_COLUMN, threshold=WATER_BACKUP_COVERAGE_THRESHOLD):
+    """For Water Backup tabs: drops rows where `column_name`'s value is
+    <= `threshold`. Looks the column up case/space/punctuation-
+    insensitively (and also tries the Radar synonym name "Coverage Amount
+    (Dollar)", since Config and export may use either spelling). Rows
+    with a non-numeric/blank value in that column are kept as-is (only
+    rows that clearly parse as a low number are dropped). A no-op if the
+    column can't be found at all."""
+    if df is None or df.empty:
+        return df
+
+    resolved_col = resolve_name(column_name, df.columns)
+    if not resolved_col:
+        resolved_col = resolve_name("Coverage Amount (Dollar)", df.columns)
+    if not resolved_col:
+        return df
+
+    def keep_row(value):
+        try:
+            return float(value) > threshold
+        except (TypeError, ValueError):
+            return True  # non-numeric/blank -- keep, don't guess
+
+    mask = df[resolved_col].apply(keep_row)
+    return df[mask].reset_index(drop=True)
+
+
+def apply_eq_post_read_adjustments(df, config_tab_name, side):
     """Applies EQ_TAB_POST_READ_ADJUSTMENTS to `df` (whichever EQ config
-    tab is currently being processed) -- dropping any configured columns
-    and renaming any configured columns, right after the dataframe is
-    read from Excel and before any matching/comparison logic runs. A
-    no-op if the tab has no entry, or if a configured column isn't
-    actually present in this particular dataframe."""
+    tab is currently being processed) -- dropping any configured columns,
+    renaming any configured columns, and numerically scaling any
+    configured columns -- right after the dataframe is read from Excel
+    and before any matching/comparison logic runs. A no-op if the tab has
+    no entry, or if a configured column isn't actually present in this
+    particular dataframe.
+
+    `side` must be "config" or "export" -- "drop"/"rename" apply
+    regardless of side (harmless no-ops on whichever side doesn't have
+    that column), but "scale_config"/"scale_export" only apply to the
+    matching side, since a numeric scale (e.g. x100) should only ever be
+    applied to ONE side of a comparison.
+    """
     for tab_name, adjustments in EQ_TAB_POST_READ_ADJUSTMENTS.items():
         if clean_col(tab_name) != clean_col(config_tab_name):
             continue
@@ -678,7 +769,28 @@ def apply_eq_post_read_adjustments(df, config_tab_name):
             if actual_rename:
                 df = df.rename(columns=actual_rename)
 
+        scale_map = adjustments.get(f"scale_{side}")
+        if scale_map:
+            for col_name, factor in scale_map.items():
+                resolved_col = resolve_name(col_name, df.columns)
+                if resolved_col:
+                    df[resolved_col] = df[resolved_col].apply(
+                        lambda v, f=factor: _scale_value(v, f)
+                    )
+
     return df
+
+
+def _scale_value(v, factor):
+    """Multiplies a (string) numeric value by `factor`, returned as a
+    string so it stays consistent with the rest of the string-typed
+    dataframe. Non-numeric/blank values are returned unchanged."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return v
+    try:
+        return str(float(v) * factor)
+    except (TypeError, ValueError):
+        return v
 
 
 def get_eq_value_synonym_cols_for_tab(config_tab_name):
@@ -964,6 +1076,15 @@ def main(input_file):
             if resolved_cfg:
                 config_df = read_df(paths["config_file"], resolved_cfg, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
+
+                # Water Backup tabs: optionally skip rows with a low
+                # coverage amount, on both sides, before comparing.
+                if SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS and any(
+                    clean_col(t) == clean_col(resolved_cfg) for t in WATER_BACKUP_TABS
+                ):
+                    config_df = filter_low_coverage_rows(config_df)
+                    export_df = filter_low_coverage_rows(export_df)
+
                 res = process_pair(config_df, export_df, resolved_cfg, sheet_name, radar_synonyms, decimal_places)
                 matched_config_tabs.add(resolved_cfg)
                 summary_rows.append(res)
@@ -1002,11 +1123,14 @@ def main(input_file):
                 #   - drops "State" entirely (both sides) for
                 #     R_O_EQExpense / R_O_LossAsessmentEQ (or "R_O_LossAssessmentEQ"),
                 #   - renames R_O_EQYearBuilt's "County.1" -> "County Code"
-                #     and "Construction Type" -> "EQ Construction Type" so
-                #     they match Config's names exactly (no synonym lookup
-                #     needed once renamed).
-                config_df = apply_eq_post_read_adjustments(config_df, target_config_tab)
-                export_df = apply_eq_post_read_adjustments(export_df, target_config_tab)
+                #     and "Construction Type"/"Contruction Type" -> "EQ
+                #     Construction Type" so they match Config's names
+                #     exactly (no synonym lookup needed once renamed),
+                #   - renames R_Q_EQDed's "Deductible Factors" -> "EQ
+                #     Deductible Percent" and scales the (renamed) export
+                #     column x100 so 0.05/0.1/0.3 lines up with 5/10/30.
+                config_df = apply_eq_post_read_adjustments(config_df, target_config_tab, "config")
+                export_df = apply_eq_post_read_adjustments(export_df, target_config_tab, "export")
 
                 # Per-tab, per-column VALUE synonyms (e.g. R_O_EQYearBuilt's
                 # "Retrofit" column treating Yes/Y and No/N as equal).
@@ -1037,7 +1161,9 @@ def main(input_file):
             sheet1_name = terr_wb1.sheetnames[0]
             export_df1 = read_df(paths["territory_file"], sheet1_name, 1)
 
-            export_tab_label = sheet1_name
+            # Label uses the FILE name (not the sheet name), per request.
+            file1_name = os.path.basename(str(paths["territory_file"]))
+            export_tab_label = file1_name
             combined_export_df = export_df1
 
             territory_file2_path = paths.get("territory_file2")
@@ -1050,7 +1176,8 @@ def main(input_file):
                 combined_export_df = merge_export_dataframes(
                     export_df1, export_df2, TERRITORY_MERGE_COLUMN
                 )
-                export_tab_label = f"{sheet1_name} + {sheet2_name}"
+                file2_name = os.path.basename(str(territory_file2_path))
+                export_tab_label = f"{file1_name} + {file2_name}"
 
             res = process_pair(
                 config_df, combined_export_df, resolved_terr_cfg, export_tab_label, tr_synonyms, decimal_places
@@ -1074,10 +1201,12 @@ def main(input_file):
             roof_wb = load_workbook(paths["roof_file"], data_only=True)
             roof_sheet_name = roof_wb.sheetnames[0]
             export_df = read_df(paths["roof_file"], roof_sheet_name, 1)
+            # Label uses the FILE name (not the sheet name), per request.
+            roof_file_label = os.path.basename(str(paths["roof_file"]))
             # NOTE: passes roof_value_synonym_cols so "No Limit" (Config) and
             # "No Sub-limit" (export) are treated as equal in the "Limit" column.
             res = process_pair(
-                config_df, export_df, resolved_roof_cfg, roof_sheet_name, None,
+                config_df, export_df, resolved_roof_cfg, roof_file_label, None,
                 decimal_places, roof_value_synonym_cols
             )
             matched_config_tabs.add(resolved_roof_cfg)
