@@ -10,7 +10,11 @@ Option Explicit
 ' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
 '====================================================================
 
-Dim colResults As Collection      ' holds arrays(1 to 3): Name, Result, Comment
+Dim resCount As Long
+Dim resName() As String
+Dim resResult() As String
+Dim resComment() As String
+
 Dim wbProposed As Workbook
 Dim wbCRL As Workbook
 
@@ -25,7 +29,10 @@ Sub ValidateCRLConfig()
 
     On Error GoTo ErrHandler
 
-    Set colResults = New Collection
+    resCount = 0
+    ReDim resName(1 To 1)
+    ReDim resResult(1 To 1)
+    ReDim resComment(1 To 1)
 
     Set wsReadMe = ThisWorkbook.Sheets("Read Me")
     proposedPath = Trim(wsReadMe.Range("D23").Value)
@@ -91,7 +98,7 @@ ErrHandler:
     On Error Resume Next
     If Not wbProposed Is Nothing Then wbProposed.Close SaveChanges:=False
     If Not wbCRL Is Nothing Then wbCRL.Close SaveChanges:=False
-    MsgBox "Error: " & Err.Description, vbCritical
+    MsgBox "Error: " & Err.Description & " (Line context: " & Erl & ")", vbCritical
 End Sub
 
 '--------------------------------------------------------------------
@@ -126,11 +133,14 @@ Function LastRow(ws As Worksheet, Optional colLetter As String = "A") As Long
 End Function
 
 Sub AddResult(tabName As String, result As String, comment As String)
-    Dim arr(1 To 3) As String
-    arr(1) = tabName
-    arr(2) = result
-    arr(3) = comment
-    colResults.Add arr
+    resCount = resCount + 1
+    ReDim Preserve resName(1 To resCount)
+    ReDim Preserve resResult(1 To resCount)
+    ReDim Preserve resComment(1 To resCount)
+
+    resName(resCount) = tabName
+    resResult(resCount) = result
+    resComment(resCount) = comment
 End Sub
 
 '--------------------------------------------------------------------
@@ -588,16 +598,16 @@ End Sub
 ' (runs BEFORE BuildSummarySheet)
 '--------------------------------------------------------------------
 Sub CopyFailingSheets()
-    Dim item As Variant
+    Dim i As Long
     Dim sName As String
     Dim insertAfterIndex As Long
     Dim newName As String
 
     insertAfterIndex = ThisWorkbook.Sheets("Read Me").Index
 
-    For Each item In colResults
-        If item(2) = "Manual validation required" Then
-            sName = item(1)
+    For i = 1 To resCount
+        If resResult(i) = "Manual validation required" Then
+            sName = resName(i)
             If SheetExists(wbCRL, sName) Then
                 wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
                 insertAfterIndex = insertAfterIndex + 1
@@ -608,7 +618,7 @@ Sub CopyFailingSheets()
                 On Error GoTo 0
             End If
         End If
-    Next item
+    Next i
 End Sub
 
 '--------------------------------------------------------------------
@@ -618,7 +628,6 @@ End Sub
 Sub BuildSummarySheet()
     Dim wsSummary As Worksheet
     Dim i As Long
-    Dim item As Variant
 
     Application.DisplayAlerts = False
     On Error Resume Next
@@ -635,23 +644,20 @@ Sub BuildSummarySheet()
     wsSummary.Range("D1").Value = "Analyst Comment"
     wsSummary.Range("A1:D1").Font.Bold = True
 
-    i = 2
-    For Each item In colResults
-        wsSummary.Cells(i, 1).Value = item(1)
-        wsSummary.Cells(i, 2).Value = item(2)
-        wsSummary.Cells(i, 3).Value = item(3)
-        wsSummary.Cells(i, 4).Value = ""
+    For i = 1 To resCount
+        wsSummary.Cells(i + 1, 1).Value = resName(i)
+        wsSummary.Cells(i + 1, 2).Value = resResult(i)
+        wsSummary.Cells(i + 1, 3).Value = resComment(i)
+        wsSummary.Cells(i + 1, 4).Value = ""
 
-        Select Case item(2)
+        Select Case resResult(i)
             Case "Manual validation required"
-                wsSummary.Cells(i, 2).Interior.Color = RGB(255, 0, 0)
-                wsSummary.Cells(i, 2).Font.Color = RGB(255, 255, 255)
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 0, 0)
+                wsSummary.Cells(i + 1, 2).Font.Color = RGB(255, 255, 255)
             Case "Sheet does not exists"
-                wsSummary.Cells(i, 2).Interior.Color = RGB(255, 255, 0)
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 255, 0)
         End Select
-
-        i = i + 1
-    Next item
+    Next i
 
     With wsSummary
         .Columns("A").ColumnWidth = 14
@@ -659,7 +665,7 @@ Sub BuildSummarySheet()
         .Columns("C").ColumnWidth = 70
         .Columns("D").ColumnWidth = 30
         .Columns("C").WrapText = True
-        .Rows("2:" & (i - 1)).AutoFit
-        .Range("A1:D" & (i - 1)).Borders.LineStyle = xlContinuous
+        If resCount > 0 Then .Rows("2:" & (resCount + 1)).AutoFit
+        .Range("A1:D" & (resCount + 1)).Borders.LineStyle = xlContinuous
     End With
 End Sub
