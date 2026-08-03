@@ -4,6 +4,7 @@ Option Explicit
 ' CRL CONFIG VALIDATION MACRO
 ' - Reads Proposed Config path (D23), CRL Config path (D24) and
 '   State abbreviation (D15) from "Read Me" sheet in ThisWorkbook
+' - Deletes all sheets except "Read Me" before each run
 ' - Validates a defined list of tabs in CRL Config workbook
 ' - Builds a "Summary" sheet right after "Read Me"
 ' - Copies any sheet that exists but fails validation next to Summary
@@ -38,6 +39,9 @@ Sub ValidateCRLConfig()
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
+
+    '---------------- Clean up sheets from any previous run ----------------
+    CleanupSheets
 
     Set wbProposed = Workbooks.Open(proposedPath, ReadOnly:=True)
     Set wbCRL = Workbooks.Open(crlPath, ReadOnly:=True)
@@ -85,6 +89,21 @@ ErrHandler:
     If Not wbProposed Is Nothing Then wbProposed.Close SaveChanges:=False
     If Not wbCRL Is Nothing Then wbCRL.Close SaveChanges:=False
     MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+'--------------------------------------------------------------------
+' Delete every sheet in ThisWorkbook except "Read Me"
+'--------------------------------------------------------------------
+Sub CleanupSheets()
+    Dim ws As Worksheet
+    Dim i As Long
+
+    For i = ThisWorkbook.Sheets.Count To 1 Step -1
+        Set ws = ThisWorkbook.Sheets(i)
+        If ws.Name <> "Read Me" Then
+            ws.Delete
+        End If
+    Next i
 End Sub
 
 '--------------------------------------------------------------------
