@@ -1,12 +1,13 @@
 """
 extract_headers_footers.py
 
-Extracts the header and footer text from up to 3 PDFs (page by page) and
-writes them into an Excel workbook:
+Extracts the header and footer text from EVERY PDF found in a folder
+(page by page) and writes them into an Excel workbook:
 
     Column A = PDF 1 headers   Column B = PDF 1 footers
     Column C = PDF 2 headers   Column D = PDF 2 footers
     Column E = PDF 3 headers   Column F = PDF 3 footers
+    ... and so on for however many PDFs are in the folder.
 
 Row 2 = page 1 of each pdf, Row 3 = page 2, and so on.
 
@@ -27,22 +28,32 @@ percentage, not fixed points, so it works across differently-sized pages).
 You can tune HEADER_BAND_PCT / FOOTER_BAND_PCT below if your headers/footers
 are taller or shorter than the default guess.
 
-USAGE
------
-    python extract_headers_footers.py pdf1.pdf [pdf2.pdf] [pdf3.pdf] \
-        --output output.xlsx
+HOW TO USE
+----------
+1. Set FOLDER_PATH below to the folder containing your PDFs.
+2. (Optional) Set OUTPUT_PATH to where you want the Excel file saved.
+3. Run:  python extract_headers_footers.py
 
-    # or just edit the DEFAULT_PDF_PATHS list below and run with no args.
+The script picks up every ".pdf" file in FOLDER_PATH (sorted alphabetically)
+as PDF1, PDF2, PDF3, ... — there is no limit on how many.
 """
 
-import argparse
 import sys
 from pathlib import Path
 
 import pdfplumber
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
+
+# ----------------------------------------------------------------------
+# SET THIS: folder containing your PDFs. Every .pdf file inside it will
+# be processed, in alphabetical order, as PDF1, PDF2, PDF3, ...
+# ----------------------------------------------------------------------
+FOLDER_PATH = r"/path/to/your/pdf/folder"
+
+# Where to save the resulting Excel file.
+OUTPUT_PATH = r"headers_footers_output.xlsx"
 
 # ----------------------------------------------------------------------
 # CONFIG — tune these if headers/footers are being over/under captured
@@ -53,10 +64,6 @@ HEADER_BAND_PCT = 0.15
 
 # Fraction of page height (from the bottom) considered the "footer" band.
 FOOTER_BAND_PCT = 0.10
-
-# If you'd rather hardcode paths instead of passing them as CLI args,
-# fill these in and just run: python extract_headers_footers.py
-DEFAULT_PDF_PATHS = []
 
 CASE_KEYWORDS = {
     "Case 1 (Rating Manual)": "rating manual",
@@ -98,10 +105,25 @@ def extract_header_footer(pdf_path: str):
     return results
 
 
-def build_excel(all_pdfs_data, output_path: str):
+def get_pdf_files(folder_path: str):
+    """Return every .pdf file in folder_path, sorted alphabetically."""
+    folder = Path(folder_path)
+    if not folder.exists() or not folder.is_dir():
+        print(f"ERROR: folder not found: {folder_path}")
+        sys.exit(1)
+
+    pdf_files = sorted(folder.glob("*.pdf"))
+    if not pdf_files:
+        print(f"ERROR: no .pdf files found in: {folder_path}")
+        sys.exit(1)
+
+    return pdf_files
+
+
+def build_excel(all_pdfs_data, pdf_names, output_path: str):
     """
     all_pdfs_data: list of lists of (header, footer) tuples, one list per pdf
-    (in the order pdf1, pdf2, pdf3).
+    pdf_names: list of filenames, same order as all_pdfs_data
     """
     wb = Workbook()
     ws = wb.active
@@ -110,11 +132,12 @@ def build_excel(all_pdfs_data, output_path: str):
     bold = Font(bold=True)
 
     # Header row (row 1): PDF1 Header, PDF1 Footer, PDF2 Header, PDF2 Footer, ...
-    for pdf_index in range(len(all_pdfs_data)):
+    # Column header includes the actual filename for clarity.
+    for pdf_index, pdf_name in enumerate(pdf_names):
         header_col = pdf_index * 2 + 1       # A, C, E ...
         footer_col = header_col + 1          # B, D, F ...
-        ws.cell(row=1, column=header_col, value=f"PDF{pdf_index + 1} Header").font = bold
-        ws.cell(row=1, column=footer_col, value=f"PDF{pdf_index + 1} Footer").font = bold
+        ws.cell(row=1, column=header_col, value=f"PDF{pdf_index + 1} Header ({pdf_name})").font = bold
+        ws.cell(row=1, column=footer_col, value=f"PDF{pdf_index + 1} Footer ({pdf_name})").font = bold
 
     # Figure out the max number of pages across all pdfs so every column
     # gets a row even if one pdf is shorter than the others.
@@ -134,8 +157,8 @@ def build_excel(all_pdfs_data, output_path: str):
 
     # Reasonable column widths + wrap text so multi-line headers/footers
     # are readable instead of one giant unreadable line.
-    from openpyxl.styles import Alignment
-    for col_idx in range(1, len(all_pdfs_data) * 2 + 1):
+    total_cols = len(all_pdfs_data) * 2
+    for col_idx in range(1, total_cols + 1):
         col_letter = get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = 45
     for row in ws.iter_rows(min_row=2, max_row=max_pages + 1):
@@ -146,42 +169,19 @@ def build_excel(all_pdfs_data, output_path: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Extract PDF headers/footers (up to 3 PDFs) into an Excel file."
-    )
-    parser.add_argument(
-        "pdfs",
-        nargs="*",
-        default=DEFAULT_PDF_PATHS,
-        help="Path(s) to 1, 2, or 3 PDF files.",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        default="headers_footers_output.xlsx",
-        help="Path to the output Excel file (default: headers_footers_output.xlsx)",
-    )
-    args = parser.parse_args()
-
-    pdf_paths = args.pdfs
-    if not pdf_paths:
-        print("No PDF paths given. Pass 1-3 pdf paths as arguments, e.g.:")
-        print("  python extract_headers_footers.py pdf1.pdf pdf2.pdf pdf3.pdf")
-        sys.exit(1)
-    if len(pdf_paths) > 3:
-        print("This script supports a maximum of 3 PDFs at a time.")
-        sys.exit(1)
+    pdf_files = get_pdf_files(FOLDER_PATH)
+    print(f"Found {len(pdf_files)} PDF(s) in {FOLDER_PATH}:")
+    for f in pdf_files:
+        print(f"  - {f.name}")
 
     all_pdfs_data = []
-    for i, pdf_path in enumerate(pdf_paths, start=1):
-        path = Path(pdf_path)
-        if not path.exists():
-            print(f"ERROR: file not found: {pdf_path}")
-            sys.exit(1)
+    pdf_names = []
 
-        print(f"\nProcessing PDF {i}: {pdf_path}")
-        page_data = extract_header_footer(str(path))
+    for i, pdf_path in enumerate(pdf_files, start=1):
+        print(f"\nProcessing PDF {i}: {pdf_path.name}")
+        page_data = extract_header_footer(str(pdf_path))
         all_pdfs_data.append(page_data)
+        pdf_names.append(pdf_path.name)
 
         # Report detected case using the first page's header
         if page_data:
@@ -191,8 +191,8 @@ def main():
         else:
             print("  WARNING: no pages found in this PDF.")
 
-    build_excel(all_pdfs_data, args.output)
-    print(f"\nDone. Excel file written to: {args.output}")
+    build_excel(all_pdfs_data, pdf_names, OUTPUT_PATH)
+    print(f"\nDone. Excel file written to: {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
