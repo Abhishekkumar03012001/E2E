@@ -1,231 +1,113 @@
-"""
-extract_headers_footers.py
+import fitz  # PyMuPDF
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font
 
-Extracts the header and footer text from EVERY PDF found in a folder
-(page by page) and writes them into an Excel workbook:
+# =====================================================
+# INPUT FILES
+# =====================================================
+excel_file = r"input.xlsx"
+pdf_file = r"input.pdf"
+output_excel = r"Output.xlsx"
 
-    Column A = PDF 1 headers   Column B = PDF 1 footers
-    Column C = PDF 2 headers   Column D = PDF 2 footers
-    Column E = PDF 3 headers   Column F = PDF 3 footers
-    ... and so on for however many PDFs are in the folder.
+sheet_name = "Inputs"
 
-Row 2 = page 1 of each pdf, Row 3 = page 2, and so on.
+# =====================================================
+# OPEN PDF
+# =====================================================
+doc = fitz.open(pdf_file)
+total_pages = len(doc)
 
-HOW HEADER/FOOTER IS DETECTED (line-count based, not position-based)
----------------------------------------------------------------------
-Each PDF is first classified into one of 3 known formats, based on keywords
-found on its first page:
+# Store text of every page
+page_texts = []
+for page in doc:
+    text = page.get_text("text")
+    page_texts.append(text.lower())
 
-    Case 1: "Rating Manual"            -> header = first 4 lines of the page
-                                           footer = last line of the page
-    Case 2: "Rate Order Calculation"   -> header = first 2 lines of the page
-                                           footer = (none - this format has no footer)
-    Case 3: "Rule Manual"              -> header = first 3 lines of the page
-                                           footer = last line of the page
+# =====================================================
+# OPEN EXCEL
+# =====================================================
+wb = load_workbook(excel_file)
+ws = wb[sheet_name]
 
-The case is detected ONCE per pdf (from page 1) and then applied to every
-page in that pdf, since the format is consistent throughout a document.
+# =====================================================
+# HEADER FORMATTING
+# =====================================================
+header_fill = PatternFill(fill_type="solid", start_color="00005A", end_color="00005A")
+header_font = Font(color="FFFFFF", bold=True)
 
-If a PDF doesn't match any of the 3 known keywords, it falls back to
-DEFAULT_HEADER_LINES / DEFAULT_HAS_FOOTER (edit below if needed).
+green_fill = PatternFill(fill_type="solid", start_color="92D050", end_color="92D050")
+yellow_fill = PatternFill(fill_type="solid", start_color="FFD966", end_color="FFD966")
+red_fill = PatternFill(fill_type="solid", start_color="FF6666", end_color="FF6666")
 
-HOW TO USE
-----------
-1. Set FOLDER_PATH below to the folder containing your PDFs.
-2. (Optional) Set OUTPUT_PATH to where you want the Excel file saved.
-3. Run:  python extract_headers_footers.py
+# Ensure headers exist
+ws["A1"] = "Inputs"
+ws["B1"] = "Pages"
+ws["C1"] = "Status"
 
-The script picks up every ".pdf" file in FOLDER_PATH (sorted alphabetically)
-as PDF1, PDF2, PDF3, ... — there is no limit on how many.
-"""
+for cell in ws[1]:
+    cell.fill = header_fill
+    cell.font = header_font
 
-import sys
-from pathlib import Path
+# =====================================================
+# SEARCH VALUES
+# =====================================================
+row = 2
 
-import pdfplumber
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
-from openpyxl.utils import get_column_letter
+while True:
+    value = ws[f"A{row}"].value
 
-# ----------------------------------------------------------------------
-# SET THIS: folder containing your PDFs. Every .pdf file inside it will
-# be processed, in alphabetical order, as PDF1, PDF2, PDF3, ...
-# ----------------------------------------------------------------------
-FOLDER_PATH = r"/path/to/your/pdf/folder"
+    if value is None:
+        break
 
-# Where to save the resulting Excel file.
-OUTPUT_PATH = r"headers_footers_output.xlsx"
+    search_text = str(value).strip().lower()
 
-# ----------------------------------------------------------------------
-# CASE CONFIG — exact line counts per known format.
-# keyword: searched (case-insensitive) anywhere in the first few lines of
-# page 1 to classify the pdf.
-# header_lines: how many lines from the TOP of each page make up the header.
-# has_footer: whether the LAST line of each page should be captured as footer.
-# ----------------------------------------------------------------------
-CASE_CONFIG = [
-    {
-        "name": "Case 1 (Rating Manual)",
-        "keyword": "rating manual",
-        "header_lines": 4,
-        "has_footer": True,
-    },
-    {
-        "name": "Case 2 (Rate Order Calculation)",
-        "keyword": "rate order calculation",
-        "header_lines": 2,
-        "has_footer": False,
-    },
-    {
-        "name": "Case 3 (Rule Manual)",
-        "keyword": "rule manual",
-        "header_lines": 3,
-        "has_footer": True,
-    },
-]
+    found_pages = []
 
-# Used only if a pdf doesn't match any of the 3 known keywords above.
-DEFAULT_HEADER_LINES = 4
-DEFAULT_HAS_FOOTER = True
+    for i, page_text in enumerate(page_texts, start=1):
+        if search_text in page_text:
+            found_pages.append(i)
 
-# How many of the first lines on page 1 to scan when detecting the case
-# (keep this >= the largest header_lines above, with a little buffer).
-CASE_DETECTION_SCAN_LINES = 6
+    # -------------------------------
+    # Write Results
+    # -------------------------------
+    if len(found_pages) == 0:
+        ws[f"B{row}"] = "NA"
+        ws[f"C{row}"] = "Not Found"
+        ws[f"C{row}"].fill = red_fill
 
+    elif len(found_pages) == total_pages:
+        ws[f"B{row}"] = ", ".join(map(str, found_pages))
+        ws[f"C{row}"] = "Found in all pages"
+        ws[f"C{row}"].fill = green_fill
 
-def detect_case(first_page_text: str):
-    """
-    Look at the first few lines of page 1 and match against known keywords.
-    Returns the matching config dict, or a default config if no match.
-    """
-    lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
-    scan_text = " ".join(lines[:CASE_DETECTION_SCAN_LINES]).lower()
+    else:
+        ws[f"B{row}"] = ", ".join(map(str, found_pages))
+        ws[f"C{row}"] = "Found in some pages"
+        ws[f"C{row}"].fill = yellow_fill
 
-    for config in CASE_CONFIG:
-        if config["keyword"] in scan_text:
-            return config
+    row += 1
 
-    return {
-        "name": "Unknown format (using defaults)",
-        "keyword": None,
-        "header_lines": DEFAULT_HEADER_LINES,
-        "has_footer": DEFAULT_HAS_FOOTER,
-    }
+# =====================================================
+# AUTO WIDTH
+# =====================================================
+for column in ws.columns:
+    max_length = 0
+    column_letter = column[0].column_letter
 
+    for cell in column:
+        try:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        except:
+            pass
 
-def extract_header_footer(pdf_path: str):
-    """
-    Returns (case_name, list of (header_text, footer_text) tuples - one per page).
-    """
-    results = []
-    case_config = None
+    ws.column_dimensions[column_letter].width = max_length + 3
 
-    with pdfplumber.open(pdf_path) as pdf:
-        if not pdf.pages:
-            return "No pages found", results
+# =====================================================
+# SAVE
+# =====================================================
+wb.save(output_excel)
+doc.close()
 
-        # Detect case using page 1 only.
-        first_page_text = pdf.pages[0].extract_text() or ""
-        case_config = detect_case(first_page_text)
-
-        header_lines = case_config["header_lines"]
-        has_footer = case_config["has_footer"]
-
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            # Keep only non-empty lines so blank lines don't throw off counts.
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
-
-            header_text = "\n".join(lines[:header_lines])
-
-            if has_footer and len(lines) > header_lines:
-                footer_text = lines[-1]
-            else:
-                footer_text = ""
-
-            results.append((header_text, footer_text))
-
-    return case_config["name"], results
-
-
-def get_pdf_files(folder_path: str):
-    """Return every .pdf file in folder_path, sorted alphabetically."""
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        print(f"ERROR: folder not found: {folder_path}")
-        sys.exit(1)
-
-    pdf_files = sorted(folder.glob("*.pdf"))
-    if not pdf_files:
-        print(f"ERROR: no .pdf files found in: {folder_path}")
-        sys.exit(1)
-
-    return pdf_files
-
-
-def build_excel(all_pdfs_data, pdf_names, output_path: str):
-    """
-    all_pdfs_data: list of lists of (header, footer) tuples, one list per pdf
-    pdf_names: list of filenames, same order as all_pdfs_data
-    """
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Headers and Footers"
-
-    bold = Font(bold=True)
-
-    for pdf_index, pdf_name in enumerate(pdf_names):
-        header_col = pdf_index * 2 + 1       # A, C, E ...
-        footer_col = header_col + 1          # B, D, F ...
-        ws.cell(row=1, column=header_col, value=f"PDF{pdf_index + 1} Header ({pdf_name})").font = bold
-        ws.cell(row=1, column=footer_col, value=f"PDF{pdf_index + 1} Footer ({pdf_name})").font = bold
-
-    max_pages = max((len(pdf_data) for pdf_data in all_pdfs_data), default=0)
-
-    for page_idx in range(max_pages):
-        row = page_idx + 2  # row 2 = page 1, row 3 = page 2, ...
-        for pdf_index, pdf_data in enumerate(all_pdfs_data):
-            header_col = pdf_index * 2 + 1
-            footer_col = header_col + 1
-            if page_idx < len(pdf_data):
-                header_text, footer_text = pdf_data[page_idx]
-            else:
-                header_text, footer_text = "", ""
-            ws.cell(row=row, column=header_col, value=header_text)
-            ws.cell(row=row, column=footer_col, value=footer_text)
-
-    total_cols = len(all_pdfs_data) * 2
-    for col_idx in range(1, total_cols + 1):
-        col_letter = get_column_letter(col_idx)
-        ws.column_dimensions[col_letter].width = 45
-    for row in ws.iter_rows(min_row=2, max_row=max_pages + 1):
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-
-    wb.save(output_path)
-
-
-def main():
-    pdf_files = get_pdf_files(FOLDER_PATH)
-    print(f"Found {len(pdf_files)} PDF(s) in {FOLDER_PATH}:")
-    for f in pdf_files:
-        print(f"  - {f.name}")
-
-    all_pdfs_data = []
-    pdf_names = []
-
-    for i, pdf_path in enumerate(pdf_files, start=1):
-        print(f"\nProcessing PDF {i}: {pdf_path.name}")
-        case_name, page_data = extract_header_footer(str(pdf_path))
-        all_pdfs_data.append(page_data)
-        pdf_names.append(pdf_path.name)
-
-        print(f"  Detected format: {case_name}")
-        print(f"  Pages processed: {len(page_data)}")
-
-    build_excel(all_pdfs_data, pdf_names, OUTPUT_PATH)
-    print(f"\nDone. Excel file written to: {OUTPUT_PATH}")
-
-
-if __name__ == "__main__":
-    main()
+print("Done!")
+print(f"Output saved as: {output_excel}")
