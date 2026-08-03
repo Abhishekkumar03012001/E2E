@@ -157,6 +157,47 @@ Sub AddResult(tabName As String, result As String, comment As String)
 End Sub
 
 '--------------------------------------------------------------------
+' Robust numeric parser - handles values stored as text/strings with
+' formatting characters (commas, currency symbols, spaces, % etc.)
+' Returns True if a numeric value could be extracted, and places the
+' parsed value into outVal (ByRef).
+'--------------------------------------------------------------------
+Function TryParseNumber(v As Variant, ByRef outVal As Double) As Boolean
+    Dim s As String
+    Dim ch As String
+    Dim i As Long
+    Dim cleaned As String
+
+    TryParseNumber = False
+
+    If IsNumeric(v) Then
+        outVal = CDbl(v)
+        TryParseNumber = True
+        Exit Function
+    End If
+
+    s = Trim(CStr(v))
+    If s = "" Then Exit Function
+
+    ' Strip everything except digits, decimal point and minus sign
+    ' (removes commas, currency symbols, spaces, percent signs, etc.)
+    cleaned = ""
+    For i = 1 To Len(s)
+        ch = Mid(s, i, 1)
+        If (ch >= "0" And ch <= "9") Or ch = "." Or ch = "-" Then
+            cleaned = cleaned & ch
+        End If
+    Next i
+
+    If cleaned = "" Or cleaned = "-" Or cleaned = "." Then Exit Function
+
+    If IsNumeric(cleaned) Then
+        outVal = CDbl(cleaned)
+        TryParseNumber = True
+    End If
+End Function
+
+'--------------------------------------------------------------------
 ' 1,2,9) Simple existence-only checks
 '--------------------------------------------------------------------
 Sub Check_SimpleExist(sName As String)
@@ -459,12 +500,15 @@ End Sub
 
 '--------------------------------------------------------------------
 ' 10) T90 - Column B = 1000 x Column A, from row 2
+'     Values may be stored as text/strings - parsed via TryParseNumber
+'     before the numeric comparison is performed.
 '--------------------------------------------------------------------
 Sub Check_T90()
     Dim sName As String: sName = "T90"
     Dim ws As Worksheet
     Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
+    Dim aNum As Double, bNum As Double
 
     If Not SheetExists(wbCRL, sName) Then
         AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
@@ -476,8 +520,8 @@ Sub Check_T90()
     allMatch = True
 
     For i = 2 To lastRowVal
-        If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
-            If Round(CDbl(ws.Cells(i, 2).Value), 4) <> Round(CDbl(ws.Cells(i, 1).Value) * 1000, 4) Then
+        If TryParseNumber(ws.Cells(i, 1).Value, aNum) And TryParseNumber(ws.Cells(i, 2).Value, bNum) Then
+            If Round(bNum, 4) <> Round(aNum * 1000, 4) Then
                 allMatch = False
                 failRow = i
                 Exit For
@@ -494,12 +538,15 @@ End Sub
 
 '--------------------------------------------------------------------
 ' 11) T99 - Column A = 1000 x Column B, from row 2
+'     Values may be stored as text/strings - parsed via TryParseNumber
+'     before the numeric comparison is performed.
 '--------------------------------------------------------------------
 Sub Check_T99()
     Dim sName As String: sName = "T99"
     Dim ws As Worksheet
     Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
+    Dim aNum As Double, bNum As Double
 
     If Not SheetExists(wbCRL, sName) Then
         AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
@@ -511,8 +558,8 @@ Sub Check_T99()
     allMatch = True
 
     For i = 2 To lastRowVal
-        If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
-            If Round(CDbl(ws.Cells(i, 1).Value), 4) <> Round(CDbl(ws.Cells(i, 2).Value) * 1000, 4) Then
+        If TryParseNumber(ws.Cells(i, 1).Value, aNum) And TryParseNumber(ws.Cells(i, 2).Value, bNum) Then
+            If Round(aNum, 4) <> Round(bNum * 1000, 4) Then
                 allMatch = False
                 failRow = i
                 Exit For
@@ -529,8 +576,11 @@ End Sub
 
 '--------------------------------------------------------------------
 ' 12 & 13) U99 / V99 - Column B must all be 1 (from row 2), and
-'          Column A must contain every value found in Column A of
-'          the same-named sheet in the Proposed Config workbook
+'          Column A values must match between CRL Config and the
+'          same-named sheet in the Proposed Config workbook.
+'          Comment now lists ONLY the values that are NOT common to
+'          both files (i.e. present in one but not the other),
+'          in both directions.
 '--------------------------------------------------------------------
 Sub Check_U99()
     CheckU_V_Style "U99"
@@ -545,9 +595,9 @@ Sub CheckU_V_Style(sName As String)
     Dim lastRowB As Long, lastRowCRL_A As Long, lastRowProp As Long
     Dim i As Long, j As Long
     Dim allOne As Boolean, failRow As Long
-    Dim allPresent As Boolean
-    Dim missingVals As String
-    Dim dictCRL As Object
+    Dim allCommon As Boolean
+    Dim missingFromCRL As String, missingFromProp As String
+    Dim dictCRL As Object, dictProp As Object
     Dim v As String
 
     If Not SheetExists(wbCRL, sName) Then
@@ -567,54 +617,76 @@ Sub CheckU_V_Style(sName As String)
         End If
     Next i
 
-    allPresent = True
-    missingVals = ""
+    allCommon = True
+    missingFromCRL = ""
+    missingFromProp = ""
+
+    ' Build dictionary of CRL Column A values
+    Set dictCRL = CreateObject("Scripting.Dictionary")
+    lastRowCRL_A = GetLastRow(wsCRL, "A")
+    For i = 2 To lastRowCRL_A
+        v = Trim(CStr(wsCRL.Cells(i, 1).Value))
+        If v <> "" Then dictCRL(v) = True
+    Next i
 
     If SheetExists(wbProposed, sName) Then
         Set wsProp = wbProposed.Sheets(sName)
         lastRowProp = GetLastRow(wsProp, "A")
 
-        Set dictCRL = CreateObject("Scripting.Dictionary")
-        lastRowCRL_A = GetLastRow(wsCRL, "A")
-        For i = 2 To lastRowCRL_A
-            v = Trim(CStr(wsCRL.Cells(i, 1).Value))
-            If v <> "" Then dictCRL(v) = True
-        Next i
+        ' Build dictionary of Proposed Column A values
+        Set dictProp = CreateObject("Scripting.Dictionary")
+        For j = 2 To lastRowProp
+            v = Trim(CStr(wsProp.Cells(j, 1).Value))
+            If v <> "" Then dictProp(v) = True
+        Next j
 
+        ' Values in Proposed but NOT in CRL
         For j = 2 To lastRowProp
             v = Trim(CStr(wsProp.Cells(j, 1).Value))
             If v <> "" Then
                 If Not dictCRL.Exists(v) Then
-                    allPresent = False
-                    missingVals = missingVals & v & "; "
+                    allCommon = False
+                    missingFromCRL = missingFromCRL & v & "; "
                 End If
             End If
         Next j
+
+        ' Values in CRL but NOT in Proposed
+        For i = 2 To lastRowCRL_A
+            v = Trim(CStr(wsCRL.Cells(i, 1).Value))
+            If v <> "" Then
+                If Not dictProp.Exists(v) Then
+                    allCommon = False
+                    missingFromProp = missingFromProp & v & "; "
+                End If
+            End If
+        Next i
     Else
-        allPresent = False
-        missingVals = "Sheet """ & sName & """ not found in Proposed Config to compare against."
+        allCommon = False
+        missingFromCRL = "Sheet """ & sName & """ not found in Proposed Config to compare against."
     End If
 
-    If allOne And allPresent Then
-        AddResult sName, "Validated", "All Column B values = 1 and Column A matches Proposed Config values."
+    If allOne And allCommon Then
+        AddResult sName, "Validated", "All Column B values = 1 and Column A matches between CRL Config and Proposed Config."
     Else
         Dim c As String
         c = ""
         If Not allOne Then c = c & "Row " & failRow & ": Column B <> 1. "
-        If Not allPresent Then c = c & "Missing from CRL Column A (present in Proposed Config): " & missingVals
+        If missingFromCRL <> "" Then c = c & "In Proposed Config but not in CRL Config: " & missingFromCRL
+        If missingFromProp <> "" Then c = c & "In CRL Config but not in Proposed Config: " & missingFromProp
         AddResult sName, "Manual validation required", c
     End If
 End Sub
 
 '--------------------------------------------------------------------
 ' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, right after "Read Me"
-' (runs BEFORE BuildSummarySheet)
+' (runs BEFORE BuildSummarySheet). Sheets are copied with their
+' original names - no "_Review" suffix is added.
 '--------------------------------------------------------------------
 Sub CopyFailingSheets()
     Dim i As Long
     Dim sName As String
     Dim insertAfterIndex As Long
-    Dim newName As String
 
     insertAfterIndex = ThisWorkbook.Sheets("Read Me").Index
 
@@ -624,11 +696,6 @@ Sub CopyFailingSheets()
             If SheetExists(wbCRL, sName) Then
                 wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
                 insertAfterIndex = insertAfterIndex + 1
-
-                newName = Left(sName, 25) & "_Review"
-                On Error Resume Next
-                ThisWorkbook.Sheets(insertAfterIndex).Name = newName
-                On Error GoTo 0
             End If
         End If
     Next i
