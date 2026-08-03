@@ -91,9 +91,6 @@ Sub ValidateCRLConfig()
     Check_V99
 
     '---------------- Build outputs ----------------
-    ' Copy failing sheets first (right after "Read Me"),
-    ' then add Summary after "Read Me" so it sits as the
-    ' immediate neighbor, pushing the review sheets to the right.
     CopyFailingSheets
     BuildSummarySheet
 
@@ -143,9 +140,9 @@ Function SheetExists(wb As Workbook, sName As String) As Boolean
     SheetExists = Not ws Is Nothing
 End Function
 
-Function LastRow(ws As Worksheet, Optional colLetter As String = "A") As Long
-    LastRow = ws.Cells(ws.Rows.Count, colLetter).End(xlUp).Row
-    If LastRow < 1 Then LastRow = 1
+Function GetLastRow(ws As Worksheet, Optional colLetter As String = "A") As Long
+    GetLastRow = ws.Cells(ws.Rows.Count, colLetter).End(xlUp).Row
+    If GetLastRow < 1 Then GetLastRow = 1
 End Function
 
 Sub AddResult(tabName As String, result As String, comment As String)
@@ -176,7 +173,7 @@ End Sub
 Sub Check_C62()
     Dim sName As String: sName = "C62"
     Dim ws As Worksheet
-    Dim lastRowA As Long, lastRowB As Long, lastRow As Long, i As Long
+    Dim lastRowA As Long, lastRowB As Long, lastRowVal As Long, i As Long
     Dim found As Boolean
 
     If Not SheetExists(wbCRL, sName) Then
@@ -185,12 +182,12 @@ Sub Check_C62()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRowA = LastRow(ws, "A")
-    lastRowB = LastRow(ws, "B")
-    lastRow = IIf(lastRowA > lastRowB, lastRowA, lastRowB)
+    lastRowA = GetLastRow(ws, "A")
+    lastRowB = GetLastRow(ws, "B")
+    lastRowVal = IIf(lastRowA > lastRowB, lastRowA, lastRowB)
     found = False
 
-    For i = 1 To lastRow
+    For i = 1 To lastRowVal
         If Trim(LCase(CStr(ws.Cells(i, 1).Value))) = "rejected" Or _
            Trim(LCase(CStr(ws.Cells(i, 2).Value))) = "rejected" Then
             found = True
@@ -211,7 +208,7 @@ End Sub
 Sub Check_C63()
     Dim sName As String: sName = "C63"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
 
     If Not SheetExists(wbCRL, sName) Then
@@ -220,10 +217,10 @@ Sub Check_C63()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "A")
+    lastRowVal = GetLastRow(ws, "A")
     allMatch = True
 
-    For i = 1 To lastRow
+    For i = 1 To lastRowVal
         If Trim(CStr(ws.Cells(i, 1).Value)) = "0" Then
             If Trim(CStr(ws.Cells(i, 2).Value)) <> "0" Then
                 allMatch = False
@@ -268,7 +265,7 @@ End Sub
 Sub Check_H11()
     Dim sName As String: sName = "H11"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim dict As Object
     Dim key As String, bVal As String, dVal As String
     Dim allMatch As Boolean
@@ -280,11 +277,11 @@ Sub Check_H11()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "A")
+    lastRowVal = GetLastRow(ws, "A")
     Set dict = CreateObject("Scripting.Dictionary")
     allMatch = True
 
-    For i = 1 To lastRow
+    For i = 1 To lastRowVal
         bVal = Trim(CStr(ws.Cells(i, 2).Value))
         If bVal = "999" Or bVal = "6" Then
             key = Trim(CStr(ws.Cells(i, 1).Value)) & "|" & bVal & "|" & Trim(CStr(ws.Cells(i, 3).Value))
@@ -345,17 +342,17 @@ Sub Check_H21()
 End Sub
 
 Function CheckGroupSameB(ws As Worksheet, grp As Variant, ByRef msg As String) As Boolean
-    Dim lastRow As Long, i As Long, j As Long
+    Dim lastRowVal As Long, i As Long, j As Long
     Dim vals As Object
     Dim firstVal As String
     Dim firstSet As Boolean
     Dim k As Variant
 
     Set vals = CreateObject("Scripting.Dictionary")
-    lastRow = LastRow(ws, "A")
+    lastRowVal = GetLastRow(ws, "A")
 
     For j = LBound(grp) To UBound(grp)
-        For i = 1 To lastRow
+        For i = 1 To lastRowVal
             If Trim(CStr(ws.Cells(i, 1).Value)) = grp(j) Then
                 vals(CStr(grp(j))) = Trim(CStr(ws.Cells(i, 2).Value))
                 Exit For
@@ -386,7 +383,7 @@ End Function
 Sub Check_O02()
     Dim sName As String: sName = "O02"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
 
     If Not SheetExists(wbCRL, sName) Then
@@ -395,10 +392,10 @@ Sub Check_O02()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "C")
+    lastRowVal = GetLastRow(ws, "C")
     allMatch = True
 
-    For i = 1 To lastRow
+    For i = 1 To lastRowVal
         If IsNumeric(ws.Cells(i, 3).Value) Then
             If CDbl(ws.Cells(i, 3).Value) >= 25 Then
                 If Round(CDbl(ws.Cells(i, 4).Value), 2) <> 1 Then
@@ -423,7 +420,7 @@ End Sub
 Sub Check_P29()
     Dim sName As String: sName = "P29"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
     Dim aVal As String
 
@@ -433,10 +430,10 @@ Sub Check_P29()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "A")
+    lastRowVal = GetLastRow(ws, "A")
     allMatch = True
 
-    For i = 1 To lastRow
+    For i = 1 To lastRowVal
         aVal = Trim(LCase(CStr(ws.Cells(i, 1).Value)))
         If aVal = "no" Then
             If Not IsNumeric(ws.Cells(i, 2).Value) Then
@@ -466,7 +463,7 @@ End Sub
 Sub Check_T90()
     Dim sName As String: sName = "T90"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
 
     If Not SheetExists(wbCRL, sName) Then
@@ -475,10 +472,10 @@ Sub Check_T90()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "A")
+    lastRowVal = GetLastRow(ws, "A")
     allMatch = True
 
-    For i = 2 To lastRow
+    For i = 2 To lastRowVal
         If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
             If Round(CDbl(ws.Cells(i, 2).Value), 4) <> Round(CDbl(ws.Cells(i, 1).Value) * 1000, 4) Then
                 allMatch = False
@@ -501,7 +498,7 @@ End Sub
 Sub Check_T99()
     Dim sName As String: sName = "T99"
     Dim ws As Worksheet
-    Dim lastRow As Long, i As Long
+    Dim lastRowVal As Long, i As Long
     Dim allMatch As Boolean, failRow As Long
 
     If Not SheetExists(wbCRL, sName) Then
@@ -510,10 +507,10 @@ Sub Check_T99()
     End If
 
     Set ws = wbCRL.Sheets(sName)
-    lastRow = LastRow(ws, "B")
+    lastRowVal = GetLastRow(ws, "B")
     allMatch = True
 
-    For i = 2 To lastRow
+    For i = 2 To lastRowVal
         If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
             If Round(CDbl(ws.Cells(i, 1).Value), 4) <> Round(CDbl(ws.Cells(i, 2).Value) * 1000, 4) Then
                 allMatch = False
@@ -559,7 +556,7 @@ Sub CheckU_V_Style(sName As String)
     End If
 
     Set wsCRL = wbCRL.Sheets(sName)
-    lastRowB = LastRow(wsCRL, "B")
+    lastRowB = GetLastRow(wsCRL, "B")
     allOne = True
 
     For i = 2 To lastRowB
@@ -575,10 +572,10 @@ Sub CheckU_V_Style(sName As String)
 
     If SheetExists(wbProposed, sName) Then
         Set wsProp = wbProposed.Sheets(sName)
-        lastRowProp = LastRow(wsProp, "A")
+        lastRowProp = GetLastRow(wsProp, "A")
 
         Set dictCRL = CreateObject("Scripting.Dictionary")
-        lastRowCRL_A = LastRow(wsCRL, "A")
+        lastRowCRL_A = GetLastRow(wsCRL, "A")
         For i = 2 To lastRowCRL_A
             v = Trim(CStr(wsCRL.Cells(i, 1).Value))
             If v <> "" Then dictCRL(v) = True
