@@ -1,421 +1,641 @@
 Option Explicit
 
-'=====================================================================
+'====================================================================
+' CRL CONFIG VALIDATION MACRO
+' - Reads Proposed Config path (D23), CRL Config path (D24) and
+'   State abbreviation (D15) from "Read Me" sheet in ThisWorkbook
+' - Validates a defined list of tabs in CRL Config workbook
+' - Builds a "Summary" sheet right after "Read Me"
+' - Copies any sheet that exists but fails validation next to Summary
+'====================================================================
+
+Dim colResults As Collection      ' holds arrays(1 to 3): Name, Result, Comment
+Dim wbProposed As Workbook
+Dim wbCRL As Workbook
+
+'--------------------------------------------------------------------
 ' MAIN ENTRY POINT
-' Reads file paths from the "Read Me" sheet:
-'   D4 = Excel1 (source) full file path
-'   D5 = Excel2 (target) full file path
-'   D6 = Base name for the new output file
-'
-' Opens both files as READ-ONLY, copies matching values from
-' Excel1 into Excel2 (in memory), then SAVES the result as a NEW
-' file named "<D6> UMR Current Rates Tables.<ext>" in the same
-' folder as Excel2.
-'=====================================================================
-Sub CopyDataBetweenWorkbooks()
+'--------------------------------------------------------------------
+Sub ValidateCRLConfig()
 
-    Dim wbSrc As Workbook, wbDst As Workbook
-    Dim srcPath As String, dstPath As String
-    Dim newFileBaseName As String, newFilePath As String
     Dim wsReadMe As Worksheet
-    Dim regularSheets As Variant, limitSheets As Variant
+    Dim proposedPath As String, crlPath As String, stateAbbr As String
     Dim i As Long
-    Dim ext As String, saveFormat As Long
 
-    On Error Resume Next
+    On Error GoTo ErrHandler
+
+    Set colResults = New Collection
+
     Set wsReadMe = ThisWorkbook.Sheets("Read Me")
-    On Error GoTo 0
+    proposedPath = Trim(wsReadMe.Range("D23").Value)
+    crlPath = Trim(wsReadMe.Range("D24").Value)
+    stateAbbr = Trim(wsReadMe.Range("D15").Value)
 
-    If wsReadMe Is Nothing Then
-        MsgBox "Could not find a sheet named 'Read Me' in this workbook.", vbCritical
-        Exit Sub
-    End If
-
-    srcPath = Trim(wsReadMe.Range("D4").Value)
-    dstPath = Trim(wsReadMe.Range("D5").Value)
-    newFileBaseName = Trim(wsReadMe.Range("D6").Value)
-
-    If Len(srcPath) = 0 Or Dir(srcPath) = "" Then
-        MsgBox "Excel1 file path in 'Read Me'!D4 is missing or invalid:" & vbCrLf & srcPath, vbCritical
-        Exit Sub
-    End If
-    If Len(dstPath) = 0 Or Dir(dstPath) = "" Then
-        MsgBox "Excel2 file path in 'Read Me'!D5 is missing or invalid:" & vbCrLf & dstPath, vbCritical
-        Exit Sub
-    End If
-    If Len(newFileBaseName) = 0 Then
-        MsgBox "New file name in 'Read Me'!D6 is missing.", vbCritical
+    If proposedPath = "" Or crlPath = "" Then
+        MsgBox "Please provide both Proposed Config (D23) and CRL Config (D24) file paths in the 'Read Me' sheet.", vbExclamation
         Exit Sub
     End If
 
     Application.ScreenUpdating = False
-    Application.Calculation = xlCalculationManual
     Application.DisplayAlerts = False
 
-    On Error GoTo CleanFail
+    Set wbProposed = Workbooks.Open(proposedPath, ReadOnly:=True)
+    Set wbCRL = Workbooks.Open(crlPath, ReadOnly:=True)
 
-    ' Open BOTH source files as read-only
-    Set wbSrc = Workbooks.Open(Filename:=srcPath, ReadOnly:=True, UpdateLinks:=False)
-    Set wbDst = Workbooks.Open(Filename:=dstPath, ReadOnly:=True, UpdateLinks:=False)
+    '---------------- Run all checks in order ----------------
+    Check_SimpleExist "C51"
+    Check_SimpleExist "C52"
+    Check_C62
+    Check_C63
+    Check_C71
+    Check_H11
+    Check_H21
+    Check_O02
+    Check_P29
 
-    ' Sheets that use the "heading + key columns" logic
-    regularSheets = Array("Auto", "Residence", "Motorcycle Rec Veh", "Boats")
-    ' Sheets that use the "Limit column header" logic
-    limitSheets = Array("Limits", "Discount")
-
-    For i = LBound(regularSheets) To UBound(regularSheets)
-        If SheetExists(wbSrc, CStr(regularSheets(i))) And SheetExists(wbDst, CStr(regularSheets(i))) Then
-            ProcessRegularSheet wbSrc.Sheets(CStr(regularSheets(i))), wbDst.Sheets(CStr(regularSheets(i)))
-        Else
-            Debug.Print "Skipped (sheet missing in one file): " & regularSheets(i)
-        End If
+    Dim simpleSheets As Variant
+    simpleSheets = Array("U41", "U42", "U51", "U52", "U53", "U54", "U55", "U56", _
+                          "U61", "U62", "U64", "U65", "U71", "U72")
+    For i = LBound(simpleSheets) To UBound(simpleSheets)
+        Check_SimpleExist CStr(simpleSheets(i))
     Next i
 
-    For i = LBound(limitSheets) To UBound(limitSheets)
-        If SheetExists(wbSrc, CStr(limitSheets(i))) And SheetExists(wbDst, CStr(limitSheets(i))) Then
-            ProcessLimitSheet wbSrc.Sheets(CStr(limitSheets(i))), wbDst.Sheets(CStr(limitSheets(i)))
-        Else
-            Debug.Print "Skipped (sheet missing in one file): " & limitSheets(i)
-        End If
-    Next i
+    Check_T90
+    Check_T99
+    Check_U99
+    Check_V99
 
-    ' Build the new output file path (same folder as Excel2 / target file)
-    ext = GetFileExtension(dstPath)
-    newFilePath = GetFolderFromPath(dstPath) & newFileBaseName & " UMR Current Rates Tables." & ext
+    '---------------- Build outputs ----------------
+    BuildSummarySheet
+    CopyFailingSheets
 
-    Select Case LCase(ext)
-        Case "xlsm"
-            saveFormat = xlOpenXMLWorkbookMacroEnabled
-        Case "xlsb"
-            saveFormat = xlExcel12
-        Case "xls"
-            saveFormat = xlExcel8
-        Case Else
-            saveFormat = xlOpenXMLWorkbook   ' xlsx
-    End Select
-
-    ' Save the in-memory updated workbook as a brand-new file
-    wbDst.SaveAs Filename:=newFilePath, FileFormat:=saveFormat
-
-    ' Close both workbooks without saving changes back to the originals
-    wbSrc.Close SaveChanges:=False
-    wbDst.Close SaveChanges:=False
+    wbProposed.Close SaveChanges:=False
+    wbCRL.Close SaveChanges:=False
 
     Application.DisplayAlerts = True
-    Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
 
-    MsgBox "Done!" & vbCrLf & _
-           "New file saved as:" & vbCrLf & newFilePath, vbInformation
-
+    MsgBox "Validation complete. Please review the 'Summary' sheet.", vbInformation
     Exit Sub
 
-CleanFail:
-    Dim errMsg As String
-    errMsg = Err.Description
-
-    On Error Resume Next
-    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
-    If Not wbDst Is Nothing Then wbDst.Close SaveChanges:=False
-    On Error GoTo 0
-
+ErrHandler:
     Application.DisplayAlerts = True
-    Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
-
-    MsgBox "Error: " & errMsg, vbCritical
+    On Error Resume Next
+    If Not wbProposed Is Nothing Then wbProposed.Close SaveChanges:=False
+    If Not wbCRL Is Nothing Then wbCRL.Close SaveChanges:=False
+    MsgBox "Error: " & Err.Description, vbCritical
 End Sub
 
-'=====================================================================
-' Does a sheet with this name exist in the workbook?
-'=====================================================================
-Function SheetExists(wb As Workbook, sn As String) As Boolean
+'--------------------------------------------------------------------
+' HELPERS
+'--------------------------------------------------------------------
+Function SheetExists(wb As Workbook, sName As String) As Boolean
     Dim ws As Worksheet
     On Error Resume Next
-    Set ws = wb.Sheets(sn)
+    Set ws = wb.Sheets(sName)
     On Error GoTo 0
     SheetExists = Not ws Is Nothing
 End Function
 
-'=====================================================================
-' Returns the folder path (including trailing backslash) from a full file path
-'=====================================================================
-Function GetFolderFromPath(fullPath As String) As String
-    Dim pos As Long
-    pos = InStrRev(fullPath, "\")
-    If pos > 0 Then
-        GetFolderFromPath = Left(fullPath, pos)
-    Else
-        GetFolderFromPath = ""
-    End If
+Function LastRow(ws As Worksheet, Optional colLetter As String = "A") As Long
+    LastRow = ws.Cells(ws.Rows.Count, colLetter).End(xlUp).Row
+    If LastRow < 1 Then LastRow = 1
 End Function
 
-'=====================================================================
-' Returns the file extension (without the dot) from a full file path
-'=====================================================================
-Function GetFileExtension(fullPath As String) As String
-    Dim pos As Long
-    pos = InStrRev(fullPath, ".")
-    If pos > 0 Then
-        GetFileExtension = Mid(fullPath, pos + 1)
-    Else
-        GetFileExtension = "xlsx"
-    End If
-End Function
-
-'=====================================================================
-' REGULAR SHEETS (Auto, Residence, Motorcycle Rec Veh, Boats)
-'
-' Layout assumption (matches your files):
-'   Heading row   : Col A = "Some Text: CODE"   (heading text contains ":")
-'   Header row    : Col E = "Terr"  (marks the start of "block 2")
-'   Data rows     : Block 1 -> Col A + Col B = key   -> Col C = value
-'                    Block 2 -> Col E          = key   -> Col F..last = values
-'
-' For every heading found in the source sheet, the same heading text is
-' located in the target sheet. Then every data row's key (A+B, or E) is
-' matched to a row under that SAME heading in the target sheet, and the
-' value column(s) are copied across. Rows that don't have a matching key
-' in the target are left untouched.
-'=====================================================================
-Sub ProcessRegularSheet(wsSrc As Worksheet, wsDst As Worksheet)
-
-    Dim lastRowSrc As Long, r As Long, r2 As Long
-    Dim headingText As String, headingRowDst As Long
-    Dim targetRow As Long, c As Long
-    Dim lastColBlock2 As Long
-
-    lastRowSrc = GetLastRow(wsSrc, 1)
-    If GetLastRow(wsSrc, 5) > lastRowSrc Then lastRowSrc = GetLastRow(wsSrc, 5)
-
-    r = 1
-    Do While r <= lastRowSrc
-
-        If IsHeadingCell(wsSrc.Cells(r, 1).Value) Then
-
-            headingText = Trim(CStr(wsSrc.Cells(r, 1).Value))
-            headingRowDst = FindHeadingRow(wsDst, headingText)
-
-            ' Work out how many columns "block 2" (Terr / limit codes) uses,
-            ' by reading the header row that sits right under the heading.
-            lastColBlock2 = 0
-            If Trim(CStr(wsSrc.Cells(r + 1, 5).Value)) = "Terr" Then
-                c = wsSrc.Columns.Count
-                Do While c > 5 And Len(Trim(CStr(wsSrc.Cells(r + 1, c).Value))) = 0
-                    c = c - 1
-                Loop
-                lastColBlock2 = c
-            End If
-
-            If headingRowDst > 0 Then
-
-                r2 = r + 1
-                Do While r2 <= lastRowSrc
-
-                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do ' next heading -> stop this section
-
-                    ' skip the sub-header row itself (Col E = "Terr")
-                    Dim isSubHeaderRow As Boolean
-                    isSubHeaderRow = (Trim(CStr(wsSrc.Cells(r2, 5).Value)) = "Terr")
-
-                    ' ---------- Block 1: Col A + Col B key -> Col C value ----------
-                    If Not isSubHeaderRow Then
-                        If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) > 0 And _
-                           Len(Trim(CStr(wsSrc.Cells(r2, 2).Value))) > 0 Then
-
-                            targetRow = FindKeyRow2Col(wsDst, headingRowDst, 1, 2, _
-                                        wsSrc.Cells(r2, 1).Value, wsSrc.Cells(r2, 2).Value)
-
-                            If targetRow > 0 Then
-                                wsDst.Cells(targetRow, 3).Value = wsSrc.Cells(r2, 3).Value
-                            End If
-                        End If
-                    End If
-
-                    ' ---------- Block 2: Col E key -> Col F..lastColBlock2 values ----------
-                    If Not isSubHeaderRow And lastColBlock2 >= 6 Then
-                        If Len(Trim(CStr(wsSrc.Cells(r2, 5).Value))) > 0 Then
-
-                            targetRow = FindKeyRow1Col(wsDst, headingRowDst, 5, wsSrc.Cells(r2, 5).Value)
-
-                            If targetRow > 0 Then
-                                For c = 6 To lastColBlock2
-                                    wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
-                                Next c
-                            End If
-                        End If
-                    End If
-
-                    r2 = r2 + 1
-                Loop
-
-                r = r2 - 1 ' continue scanning from where this section ended
-            End If
-        End If
-
-        r = r + 1
-    Loop
-
+Sub AddResult(tabName As String, result As String, comment As String)
+    Dim arr(1 To 3) As String
+    arr(1) = tabName
+    arr(2) = result
+    arr(3) = comment
+    colResults.Add arr
 End Sub
 
-'=====================================================================
-' LIMITS / DISCOUNT SHEETS
-'
-' Layout assumption (matches your files):
-'   Somewhere in Col A there is a header cell whose value is "Limit"
-'   (e.g. row 6: "Limit" | "Factor").
-'   Below that, each row has a Limit amount in Col A and one or more
-'   values (Factor, etc.) in Col B onward.
-'
-' We locate the "Limit" header in both the source and target sheet,
-' then for every Limit value in the source table we find the SAME
-' Limit value in the target table and copy across all value columns.
-'=====================================================================
-Sub ProcessLimitSheet(wsSrc As Worksheet, wsDst As Worksheet)
-
-    Dim lastRowSrc As Long, r As Long, r2 As Long
-    Dim headerRowDst As Long
-    Dim lastColHdr As Long, c As Long
-    Dim targetRow As Long
-
-    lastRowSrc = GetLastRow(wsSrc, 1)
-
-    r = 1
-    Do While r <= lastRowSrc
-
-        If Trim(CStr(wsSrc.Cells(r, 1).Value)) = "Limit" Then
-
-            headerRowDst = FindLimitHeaderRow(wsDst)
-
-            If headerRowDst > 0 Then
-
-                ' last column of this Limit table, based on the header row
-                c = wsSrc.Columns.Count
-                Do While c > 1 And Len(Trim(CStr(wsSrc.Cells(r, c).Value))) = 0
-                    c = c - 1
-                Loop
-                lastColHdr = c
-
-                r2 = r + 1
-                Do While r2 <= lastRowSrc
-
-                    If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) = 0 Then Exit Do   ' blank row = end of table
-                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do          ' next section
-
-                    If IsNumeric(wsSrc.Cells(r2, 1).Value) Then
-
-                        targetRow = FindLimitValueRow(wsDst, headerRowDst, wsSrc.Cells(r2, 1).Value)
-
-                        If targetRow > 0 Then
-                            For c = 2 To lastColHdr
-                                wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
-                            Next c
-                        End If
-                    End If
-
-                    r2 = r2 + 1
-                Loop
-            End If
-        End If
-
-        r = r + 1
-    Loop
-
+'--------------------------------------------------------------------
+' 1,2,9) Simple existence-only checks
+'--------------------------------------------------------------------
+Sub Check_SimpleExist(sName As String)
+    If SheetExists(wbCRL, sName) Then
+        AddResult sName, "Validated", "Sheet exists."
+    Else
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+    End If
 End Sub
 
-'=====================================================================
-' HELPER FUNCTIONS
-'=====================================================================
+'--------------------------------------------------------------------
+' 3) C62 - "Rejected" should NOT exist in Column A or B
+'--------------------------------------------------------------------
+Sub Check_C62()
+    Dim sName As String: sName = "C62"
+    Dim ws As Worksheet
+    Dim lastRowA As Long, lastRowB As Long, lastRow As Long, i As Long
+    Dim found As Boolean
 
-Function GetLastRow(ws As Worksheet, col As Long) As Long
-    GetLastRow = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
-End Function
-
-' A "heading" row is one where Col A is text containing a colon,
-' e.g. "Auto - Initial Coverage: AUTO"
-Function IsHeadingCell(v As Variant) As Boolean
-    If IsError(v) Then
-        IsHeadingCell = False
-    ElseIf VarType(v) = vbString Then
-        IsHeadingCell = (InStr(v, ":") > 0)
-    Else
-        IsHeadingCell = False
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
     End If
-End Function
 
-Function FindHeadingRow(ws As Worksheet, headingText As String) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindHeadingRow = 0
-    For r = 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then
-            If Trim(CStr(ws.Cells(r, 1).Value)) = headingText Then
-                FindHeadingRow = r
+    Set ws = wbCRL.Sheets(sName)
+    lastRowA = LastRow(ws, "A")
+    lastRowB = LastRow(ws, "B")
+    lastRow = IIf(lastRowA > lastRowB, lastRowA, lastRowB)
+    found = False
+
+    For i = 1 To lastRow
+        If Trim(LCase(CStr(ws.Cells(i, 1).Value))) = "rejected" Or _
+           Trim(LCase(CStr(ws.Cells(i, 2).Value))) = "rejected" Then
+            found = True
+            Exit For
+        End If
+    Next i
+
+    If Not found Then
+        AddResult sName, "Validated", "'Rejected' value not found in Column A or B."
+    Else
+        AddResult sName, "Manual validation required", "'Rejected' value found in Column A/B at row " & i & "."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 4) C63 - where Column A = "0", Column B must also = "0"
+'--------------------------------------------------------------------
+Sub Check_C63()
+    Dim sName As String: sName = "C63"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "A")
+    allMatch = True
+
+    For i = 1 To lastRow
+        If Trim(CStr(ws.Cells(i, 1).Value)) = "0" Then
+            If Trim(CStr(ws.Cells(i, 2).Value)) <> "0" Then
+                allMatch = False
+                failRow = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "All '0' values in Column A have corresponding '0' in Column B."
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A = 0 but Column B <> 0."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 5) C71 - B2 must equal "0"
+'--------------------------------------------------------------------
+Sub Check_C71()
+    Dim sName As String: sName = "C71"
+    Dim ws As Worksheet
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+
+    If Trim(CStr(ws.Range("B2").Value)) = "0" Then
+        AddResult sName, "Validated", "Cell B2 = 0."
+    Else
+        AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 6) H11 - for rows where Column B = "999" or "6", group by
+'    combination of A,B,C and confirm Column D is consistent
+'--------------------------------------------------------------------
+Sub Check_H11()
+    Dim sName As String: sName = "H11"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim dict As Object
+    Dim key As String, bVal As String, dVal As String
+    Dim allMatch As Boolean
+    Dim mismatchInfo As String
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "A")
+    Set dict = CreateObject("Scripting.Dictionary")
+    allMatch = True
+
+    For i = 1 To lastRow
+        bVal = Trim(CStr(ws.Cells(i, 2).Value))
+        If bVal = "999" Or bVal = "6" Then
+            key = Trim(CStr(ws.Cells(i, 1).Value)) & "|" & bVal & "|" & Trim(CStr(ws.Cells(i, 3).Value))
+            dVal = Trim(CStr(ws.Cells(i, 4).Value))
+            If dict.Exists(key) Then
+                If dict(key) <> dVal Then
+                    allMatch = False
+                    mismatchInfo = "Combination (A,B,C)=" & key & " has differing D values (" & _
+                                   dict(key) & " vs " & dVal & ") - see row " & i & "."
+                    Exit For
+                End If
+            Else
+                dict.Add key, dVal
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "Column D values are consistent for matching A,B,C combinations where B=999 or 6."
+    Else
+        AddResult sName, "Manual validation required", mismatchInfo
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 7) H21 - grouped Column A values must share the same Column B value
+'--------------------------------------------------------------------
+Sub Check_H21()
+    Dim sName As String: sName = "H21"
+    Dim ws As Worksheet
+    Dim g1 As Variant, g2 As Variant, g3 As Variant
+    Dim msg As String
+    Dim ok As Boolean
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+
+    g1 = Array("300/500", "250/500")
+    g2 = Array("500/1000", "1000/1000", "500/500", "1500/1500")
+    g3 = Array("1000", "500")
+
+    ok = True
+    msg = ""
+
+    If Not CheckGroupSameB(ws, g1, msg) Then ok = False
+    If Not CheckGroupSameB(ws, g2, msg) Then ok = False
+    If Not CheckGroupSameB(ws, g3, msg) Then ok = False
+
+    If ok Then
+        AddResult sName, "Validated", "All grouped values in Column A have matching Column B values."
+    Else
+        AddResult sName, "Manual validation required", msg
+    End If
+End Sub
+
+Function CheckGroupSameB(ws As Worksheet, grp As Variant, ByRef msg As String) As Boolean
+    Dim lastRow As Long, i As Long, j As Long
+    Dim vals As Object
+    Dim firstVal As String
+    Dim firstSet As Boolean
+    Dim k As Variant
+
+    Set vals = CreateObject("Scripting.Dictionary")
+    lastRow = LastRow(ws, "A")
+
+    For j = LBound(grp) To UBound(grp)
+        For i = 1 To lastRow
+            If Trim(CStr(ws.Cells(i, 1).Value)) = grp(j) Then
+                vals(CStr(grp(j))) = Trim(CStr(ws.Cells(i, 2).Value))
+                Exit For
+            End If
+        Next i
+    Next j
+
+    firstSet = False
+    CheckGroupSameB = True
+
+    For Each k In vals.Keys
+        If Not firstSet Then
+            firstVal = vals(k)
+            firstSet = True
+        Else
+            If vals(k) <> firstVal Then
+                CheckGroupSameB = False
+                msg = msg & "Group (" & Join(grp, ", ") & ") has mismatched Column B values. "
                 Exit Function
             End If
         End If
-    Next r
+    Next k
 End Function
 
-' Finds a row (after startRow, before the next heading) where
-' Col(col1) = val1 AND Col(col2) = val2
-Function FindKeyRow2Col(ws As Worksheet, startRow As Long, col1 As Long, col2 As Long, _
-                         val1 As Variant, val2 As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
+'--------------------------------------------------------------------
+' 8) O02 - where Column C >= 25, Column D must equal 1.00
+'--------------------------------------------------------------------
+Sub Check_O02()
+    Dim sName As String: sName = "O02"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
 
-    FindKeyRow2Col = 0
-    For r = startRow + 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
-        If CStr(ws.Cells(r, col1).Value) = CStr(val1) And CStr(ws.Cells(r, col2).Value) = CStr(val2) Then
-            FindKeyRow2Col = r
-            Exit Function
-        End If
-    Next r
-End Function
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
 
-' Finds a row (after startRow, before the next heading) where Col(col1) = val1
-Function FindKeyRow1Col(ws As Worksheet, startRow As Long, col1 As Long, val1 As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "C")
+    allMatch = True
 
-    FindKeyRow1Col = 0
-    For r = startRow + 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
-        If Trim(CStr(ws.Cells(r, col1).Value)) = "Terr" Then GoTo NextR   ' skip sub-header row
-        If CStr(ws.Cells(r, col1).Value) = CStr(val1) Then
-            FindKeyRow1Col = r
-            Exit Function
-        End If
-NextR:
-    Next r
-End Function
-
-Function FindLimitHeaderRow(ws As Worksheet) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindLimitHeaderRow = 0
-    For r = 1 To lastRow
-        If Trim(CStr(ws.Cells(r, 1).Value)) = "Limit" Then
-            FindLimitHeaderRow = r
-            Exit Function
-        End If
-    Next r
-End Function
-
-Function FindLimitValueRow(ws As Worksheet, startRow As Long, limitVal As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindLimitValueRow = 0
-    For r = startRow + 1 To lastRow
-        If Len(Trim(CStr(ws.Cells(r, 1).Value))) = 0 Then Exit For
-        If IsNumeric(ws.Cells(r, 1).Value) Then
-            If CDbl(ws.Cells(r, 1).Value) = CDbl(limitVal) Then
-                FindLimitValueRow = r
-                Exit Function
+    For i = 1 To lastRow
+        If IsNumeric(ws.Cells(i, 3).Value) Then
+            If CDbl(ws.Cells(i, 3).Value) >= 25 Then
+                If Round(CDbl(ws.Cells(i, 4).Value), 2) <> 1 Then
+                    allMatch = False
+                    failRow = i
+                    Exit For
+                End If
             End If
         End If
-    Next r
-End Function
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "Column D = 1.00 for all Column C values >= 25."
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column C >= 25 but Column D <> 1.00."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 9) P29 - A="No"->B=1, A="Yes"->B=0.85
+'--------------------------------------------------------------------
+Sub Check_P29()
+    Dim sName As String: sName = "P29"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
+    Dim aVal As String
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "A")
+    allMatch = True
+
+    For i = 1 To lastRow
+        aVal = Trim(LCase(CStr(ws.Cells(i, 1).Value)))
+        If aVal = "no" Then
+            If Not IsNumeric(ws.Cells(i, 2).Value) Then
+                allMatch = False: failRow = i: Exit For
+            ElseIf Round(CDbl(ws.Cells(i, 2).Value), 2) <> 1 Then
+                allMatch = False: failRow = i: Exit For
+            End If
+        ElseIf aVal = "yes" Then
+            If Not IsNumeric(ws.Cells(i, 2).Value) Then
+                allMatch = False: failRow = i: Exit For
+            ElseIf Round(CDbl(ws.Cells(i, 2).Value), 2) <> 0.85 Then
+                allMatch = False: failRow = i: Exit For
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "Column B values match expected (No -> 1, Yes -> 0.85)."
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B does not match expected value for Column A."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 10) T90 - Column B = 1000 x Column A, from row 2
+'--------------------------------------------------------------------
+Sub Check_T90()
+    Dim sName As String: sName = "T90"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "A")
+    allMatch = True
+
+    For i = 2 To lastRow
+        If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
+            If Round(CDbl(ws.Cells(i, 2).Value), 4) <> Round(CDbl(ws.Cells(i, 1).Value) * 1000, 4) Then
+                allMatch = False
+                failRow = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "Column B = 1000 x Column A for all rows (from row 2)."
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 1000 x Column A."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 11) T99 - Column A = 1000 x Column B, from row 2
+'--------------------------------------------------------------------
+Sub Check_T99()
+    Dim sName As String: sName = "T99"
+    Dim ws As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRow = LastRow(ws, "B")
+    allMatch = True
+
+    For i = 2 To lastRow
+        If IsNumeric(ws.Cells(i, 1).Value) And IsNumeric(ws.Cells(i, 2).Value) Then
+            If Round(CDbl(ws.Cells(i, 1).Value), 4) <> Round(CDbl(ws.Cells(i, 2).Value) * 1000, 4) Then
+                allMatch = False
+                failRow = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "Column A = 1000 x Column B for all rows (from row 2)."
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A <> 1000 x Column B."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' 12 & 13) U99 / V99 - Column B must all be 1 (from row 2), and
+'          Column A must contain every value found in Column A of
+'          the same-named sheet in the Proposed Config workbook
+'--------------------------------------------------------------------
+Sub Check_U99()
+    CheckU_V_Style "U99"
+End Sub
+
+Sub Check_V99()
+    CheckU_V_Style "V99"
+End Sub
+
+Sub CheckU_V_Style(sName As String)
+    Dim wsCRL As Worksheet, wsProp As Worksheet
+    Dim lastRowB As Long, lastRowCRL_A As Long, lastRowProp As Long
+    Dim i As Long, j As Long
+    Dim allOne As Boolean, failRow As Long
+    Dim allPresent As Boolean
+    Dim missingVals As String
+    Dim dictCRL As Object
+    Dim v As String
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set wsCRL = wbCRL.Sheets(sName)
+    lastRowB = LastRow(wsCRL, "B")
+    allOne = True
+
+    For i = 2 To lastRowB
+        If Trim(CStr(wsCRL.Cells(i, 2).Value)) <> "1" Then
+            allOne = False
+            failRow = i
+            Exit For
+        End If
+    Next i
+
+    allPresent = True
+    missingVals = ""
+
+    If SheetExists(wbProposed, sName) Then
+        Set wsProp = wbProposed.Sheets(sName)
+        lastRowProp = LastRow(wsProp, "A")
+
+        Set dictCRL = CreateObject("Scripting.Dictionary")
+        lastRowCRL_A = LastRow(wsCRL, "A")
+        For i = 2 To lastRowCRL_A
+            v = Trim(CStr(wsCRL.Cells(i, 1).Value))
+            If v <> "" Then dictCRL(v) = True
+        Next i
+
+        For j = 2 To lastRowProp
+            v = Trim(CStr(wsProp.Cells(j, 1).Value))
+            If v <> "" Then
+                If Not dictCRL.Exists(v) Then
+                    allPresent = False
+                    missingVals = missingVals & v & "; "
+                End If
+            End If
+        Next j
+    Else
+        allPresent = False
+        missingVals = "Sheet """ & sName & """ not found in Proposed Config to compare against."
+    End If
+
+    If allOne And allPresent Then
+        AddResult sName, "Validated", "All Column B values = 1 and Column A matches Proposed Config values."
+    Else
+        Dim c As String
+        c = ""
+        If Not allOne Then c = c & "Row " & failRow & ": Column B <> 1. "
+        If Not allPresent Then c = c & "Missing from CRL Column A (present in Proposed Config): " & missingVals
+        AddResult sName, "Manual validation required", c
+    End If
+End Sub
+
+'--------------------------------------------------------------------
+' BUILD SUMMARY SHEET (inserted right after "Read Me")
+'--------------------------------------------------------------------
+Sub BuildSummarySheet()
+    Dim wsSummary As Worksheet
+    Dim i As Long
+    Dim item As Variant
+
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    ThisWorkbook.Sheets("Summary").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    Set wsSummary = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("Read Me"))
+    wsSummary.Name = "Summary"
+
+    wsSummary.Range("A1").Value = "Tab Name"
+    wsSummary.Range("B1").Value = "Result"
+    wsSummary.Range("C1").Value = "Comments"
+    wsSummary.Range("D1").Value = "Analyst Comment"
+    wsSummary.Range("A1:D1").Font.Bold = True
+
+    i = 2
+    For Each item In colResults
+        wsSummary.Cells(i, 1).Value = item(1)
+        wsSummary.Cells(i, 2).Value = item(2)
+        wsSummary.Cells(i, 3).Value = item(3)
+        wsSummary.Cells(i, 4).Value = ""
+
+        Select Case item(2)
+            Case "Manual validation required"
+                wsSummary.Cells(i, 2).Interior.Color = RGB(255, 0, 0)
+                wsSummary.Cells(i, 2).Font.Color = RGB(255, 255, 255)
+            Case "Sheet does not exists"
+                wsSummary.Cells(i, 2).Interior.Color = RGB(255, 255, 0)
+        End Select
+
+        i = i + 1
+    Next item
+
+    With wsSummary
+        .Columns("A").ColumnWidth = 14
+        .Columns("B").ColumnWidth = 24
+        .Columns("C").ColumnWidth = 70
+        .Columns("D").ColumnWidth = 30
+        .Columns("C").WrapText = True
+        .Rows("2:" & (i - 1)).AutoFit
+        .Range("A1:D" & (i - 1)).Borders.LineStyle = xlContinuous
+    End With
+End Sub
+
+'--------------------------------------------------------------------
+' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, next to Summary
+'--------------------------------------------------------------------
+Sub CopyFailingSheets()
+    Dim item As Variant
+    Dim sName As String
+    Dim insertAfterIndex As Long
+    Dim newName As String
+
+    insertAfterIndex = ThisWorkbook.Sheets("Summary").Index
+
+    For Each item In colResults
+        If item(2) = "Manual validation required" Then
+            sName = item(1)
+            If SheetExists(wbCRL, sName) Then
+                wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
+                insertAfterIndex = insertAfterIndex + 1
+
+                newName = Left(sName, 25) & "_Review"
+                On Error Resume Next
+                ThisWorkbook.Sheets(insertAfterIndex).Name = newName
+                On Error GoTo 0
+            End If
+        End If
+    Next item
+End Sub
