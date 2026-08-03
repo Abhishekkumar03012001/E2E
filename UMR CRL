@@ -8,6 +8,10 @@ Option Explicit
 ' - Validates a defined list of tabs in CRL Config workbook
 ' - Copies any sheet that exists but fails validation right after "Read Me"
 ' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
+'
+' HOW TO RUN: Press Alt+F8, select "ValidateCRLConfig", click Run.
+' Do NOT run any other sub directly - only ValidateCRLConfig populates
+' the results before building the Summary sheet.
 '====================================================================
 
 Dim resCount As Long
@@ -41,6 +45,16 @@ Sub ValidateCRLConfig()
 
     If proposedPath = "" Or crlPath = "" Then
         MsgBox "Please provide both Proposed Config (D23) and CRL Config (D24) file paths in the 'Read Me' sheet.", vbExclamation
+        Exit Sub
+    End If
+
+    If Dir(proposedPath) = "" Then
+        MsgBox "Proposed Config file not found at:" & vbCrLf & proposedPath, vbCritical
+        Exit Sub
+    End If
+
+    If Dir(crlPath) = "" Then
+        MsgBox "CRL Config file not found at:" & vbCrLf & crlPath, vbCritical
         Exit Sub
     End If
 
@@ -85,11 +99,13 @@ Sub ValidateCRLConfig()
 
     wbProposed.Close SaveChanges:=False
     wbCRL.Close SaveChanges:=False
+    Set wbProposed = Nothing
+    Set wbCRL = Nothing
 
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Validation complete. Please review the 'Summary' sheet.", vbInformation
+    MsgBox "Validation complete (" & resCount & " tabs checked). Please review the 'Summary' sheet.", vbInformation
     Exit Sub
 
 ErrHandler:
@@ -98,7 +114,7 @@ ErrHandler:
     On Error Resume Next
     If Not wbProposed Is Nothing Then wbProposed.Close SaveChanges:=False
     If Not wbCRL Is Nothing Then wbCRL.Close SaveChanges:=False
-    MsgBox "Error: " & Err.Description & " (Line context: " & Erl & ")", vbCritical
+    MsgBox "Error: " & Err.Description, vbCritical
 End Sub
 
 '--------------------------------------------------------------------
@@ -629,6 +645,12 @@ Sub BuildSummarySheet()
     Dim wsSummary As Worksheet
     Dim i As Long
 
+    If resCount = 0 Then
+        MsgBox "No validation results were generated." & vbCrLf & _
+               "Please run 'ValidateCRLConfig' (Alt+F8) rather than this sub directly.", vbExclamation
+        Exit Sub
+    End If
+
     Application.DisplayAlerts = False
     On Error Resume Next
     ThisWorkbook.Sheets("Summary").Delete
@@ -665,7 +687,7 @@ Sub BuildSummarySheet()
         .Columns("C").ColumnWidth = 70
         .Columns("D").ColumnWidth = 30
         .Columns("C").WrapText = True
-        If resCount > 0 Then .Rows("2:" & (resCount + 1)).AutoFit
+        .Rows("2:" & (resCount + 1)).AutoFit
         .Range("A1:D" & (resCount + 1)).Borders.LineStyle = xlContinuous
     End With
 End Sub
