@@ -6,8 +6,8 @@ Option Explicit
 '   State abbreviation (D15) from "Read Me" sheet in ThisWorkbook
 ' - Deletes all sheets except "Read Me" before each run
 ' - Validates a defined list of tabs in CRL Config workbook
-' - Builds a "Summary" sheet right after "Read Me"
-' - Copies any sheet that exists but fails validation next to Summary
+' - Copies any sheet that exists but fails validation right after "Read Me"
+' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
 '====================================================================
 
 Dim colResults As Collection      ' holds arrays(1 to 3): Name, Result, Comment
@@ -70,8 +70,11 @@ Sub ValidateCRLConfig()
     Check_V99
 
     '---------------- Build outputs ----------------
-    BuildSummarySheet
+    ' Copy failing sheets first (right after "Read Me"),
+    ' then add Summary after "Read Me" so it sits as the
+    ' immediate neighbor, pushing the review sheets to the right.
     CopyFailingSheets
+    BuildSummarySheet
 
     wbProposed.Close SaveChanges:=False
     wbCRL.Close SaveChanges:=False
@@ -581,7 +584,36 @@ Sub CheckU_V_Style(sName As String)
 End Sub
 
 '--------------------------------------------------------------------
-' BUILD SUMMARY SHEET (inserted right after "Read Me")
+' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, right after "Read Me"
+' (runs BEFORE BuildSummarySheet)
+'--------------------------------------------------------------------
+Sub CopyFailingSheets()
+    Dim item As Variant
+    Dim sName As String
+    Dim insertAfterIndex As Long
+    Dim newName As String
+
+    insertAfterIndex = ThisWorkbook.Sheets("Read Me").Index
+
+    For Each item In colResults
+        If item(2) = "Manual validation required" Then
+            sName = item(1)
+            If SheetExists(wbCRL, sName) Then
+                wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
+                insertAfterIndex = insertAfterIndex + 1
+
+                newName = Left(sName, 25) & "_Review"
+                On Error Resume Next
+                ThisWorkbook.Sheets(insertAfterIndex).Name = newName
+                On Error GoTo 0
+            End If
+        End If
+    Next item
+End Sub
+
+'--------------------------------------------------------------------
+' BUILD SUMMARY SHEET (inserted right after "Read Me", runs LAST
+' so it becomes the immediate neighbor of "Read Me")
 '--------------------------------------------------------------------
 Sub BuildSummarySheet()
     Dim wsSummary As Worksheet
@@ -630,31 +662,4 @@ Sub BuildSummarySheet()
         .Rows("2:" & (i - 1)).AutoFit
         .Range("A1:D" & (i - 1)).Borders.LineStyle = xlContinuous
     End With
-End Sub
-
-'--------------------------------------------------------------------
-' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, next to Summary
-'--------------------------------------------------------------------
-Sub CopyFailingSheets()
-    Dim item As Variant
-    Dim sName As String
-    Dim insertAfterIndex As Long
-    Dim newName As String
-
-    insertAfterIndex = ThisWorkbook.Sheets("Summary").Index
-
-    For Each item In colResults
-        If item(2) = "Manual validation required" Then
-            sName = item(1)
-            If SheetExists(wbCRL, sName) Then
-                wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
-                insertAfterIndex = insertAfterIndex + 1
-
-                newName = Left(sName, 25) & "_Review"
-                On Error Resume Next
-                ThisWorkbook.Sheets(insertAfterIndex).Name = newName
-                On Error GoTo 0
-            End If
-        End If
-    Next item
 End Sub
