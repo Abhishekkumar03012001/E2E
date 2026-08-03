@@ -11,22 +11,23 @@ Extracts the header and footer text from EVERY PDF found in a folder
 
 Row 2 = page 1 of each pdf, Row 3 = page 2, and so on.
 
-It also detects which of the 3 known formats a PDF is in, based on the
-header text of its first page, and prints that to the console (this is
-informational — it does not change how text is extracted):
+HOW HEADER/FOOTER IS DETECTED (line-count based, not position-based)
+---------------------------------------------------------------------
+Each PDF is first classified into one of 3 known formats, based on keywords
+found on its first page:
 
-    Case 1: header contains "Rating Manual"
-    Case 2: header contains "Rate Order Calculation"
-    Case 3: header contains "Rule Manual"
+    Case 1: "Rating Manual"            -> header = first 4 lines of the page
+                                           footer = last line of the page
+    Case 2: "Rate Order Calculation"   -> header = first 2 lines of the page
+                                           footer = (none - this format has no footer)
+    Case 3: "Rule Manual"              -> header = first 3 lines of the page
+                                           footer = last line of the page
 
-HOW HEADER/FOOTER IS DETECTED
-------------------------------
-Since a PDF has no built-in "this is the header" tag, this script grabs the
-text sitting in the TOP band and BOTTOM band of every page (by page
-percentage, not fixed points, so it works across differently-sized pages).
+The case is detected ONCE per pdf (from page 1) and then applied to every
+page in that pdf, since the format is consistent throughout a document.
 
-You can tune HEADER_BAND_PCT / FOOTER_BAND_PCT below if your headers/footers
-are taller or shorter than the default guess.
+If a PDF doesn't match any of the 3 known keywords, it falls back to
+DEFAULT_HEADER_LINES / DEFAULT_HAS_FOOTER (edit below if needed).
 
 HOW TO USE
 ----------
@@ -56,53 +57,95 @@ FOLDER_PATH = r"/path/to/your/pdf/folder"
 OUTPUT_PATH = r"headers_footers_output.xlsx"
 
 # ----------------------------------------------------------------------
-# CONFIG — tune these if headers/footers are being over/under captured
+# CASE CONFIG — exact line counts per known format.
+# keyword: searched (case-insensitive) anywhere in the first few lines of
+# page 1 to classify the pdf.
+# header_lines: how many lines from the TOP of each page make up the header.
+# has_footer: whether the LAST line of each page should be captured as footer.
 # ----------------------------------------------------------------------
+CASE_CONFIG = [
+    {
+        "name": "Case 1 (Rating Manual)",
+        "keyword": "rating manual",
+        "header_lines": 4,
+        "has_footer": True,
+    },
+    {
+        "name": "Case 2 (Rate Order Calculation)",
+        "keyword": "rate order calculation",
+        "header_lines": 2,
+        "has_footer": False,
+    },
+    {
+        "name": "Case 3 (Rule Manual)",
+        "keyword": "rule manual",
+        "header_lines": 3,
+        "has_footer": True,
+    },
+]
 
-# Fraction of page height (from the top) considered the "header" band.
-HEADER_BAND_PCT = 0.15
+# Used only if a pdf doesn't match any of the 3 known keywords above.
+DEFAULT_HEADER_LINES = 4
+DEFAULT_HAS_FOOTER = True
 
-# Fraction of page height (from the bottom) considered the "footer" band.
-FOOTER_BAND_PCT = 0.10
-
-CASE_KEYWORDS = {
-    "Case 1 (Rating Manual)": "rating manual",
-    "Case 2 (Rate Order Calculation)": "rate order calculation",
-    "Case 3 (Rule Manual)": "rule manual",
-}
+# How many of the first lines on page 1 to scan when detecting the case
+# (keep this >= the largest header_lines above, with a little buffer).
+CASE_DETECTION_SCAN_LINES = 6
 
 
-def detect_case(header_text: str) -> str:
-    """Identify which of the 3 known header formats this is, based on
-    keywords found anywhere in the header text (case-insensitive)."""
-    lowered = header_text.lower()
-    for case_name, keyword in CASE_KEYWORDS.items():
-        if keyword in lowered:
-            return case_name
-    return "Unknown format"
+def detect_case(first_page_text: str):
+    """
+    Look at the first few lines of page 1 and match against known keywords.
+    Returns the matching config dict, or a default config if no match.
+    """
+    lines = [l.strip() for l in first_page_text.split("\n") if l.strip()]
+    scan_text = " ".join(lines[:CASE_DETECTION_SCAN_LINES]).lower()
+
+    for config in CASE_CONFIG:
+        if config["keyword"] in scan_text:
+            return config
+
+    return {
+        "name": "Unknown format (using defaults)",
+        "keyword": None,
+        "header_lines": DEFAULT_HEADER_LINES,
+        "has_footer": DEFAULT_HAS_FOOTER,
+    }
 
 
 def extract_header_footer(pdf_path: str):
     """
-    Returns a list of (header_text, footer_text) tuples, one per page.
+    Returns (case_name, list of (header_text, footer_text) tuples - one per page).
     """
     results = []
+    case_config = None
+
     with pdfplumber.open(pdf_path) as pdf:
+        if not pdf.pages:
+            return "No pages found", results
+
+        # Detect case using page 1 only.
+        first_page_text = pdf.pages[0].extract_text() or ""
+        case_config = detect_case(first_page_text)
+
+        header_lines = case_config["header_lines"]
+        has_footer = case_config["has_footer"]
+
         for page in pdf.pages:
-            width = page.width
-            height = page.height
+            text = page.extract_text() or ""
+            # Keep only non-empty lines so blank lines don't throw off counts.
+            lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-            header_bbox = (0, 0, width, height * HEADER_BAND_PCT)
-            footer_bbox = (0, height * (1 - FOOTER_BAND_PCT), width, height)
+            header_text = "\n".join(lines[:header_lines])
 
-            header_crop = page.crop(header_bbox)
-            footer_crop = page.crop(footer_bbox)
-
-            header_text = (header_crop.extract_text() or "").strip()
-            footer_text = (footer_crop.extract_text() or "").strip()
+            if has_footer and len(lines) > header_lines:
+                footer_text = lines[-1]
+            else:
+                footer_text = ""
 
             results.append((header_text, footer_text))
-    return results
+
+    return case_config["name"], results
 
 
 def get_pdf_files(folder_path: str):
@@ -131,16 +174,12 @@ def build_excel(all_pdfs_data, pdf_names, output_path: str):
 
     bold = Font(bold=True)
 
-    # Header row (row 1): PDF1 Header, PDF1 Footer, PDF2 Header, PDF2 Footer, ...
-    # Column header includes the actual filename for clarity.
     for pdf_index, pdf_name in enumerate(pdf_names):
         header_col = pdf_index * 2 + 1       # A, C, E ...
         footer_col = header_col + 1          # B, D, F ...
         ws.cell(row=1, column=header_col, value=f"PDF{pdf_index + 1} Header ({pdf_name})").font = bold
         ws.cell(row=1, column=footer_col, value=f"PDF{pdf_index + 1} Footer ({pdf_name})").font = bold
 
-    # Figure out the max number of pages across all pdfs so every column
-    # gets a row even if one pdf is shorter than the others.
     max_pages = max((len(pdf_data) for pdf_data in all_pdfs_data), default=0)
 
     for page_idx in range(max_pages):
@@ -155,8 +194,6 @@ def build_excel(all_pdfs_data, pdf_names, output_path: str):
             ws.cell(row=row, column=header_col, value=header_text)
             ws.cell(row=row, column=footer_col, value=footer_text)
 
-    # Reasonable column widths + wrap text so multi-line headers/footers
-    # are readable instead of one giant unreadable line.
     total_cols = len(all_pdfs_data) * 2
     for col_idx in range(1, total_cols + 1):
         col_letter = get_column_letter(col_idx)
@@ -179,17 +216,12 @@ def main():
 
     for i, pdf_path in enumerate(pdf_files, start=1):
         print(f"\nProcessing PDF {i}: {pdf_path.name}")
-        page_data = extract_header_footer(str(pdf_path))
+        case_name, page_data = extract_header_footer(str(pdf_path))
         all_pdfs_data.append(page_data)
         pdf_names.append(pdf_path.name)
 
-        # Report detected case using the first page's header
-        if page_data:
-            case = detect_case(page_data[0][0])
-            print(f"  Detected format: {case}")
-            print(f"  Pages processed: {len(page_data)}")
-        else:
-            print("  WARNING: no pages found in this PDF.")
+        print(f"  Detected format: {case_name}")
+        print(f"  Pages processed: {len(page_data)}")
 
     build_excel(all_pdfs_data, pdf_names, OUTPUT_PATH)
     print(f"\nDone. Excel file written to: {OUTPUT_PATH}")
