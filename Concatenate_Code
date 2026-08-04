@@ -46,9 +46,10 @@ def process_pdfs(
 
         ws_out = wb_out.create_sheet(title=sheet_name)
 
-        ws_out["A1"] = "Inputs"
-        ws_out["B1"] = "Pages"
-        ws_out["C1"] = "Status"
+        ws_out["A1"] = "Type"
+        ws_out["B1"] = "Checks"
+        ws_out["C1"] = "Pages"
+        ws_out["D1"] = "Status"
         for cell in ws_out[1]:
             cell.fill = header_fill
             cell.font = header_font
@@ -56,30 +57,32 @@ def process_pdfs(
         in_row = 2
         out_row = 2
         while True:
-            value = ws_in[f"A{in_row}"].value
-            if value is None:
+            type_value = ws_in[f"A{in_row}"].value
+            check_value = ws_in[f"B{in_row}"].value
+            if check_value is None:
                 break
 
-            search_text = str(value).strip().lower()
+            search_text = str(check_value).strip().lower()
             found_pages = []
             for i, page_text in enumerate(page_texts, start=1):
                 if search_text in page_text:
                     found_pages.append(i)
 
-            ws_out[f"A{out_row}"] = value
+            ws_out[f"A{out_row}"] = type_value
+            ws_out[f"B{out_row}"] = check_value
 
             if len(found_pages) == 0:
-                ws_out[f"B{out_row}"] = "NA"
-                ws_out[f"C{out_row}"] = "Not Found"
-                ws_out[f"C{out_row}"].fill = red_fill
+                ws_out[f"C{out_row}"] = "NA"
+                ws_out[f"D{out_row}"] = "Not Found"
+                ws_out[f"D{out_row}"].fill = red_fill
             elif len(found_pages) == total_pages:
-                ws_out[f"B{out_row}"] = ", ".join(map(str, found_pages))
-                ws_out[f"C{out_row}"] = "Found in all pages"
-                ws_out[f"C{out_row}"].fill = green_fill
+                ws_out[f"C{out_row}"] = ", ".join(map(str, found_pages))
+                ws_out[f"D{out_row}"] = "Found in all pages"
+                ws_out[f"D{out_row}"].fill = green_fill
             else:
-                ws_out[f"B{out_row}"] = ", ".join(map(str, found_pages))
-                ws_out[f"C{out_row}"] = "Found in some pages"
-                ws_out[f"C{out_row}"].fill = yellow_fill
+                ws_out[f"C{out_row}"] = ", ".join(map(str, found_pages))
+                ws_out[f"D{out_row}"] = "Found in some pages"
+                ws_out[f"D{out_row}"].fill = yellow_fill
 
             in_row += 1
             out_row += 1
@@ -87,7 +90,7 @@ def process_pdfs(
         for column in ws_out.columns:
             column_letter = column[0].column_letter
 
-            if column_letter == "B":
+            if column_letter == "C":
                 ws_out.column_dimensions[column_letter].width = pages_column_width
                 continue
 
