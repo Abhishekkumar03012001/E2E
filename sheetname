@@ -1,0 +1,48 @@
+Sub ExtractSheetNames()
+
+    Dim FilePath As Variant
+    Dim wbSource As Workbook
+    Dim ws As Worksheet
+    Dim wsOutput As Worksheet
+    Dim i As Long
+
+    'Output sheet in current workbook
+    Set wsOutput = ThisWorkbook.Sheets("Sheet1")
+
+    'Clear old data in Column A
+    wsOutput.Columns("A").ClearContents
+
+    'Select Excel file
+    FilePath = Application.GetOpenFilename( _
+                    FileFilter:="Excel Files (*.xls*), *.xls*", _
+                    Title:="Select Excel File")
+
+    'If user cancels
+    If FilePath = False Then
+        MsgBox "No file selected.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+
+    'Open selected workbook
+    Set wbSource = Workbooks.Open(FilePath, ReadOnly:=True)
+
+    'Write header
+    wsOutput.Range("A1").Value = "Sheet Name"
+
+    'Extract sheet names
+    i = 2
+    For Each ws In wbSource.Worksheets
+        wsOutput.Cells(i, 1).Value = ws.Name
+        i = i + 1
+    Next ws
+
+    'Close source workbook
+    wbSource.Close SaveChanges:=False
+
+    Application.ScreenUpdating = True
+
+    MsgBox "Done! " & i - 2 & " sheet names extracted.", vbInformation
+
+End Sub
