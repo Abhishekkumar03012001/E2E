@@ -1,6 +1,9 @@
 Sub GenerateOutput()
-Dim ws As Worksheet, o As Worksheet, cols, i As Long, r As Long, c As Long, lastRow As Long, lastCol As Long, found As Boolean, j As Long, hdr As Range, nRows As Long
+Dim wbSrc As Workbook, ws As Worksheet, o As Worksheet, cols, i As Long, r As Long, c As Long, lastRow As Long, lastCol As Long, found As Boolean, nRows As Long, fPath As Variant
 cols = Array("Fire", "WaterWinter", "WaterNonWinter", "Hurricane", "WindSummer", "WindWinter", "Hail", "Lightning", "LiabilityPollution", "TheftVandalism", "Other", "Reinsurance", "Capital", "Wildfire", "Fixed")
+fPath = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*")
+If fPath = False Then Exit Sub
+Set wbSrc = Workbooks.Open(fPath)
 On Error Resume Next
 Application.DisplayAlerts = False
 ThisWorkbook.Sheets("OUTPUT").Delete
@@ -14,8 +17,7 @@ o.Cells(1, i + 2) = cols(i)
 Next i
 o.Cells(1, UBound(cols) + 3) = "No of rows"
 r = 2
-For Each ws In ThisWorkbook.Sheets
-If ws.Name <> "OUTPUT" Then
+For Each ws In wbSrc.Sheets
 o.Cells(r, 1) = ws.Name
 lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
 For i = 0 To UBound(cols)
@@ -35,7 +37,7 @@ If nRows < 0 Then nRows = 0
 o.Cells(r, UBound(cols) + 3) = nRows
 If nRows = 1 Then o.Cells(r, UBound(cols) + 3).Interior.Color = RGB(255, 0, 0)
 r = r + 1
-End If
 Next ws
+wbSrc.Close False
 o.Columns.AutoFit
 End Sub
