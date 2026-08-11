@@ -1,48 +1,41 @@
-Sub ExtractSheetNames()
-
-    Dim FilePath As Variant
-    Dim wbSource As Workbook
-    Dim ws As Worksheet
-    Dim wsOutput As Worksheet
-    Dim i As Long
-
-    'Output sheet in current workbook
-    Set wsOutput = ThisWorkbook.Sheets("Sheet1")
-
-    'Clear old data in Column A
-    wsOutput.Columns("A").ClearContents
-
-    'Select Excel file
-    FilePath = Application.GetOpenFilename( _
-                    FileFilter:="Excel Files (*.xls*), *.xls*", _
-                    Title:="Select Excel File")
-
-    'If user cancels
-    If FilePath = False Then
-        MsgBox "No file selected.", vbExclamation
-        Exit Sub
-    End If
-
-    Application.ScreenUpdating = False
-
-    'Open selected workbook
-    Set wbSource = Workbooks.Open(FilePath, ReadOnly:=True)
-
-    'Write header
-    wsOutput.Range("A1").Value = "Sheet Name"
-
-    'Extract sheet names
-    i = 2
-    For Each ws In wbSource.Worksheets
-        wsOutput.Cells(i, 1).Value = ws.Name
-        i = i + 1
-    Next ws
-
-    'Close source workbook
-    wbSource.Close SaveChanges:=False
-
-    Application.ScreenUpdating = True
-
-    MsgBox "Done! " & i - 2 & " sheet names extracted.", vbInformation
-
+Sub GenerateOutput()
+Dim ws As Worksheet, o As Worksheet, cols, i As Long, r As Long, c As Long, lastRow As Long, lastCol As Long, found As Boolean, j As Long, hdr As Range, nRows As Long
+cols = Array("Fire", "WaterWinter", "WaterNonWinter", "Hurricane", "WindSummer", "WindWinter", "Hail", "Lightning", "LiabilityPollution", "TheftVandalism", "Other", "Reinsurance", "Capital", "Wildfire", "Fixed")
+On Error Resume Next
+Application.DisplayAlerts = False
+ThisWorkbook.Sheets("OUTPUT").Delete
+Application.DisplayAlerts = True
+On Error GoTo 0
+Set o = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+o.Name = "OUTPUT"
+o.Cells(1, 1) = "SheetName"
+For i = 0 To UBound(cols)
+o.Cells(1, i + 2) = cols(i)
+Next i
+o.Cells(1, UBound(cols) + 3) = "No of rows"
+r = 2
+For Each ws In ThisWorkbook.Sheets
+If ws.Name <> "OUTPUT" Then
+o.Cells(r, 1) = ws.Name
+lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+For i = 0 To UBound(cols)
+found = False
+For c = 1 To lastCol
+If LCase(Trim(ws.Cells(1, c).Value)) = LCase(cols(i)) Then
+found = True
+Exit For
+End If
+Next c
+o.Cells(r, i + 2) = found
+If Not found Then o.Cells(r, i + 2).Interior.Color = RGB(255, 0, 0)
+Next i
+lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+nRows = lastRow - 1
+If nRows < 0 Then nRows = 0
+o.Cells(r, UBound(cols) + 3) = nRows
+If nRows = 1 Then o.Cells(r, UBound(cols) + 3).Interior.Color = RGB(255, 0, 0)
+r = r + 1
+End If
+Next ws
+o.Columns.AutoFit
 End Sub
