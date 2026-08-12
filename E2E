@@ -42,9 +42,12 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    NEW: the two files are combined specifically by matching on their
    "Territory" column (present in both the main Territory export file
    and the C56 supplemental file, matched case/space/punctuation-
-   insensitively) -- NOT on any arbitrary shared column name. If either
-   file is missing a "Territory" column, columns are combined by row
-   position instead as a fallback (a warning is printed in that case).
+   insensitively) -- NOT on any arbitrary shared column name. If a file
+   doesn't have a "Territory" column, "ratingTerritory" is tried as a
+   fallback alias (also case/space/punctuation-insensitive) before
+   giving up -- see TERRITORY_MERGE_COLUMN_ALIASES below. If either
+   file is missing BOTH names, columns are combined by row position
+   instead as a fallback (a warning is printed in that case).
 6. Roof Limit: column matching is by exact column name only (no
    mapping), unchanged.
    NEW: for the "Limit" column specifically, the value "No Limit" (as it
@@ -67,6 +70,23 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    (i.e. it appears as the final tab), but is still set as the ACTIVE
    sheet, so it's the first thing the user sees when the workbook is
    opened.
+11. NEW: For the Config tab "R_C_AOIRel_AOPDedAOI", the "WaterNonWinter"
+   column is dropped entirely -- from BOTH the Config tab and whichever
+   export sheet it's compared against -- if EVERY value in that column
+   on the Config side is "1". It is never matched, never flagged red,
+   never shown. See CONDITIONAL_COLUMN_DROPS below to add similar rules
+   for other tabs/columns.
+12. NEW: For the "R_O_EQDed" Config tab, the "EQ Deductible Percent"
+   column is validated against export's "Earthquake Deduct Percentage"
+   two ways -- an EXACT match (no scaling) OR a scaled match (Config's
+   value / 100). A row is considered matched if EITHER comparison lines
+   up. See EQ_PER_TAB_VALUE_SCALE_COLUMNS below.
+13. NEW: In the Summary of Results sheet, the Territory tab's export
+   label is shown as the short fixed name "Territory_factors +CAT
+   perils" instead of the full export file name(s).
+14. NEW: In the Summary of Results sheet, the Roof Limit tab's export
+   label is shown as the short fixed name "Roof_Sublimit_Factors"
+   instead of the full export file name.
 
 Run:
     Edit INPUT_FILE_PATH below, then: python compare_tool.py
@@ -75,6 +95,7 @@ Run:
 
 import os
 import re
+import itertools
 from collections import Counter
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
@@ -131,8 +152,20 @@ EXCLUDED_TAB_NAMES = [
 # Territory file are combined on.
 TERRITORY_MERGE_COLUMN = "Territory"
 
+# When resolving the Territory merge column on either file, these names
+# are tried IN ORDER (case/space/punctuation-insensitive) -- "Territory"
+# first, then "ratingTerritory" as a fallback alias if "Territory" isn't
+# present on that particular file.
+TERRITORY_MERGE_COLUMN_ALIASES = ["Territory", "ratingTerritory"]
+
 # Column in the Roof Limit tab whose values get synonym-normalized.
 ROOF_LIMIT_VALUE_COLUMN = "Limit"
+
+# Short, fixed labels used ONLY in the Summary of Results sheet (and the
+# matching detail-sheet source labels) instead of the actual export file
+# name(s), for readability.
+TERRITORY_SUMMARY_LABEL = "Territory_factors +CAT perils"
+ROOF_SUMMARY_LABEL = "Roof_Sublimit_Factors"
 
 VALIDATED = "Validated - All Rows Match"
 MANUAL_VALIDATION = "Manual validation required"
@@ -177,6 +210,30 @@ WATER_BACKUP_COVERAGE_COLUMN = "Coverage Amount (Dollar or Percent)"
 # Rows where the coverage column's value is <= this threshold are skipped
 # (not compared, not counted as unmatched) for the tabs above.
 WATER_BACKUP_COVERAGE_THRESHOLD = 100
+
+# ------------------------------------------------------------------
+# NEW: Conditional column drops. For the listed Config tab, IF the named
+# column exists on the Config side AND every one of its values equals
+# `all_values_equal` (compared as trimmed strings), the column is dropped
+# entirely -- from BOTH the Config tab and whichever export sheet it's
+# being compared against -- before any column matching/comparison runs.
+# It is never matched, never counted as an unmatched/red column, and
+# never shown in the detail sheet. Lookup of the column name (on both the
+# Config and export side) is case/space/punctuation-insensitive.
+#
+# If the column isn't present on the Config side, or its values aren't
+# ALL equal to `all_values_equal`, nothing is dropped and the column is
+# matched/compared normally.
+#
+# R_C_AOIRel_AOPDedAOI: "WaterNonWinter" is dropped (ignored entirely,
+# both sides) whenever every Config value in that column is "1".
+# ------------------------------------------------------------------
+CONDITIONAL_COLUMN_DROPS = {
+    "R_C_AOIRel_AOPDedAOI": {
+        "column": "WaterNonWinter",
+        "all_values_equal": "1",
+    },
+}
 
 # ------------------------------------------------------------------
 # EQ per-CONFIG-TAB "post read" adjustments. These are applied directly
@@ -239,20 +296,31 @@ EQ_PER_TAB_VALUE_SYNONYM_COLUMNS = {
 # ------------------------------------------------------------------
 # EQ per-CONFIG-TAB, per-COLUMN numeric scale factors used ONLY during
 # row-comparison (never applied to the actual displayed data). The
-# column name given here is the CONFIG side's column name; its value is
-# multiplied by the factor purely to figure out whether a row matches --
-# if a row is flagged as unmatched, the ORIGINAL (unscaled) value is
-# still what shows up in the output detail sheet.
+# column name given here is the CONFIG side's column name.
 #
-# R_O_EQDed: Config's "EQ Deductible Percent" holds a whole percentage
-# (5, 10, 30); its mapped export column "Earthquake Deduct Percentage"
-# (matched via EQ_COLUMN_SYNONYM_PAIRS) holds the same thing as a decimal
-# fraction (0.05, 0.1, 0.3) -- dividing Config's value by 100 (factor
-# 0.01) before comparing lines the two up.
+# The value for a column may be:
+#   - a single number, e.g. 0.01           -> ALWAYS scale by that factor
+#     before comparing (original behaviour, unchanged for other tabs).
+#   - a LIST of numbers, e.g. [1, 0.01]    -> NEW: try EACH factor in the
+#     list; a Config row is treated as matched if the export lines up
+#     under ANY of them. Use factor 1 to mean "also accept an exact,
+#     unscaled match".
+#
+# Either way, if a row still ends up unmatched, the ORIGINAL (unscaled)
+# Config value is what's shown in the output detail sheet -- scaling is
+# only ever used for the in-memory comparison, never applied to the data.
+#
+# R_O_EQDed: Config's "EQ Deductible Percent" usually holds a whole
+# percentage (5, 10, 30) while its mapped export column "Earthquake
+# Deduct Percentage" (matched via EQ_COLUMN_SYNONYM_PAIRS) usually holds
+# the same thing as a decimal fraction (0.05, 0.1, 0.3) -- factor 0.01
+# lines those up. NEW: factor 1 is also tried, so a row where BOTH sides
+# already hold the exact same value (no scaling needed) is still
+# recognized as a match.
 # ------------------------------------------------------------------
 EQ_PER_TAB_VALUE_SCALE_COLUMNS = {
     "R_O_EQDed": {
-        "EQ Deductible Percent": 0.01,
+        "EQ Deductible Percent": [1, 0.01],
     },
 }
 
@@ -359,6 +427,18 @@ def resolve_name(target, names):
     for n in names:
         if clean_col(n) == tc:
             return n
+    return None
+
+
+def resolve_first_name(candidates, names):
+    """Like resolve_name, but tries each name in `candidates` IN ORDER and
+    returns the first one that resolves against `names`. Used for the
+    Territory merge column, which may be called "Territory" on one file
+    and "ratingTerritory" on another."""
+    for candidate in candidates:
+        resolved = resolve_name(candidate, names)
+        if resolved:
+            return resolved
     return None
 
 
@@ -619,6 +699,13 @@ def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_
     only the in-memory comparison uses the scaled number. Non-numeric values
     are left as-is (the scale is simply skipped for that cell) rather than
     raising, so string vs. number typing never breaks the comparison.
+
+    `factor` may also be a LIST of numbers (e.g. [1, 0.01]) instead of a
+    single number -- in that case EACH factor is tried for that column, and
+    a Config row is considered matched if the export lines up under ANY of
+    them (e.g. [1, 0.01] means "accept an exact match OR a match after
+    dividing Config's value by 100"). Columns not listed here (or with a
+    single-number factor) behave exactly as before.
     """
     value_synonym_cols = value_synonym_cols or {}
     config_value_scale_cols = config_value_scale_cols or {}
@@ -628,52 +715,86 @@ def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_
     # Per matched-column position, figure out which value-synonym group (if
     # any) applies -- keyed off the CONFIG side column name.
     per_col_synonyms = [value_synonym_cols.get(clean_col(c)) for c in config_cols]
-    # Per matched-column position, figure out which numeric scale factor (if
-    # any) applies to the CONFIG side -- also keyed off the CONFIG column name.
-    per_col_scale = [config_value_scale_cols.get(clean_col(c)) for c in config_cols]
 
-    def build_tuples(df, cols, scale_factors=None):
-        tuples = []
-        for row in df[cols].itertuples(index=False):
-            vals = []
-            for idx, v in enumerate(row):
-                val = v
-                factor = scale_factors[idx] if scale_factors else None
-                if factor is not None:
-                    # Ignore data type (string vs number) -- just try to
-                    # parse it; if it isn't numeric, leave it unscaled and
-                    # let normalize_value handle it as-is.
-                    try:
-                        val = float(v) * factor
-                    except (TypeError, ValueError):
-                        val = v
-                vals.append(normalize_value(val, decimal_places, per_col_synonyms[idx]))
-            tuples.append(tuple(vals))
-        return tuples
-
-    config_tuples = build_tuples(config_df, config_cols, per_col_scale)
-    export_tuples = build_tuples(export_df, export_cols, None)
-
-    export_counter = Counter(export_tuples)
-    unmatched_config_idx = []
-    remaining_export = export_counter.copy()
-    for i, t in enumerate(config_tuples):
-        if remaining_export.get(t, 0) > 0:
-            remaining_export[t] -= 1
+    # Per matched-column position, the list of scale factors to try on the
+    # CONFIG side. A column with no configured scale gets [None] (compare
+    # as-is). A column with a single number gets a single-item list (scale
+    # ALWAYS applied, same as the original behaviour). A column with a list
+    # gets that list verbatim (try each factor, accept any match).
+    per_col_factor_options = []
+    for c in config_cols:
+        entry = config_value_scale_cols.get(clean_col(c))
+        if entry is None:
+            per_col_factor_options.append([None])
+        elif isinstance(entry, (list, tuple)):
+            per_col_factor_options.append(list(entry))
         else:
+            per_col_factor_options.append([entry])
+
+    def build_row_tuple(values, factors):
+        vals = []
+        for idx, v in enumerate(values):
+            val = v
+            factor = factors[idx]
+            if factor is not None:
+                # Ignore data type (string vs number) -- just try to parse
+                # it; if it isn't numeric, leave it unscaled and let
+                # normalize_value handle it as-is.
+                try:
+                    val = float(v) * factor
+                except (TypeError, ValueError):
+                    val = v
+            vals.append(normalize_value(val, decimal_places, per_col_synonyms[idx]))
+        return tuple(vals)
+
+    # Export side is never scaled -- one tuple per export row.
+    export_row_values = list(export_df[export_cols].itertuples(index=False))
+    no_scale_factors = [None] * len(export_cols)
+    export_tuples = [build_row_tuple(row, no_scale_factors) for row in export_row_values]
+    export_counter = Counter(export_tuples)
+
+    # Config side: for columns with multiple factor options, build every
+    # distinct candidate tuple for that row (cartesian product across
+    # columns that have more than one option -- in practice this is
+    # usually just one column, e.g. R_O_EQDed's "EQ Deductible Percent").
+    config_row_values = list(config_df[config_cols].itertuples(index=False))
+    candidates_per_config_row = []
+    for row in config_row_values:
+        seen = []
+        for factors in itertools.product(*per_col_factor_options):
+            t = build_row_tuple(row, factors)
+            if t not in seen:
+                seen.append(t)
+        candidates_per_config_row.append(seen)
+
+    # Greedily match each Config row against the first available candidate
+    # tuple (in the order the factors were listed) still present in the
+    # export multiset.
+    remaining_export = export_counter.copy()
+    unmatched_config_idx = []
+    for i, candidates in enumerate(candidates_per_config_row):
+        matched = False
+        for t in candidates:
+            if remaining_export.get(t, 0) > 0:
+                remaining_export[t] -= 1
+                matched = True
+                break
+        if not matched:
             unmatched_config_idx.append(i)
 
-    config_counter = Counter(config_tuples)
+    # Whatever's left over in `remaining_export` once every Config row has
+    # tried to claim a match is, by definition, unmatched on the export
+    # side -- map those leftover counts back to specific row indices. (For
+    # columns with only a single factor option per row -- i.e. the original
+    # behaviour -- this is exactly equivalent to a plain multiset
+    # difference between the two sides.)
+    leftover = remaining_export
     unmatched_export_idx = []
-    remaining_config = config_counter.copy()
     for i, t in enumerate(export_tuples):
-        if remaining_config.get(t, 0) > 0:
-            remaining_config[t] -= 1
-        else:
+        if leftover.get(t, 0) > 0:
             unmatched_export_idx.append(i)
+            leftover[t] -= 1
 
-    # NOTE: sourced from the ORIGINAL config_df/export_df (never the scaled
-    # values used above) -- so unmatched rows always display real data.
     return (
         config_df.iloc[unmatched_config_idx].copy(),
         export_df.iloc[unmatched_export_idx].copy(),
@@ -767,6 +888,45 @@ def filter_low_coverage_rows(df, column_name=WATER_BACKUP_COVERAGE_COLUMN, thres
     return df[mask].reset_index(drop=True)
 
 
+def apply_conditional_column_drops(config_df, export_df, config_tab_name):
+    """For tabs configured in CONDITIONAL_COLUMN_DROPS: if the named column
+    exists in the Config tab and EVERY value in it equals `all_values_equal`
+    (compared as trimmed strings, e.g. "1"), drop that column entirely from
+    BOTH the config and export dataframes -- it's simply ignored, never
+    matched, never flagged red, never shown. Column lookup is case/space/
+    punctuation-insensitive on both sides.
+
+    If the column isn't present in Config, or its values aren't uniformly
+    the target value, nothing is dropped and the column is matched/compared
+    normally. A no-op for any tab not listed in CONDITIONAL_COLUMN_DROPS.
+
+    Returns the (possibly modified) (config_df, export_df) pair.
+    """
+    for tab_name, rule in CONDITIONAL_COLUMN_DROPS.items():
+        if clean_col(tab_name) != clean_col(config_tab_name):
+            continue
+
+        col_name = rule["column"]
+        target_value = str(rule["all_values_equal"]).strip()
+
+        resolved_cfg_col = resolve_name(col_name, config_df.columns) if config_df is not None else None
+        if not resolved_cfg_col:
+            continue
+
+        values = config_df[resolved_cfg_col].dropna().astype(str).str.strip()
+        if len(values) == 0 or not (values == target_value).all():
+            continue
+
+        config_df = config_df.drop(columns=[resolved_cfg_col])
+
+        if export_df is not None:
+            resolved_exp_col = resolve_name(col_name, export_df.columns)
+            if resolved_exp_col:
+                export_df = export_df.drop(columns=[resolved_exp_col])
+
+    return config_df, export_df
+
+
 def apply_eq_post_read_adjustments(df, config_tab_name, side):
     """Applies EQ_TAB_POST_READ_ADJUSTMENTS to `df` (whichever EQ config
     tab is currently being processed) -- dropping any configured columns,
@@ -837,7 +997,9 @@ def get_eq_value_synonym_cols_for_tab(config_tab_name):
 def get_eq_value_scale_cols_for_tab(config_tab_name):
     """Returns a {clean_col(config_column_name): factor} dict for EQ
     per-tab comparison-only numeric scaling (e.g. R_O_EQDed's "EQ
-    Deductible Percent" x0.01), or None if the tab has none configured."""
+    Deductible Percent" -> [1, 0.01]), or None if the tab has none
+    configured. `factor` may be a single number or a list of numbers --
+    see compare_rows()'s docstring for how a list is handled."""
     for tab_name, col_map in EQ_PER_TAB_VALUE_SCALE_COLUMNS.items():
         if clean_col(tab_name) == clean_col(config_tab_name):
             return {clean_col(col_name): factor for col_name, factor in col_map.items()}
@@ -858,21 +1020,32 @@ def drop_columns_if_present(df, columns_to_drop):
 
 def merge_export_dataframes(df1, df2, merge_column=TERRITORY_MERGE_COLUMN):
     """Combine two export dataframes into one, for Territory's dual-file case.
-    Specifically aligns on the "Territory" column (present in both files,
-    matched case/space/punctuation-insensitively) -- NOT on just any shared
-    column name. Falls back to combining by row position (with a warning) if
-    either file is missing that column."""
-    col1 = resolve_name(merge_column, df1.columns)
-    col2 = resolve_name(merge_column, df2.columns)
+    Specifically aligns on the Territory merge column (present in both
+    files, matched case/space/punctuation-insensitively) -- NOT on just any
+    shared column name. If `merge_column` is (or resolves to) "Territory",
+    TERRITORY_MERGE_COLUMN_ALIASES is used so "Territory" is tried first
+    and "ratingTerritory" is tried as a fallback on either file
+    independently (e.g. file 1 may use "Territory" while file 2 uses
+    "ratingTerritory"). Falls back to combining by row position (with a
+    warning) if either file has neither name."""
+    if clean_col(merge_column) == clean_col(TERRITORY_MERGE_COLUMN):
+        candidates = TERRITORY_MERGE_COLUMN_ALIASES
+    else:
+        candidates = [merge_column]
+
+    col1 = resolve_first_name(candidates, df1.columns)
+    col2 = resolve_first_name(candidates, df2.columns)
 
     if col1 and col2:
-        # Merge on the Territory column; rename df2's key to match df1's key
-        # name so pandas merges on a single logical column instead of
-        # producing duplicate Territory_x / Territory_y columns.
+        # Merge on the resolved key column; rename df2's key to match df1's
+        # key name so pandas merges on a single logical column instead of
+        # producing duplicate Territory_x / Territory_y (or mixed-name)
+        # columns.
         df2_renamed = df2.rename(columns={col2: col1})
         return pd.merge(df1, df2_renamed, on=col1, how="outer", suffixes=("_file1", "_file2"))
 
-    print(f"WARNING: Could not find a '{merge_column}' column in both the Territory export "
+    tried = "/".join(candidates)
+    print(f"WARNING: Could not find a '{tried}' column in both the Territory export "
           f"file and the supplemental file (Inputs!C56) -- combining columns by row position "
           f"instead. Please verify row order matches between the two files.")
     n = max(len(df1), len(df2))
@@ -1118,6 +1291,12 @@ def main(input_file):
                 config_df = read_df(paths["config_file"], resolved_cfg, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
 
+                # NEW: conditional per-tab column drops (e.g.
+                # R_C_AOIRel_AOPDedAOI's "WaterNonWinter" column, dropped
+                # from both sides -- never matched/shown -- whenever every
+                # Config value in it is "1").
+                config_df, export_df = apply_conditional_column_drops(config_df, export_df, resolved_cfg)
+
                 # Water Backup tabs: optionally skip rows with a low
                 # coverage amount, on both sides, before comparing.
                 if SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS and any(
@@ -1159,6 +1338,10 @@ def main(input_file):
                 # (truncated at the first blank/empty header cell).
                 export_df = read_df_first_table(paths["eq_file"], sheet_name, header_row)
 
+                # NEW: conditional per-tab column drops (harmless no-op for
+                # EQ tabs not listed in CONDITIONAL_COLUMN_DROPS).
+                config_df, export_df = apply_conditional_column_drops(config_df, export_df, target_config_tab)
+
                 # Per-tab "post read" fixes -- applied directly to the
                 # dataframe right after reading, before any matching runs:
                 #   - drops "State" entirely (both sides) for
@@ -1175,14 +1358,15 @@ def main(input_file):
                 current_eq_value_synonym_cols = get_eq_value_synonym_cols_for_tab(target_config_tab)
 
                 # Per-tab, per-column numeric scale applied ONLY during
-                # comparison (e.g. R_O_EQDed's "EQ Deductible Percent" x0.01
-                # so Config's 5/10/30 lines up with the export's 0.05/0.1/0.3
-                # -- name matching for that pair is already handled by
-                # EQ_COLUMN_SYNONYM_PAIRS). If the row still doesn't match,
-                # the ORIGINAL unscaled Config value is what shows in the
-                # output detail sheet, since the dataframe itself is never
-                # touched -- only the in-memory comparison uses the scaled
-                # number.
+                # comparison (e.g. R_O_EQDed's "EQ Deductible Percent" tries
+                # BOTH factor 1 -- exact match -- and factor 0.01 -- so
+                # Config's 5/10/30 also lines up with the export's
+                # 0.05/0.1/0.3 -- name matching for that pair is already
+                # handled by EQ_COLUMN_SYNONYM_PAIRS). If the row still
+                # doesn't match under either factor, the ORIGINAL unscaled
+                # Config value is what shows in the output detail sheet,
+                # since the dataframe itself is never touched -- only the
+                # in-memory comparison uses the scaled number(s).
                 current_eq_value_scale_cols = get_eq_value_scale_cols_for_tab(target_config_tab)
 
                 res = process_pair(
@@ -1211,9 +1395,6 @@ def main(input_file):
             sheet1_name = terr_wb1.sheetnames[0]
             export_df1 = read_df(paths["territory_file"], sheet1_name, 1)
 
-            # Label uses the FILE name (not the sheet name), per request.
-            file1_name = os.path.basename(str(paths["territory_file"]))
-            export_tab_label = file1_name
             combined_export_df = export_df1
 
             territory_file2_path = paths.get("territory_file2")
@@ -1221,13 +1402,17 @@ def main(input_file):
                 terr_wb2 = load_workbook(territory_file2_path, data_only=True)
                 sheet2_name = terr_wb2.sheetnames[0]
                 export_df2 = read_df(territory_file2_path, sheet2_name, 1)
-                # NOTE: merges specifically on the "Territory" column present
-                # in both files (not just any shared column name).
+                # NOTE: merges on the "Territory" column present in both
+                # files (falling back to "ratingTerritory" on either file
+                # if "Territory" isn't found there) -- not just any shared
+                # column name.
                 combined_export_df = merge_export_dataframes(
                     export_df1, export_df2, TERRITORY_MERGE_COLUMN
                 )
-                file2_name = os.path.basename(str(territory_file2_path))
-                export_tab_label = f"{file1_name} + {file2_name}"
+
+            # NEW: short, fixed label for the Summary sheet (and detail
+            # sheet source label) instead of the full export file name(s).
+            export_tab_label = TERRITORY_SUMMARY_LABEL
 
             res = process_pair(
                 config_df, combined_export_df, resolved_terr_cfg, export_tab_label, tr_synonyms, decimal_places
@@ -1251,8 +1436,9 @@ def main(input_file):
             roof_wb = load_workbook(paths["roof_file"], data_only=True)
             roof_sheet_name = roof_wb.sheetnames[0]
             export_df = read_df(paths["roof_file"], roof_sheet_name, 1)
-            # Label uses the FILE name (not the sheet name), per request.
-            roof_file_label = os.path.basename(str(paths["roof_file"]))
+            # NEW: short, fixed label for the Summary sheet (and detail
+            # sheet source label) instead of the full export file name.
+            roof_file_label = ROOF_SUMMARY_LABEL
             # NOTE: passes roof_value_synonym_cols so "No Limit" (Config) and
             # "No Sub-limit" (export) are treated as equal in the "Limit" column.
             res = process_pair(
