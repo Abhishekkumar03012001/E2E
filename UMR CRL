@@ -60,10 +60,6 @@ Sub ValidateCRLConfig()
         Exit Sub
     End If
 
-    ' Proposed Config is now OPTIONAL. If the path is blank or the file
-    ' cannot be found, we simply skip the U99/V99 checks (which are the
-    ' only checks that depend on the Proposed Config workbook) instead
-    ' of stopping the whole run.
     If proposedPath = "" Then
         proposedAvailable = False
     ElseIf Dir(proposedPath) = "" Then
@@ -109,8 +105,6 @@ Sub ValidateCRLConfig()
     Check_T90
     Check_T99
 
-    ' U99 / V99 depend on the Proposed Config workbook - only run (and
-    ' therefore only appear in the Summary) if that file was found.
     If proposedAvailable Then
         Check_U99
         Check_V99
@@ -213,8 +207,6 @@ Function TryParseNumber(v As Variant, ByRef outVal As Double) As Boolean
     s = Trim(CStr(v))
     If s = "" Then Exit Function
 
-    ' Strip everything except digits, decimal point and minus sign
-    ' (removes commas, currency symbols, spaces, percent signs, etc.)
     cleaned = ""
     For i = 1 To Len(s)
         ch = Mid(s, i, 1)
@@ -534,8 +526,6 @@ End Sub
 
 '--------------------------------------------------------------------
 ' 10) T90 - Column B = 1000 x Column A, from row 2
-'     Values may be stored as text/strings - parsed via TryParseNumber
-'     before the numeric comparison is performed.
 '--------------------------------------------------------------------
 Sub Check_T90()
     Dim sName As String: sName = "T90"
@@ -553,7 +543,7 @@ Sub Check_T90()
     lastRowVal = GetLastRow(ws, "A")
     allMatch = True
 
-    For i = 2 To lastRowVal
+    For i = 2 To lastRowVal - 1
         If TryParseNumber(ws.Cells(i, 1).Value, aNum) And TryParseNumber(ws.Cells(i, 2).Value, bNum) Then
             If Round(bNum, 4) <> Round(aNum * 1000, 4) Then
                 allMatch = False
@@ -572,8 +562,6 @@ End Sub
 
 '--------------------------------------------------------------------
 ' 11) T99 - Column A = 1000 x Column B, from row 2
-'     Values may be stored as text/strings - parsed via TryParseNumber
-'     before the numeric comparison is performed.
 '--------------------------------------------------------------------
 Sub Check_T99()
     Dim sName As String: sName = "T99"
@@ -612,13 +600,6 @@ End Sub
 ' 12 & 13) U99 / V99 - Column B must all be 1 (from row 2), and
 '          Column A values must match between CRL Config and the
 '          same-named sheet in the Proposed Config workbook.
-'          Comment now lists ONLY the values that are NOT common to
-'          both files (i.e. present in one but not the other),
-'          in both directions.
-'
-'          NOTE: These subs are only called from ValidateCRLConfig
-'          when proposedAvailable = True, i.e. when the Proposed
-'          Config file was actually found and opened.
 '--------------------------------------------------------------------
 Sub Check_U99()
     CheckU_V_Style "U99"
@@ -659,7 +640,6 @@ Sub CheckU_V_Style(sName As String)
     missingFromCRL = ""
     missingFromProp = ""
 
-    ' Build dictionary of CRL Column A values
     Set dictCRL = CreateObject("Scripting.Dictionary")
     lastRowCRL_A = GetLastRow(wsCRL, "A")
     For i = 2 To lastRowCRL_A
@@ -671,14 +651,12 @@ Sub CheckU_V_Style(sName As String)
         Set wsProp = wbProposed.Sheets(sName)
         lastRowProp = GetLastRow(wsProp, "A")
 
-        ' Build dictionary of Proposed Column A values
         Set dictProp = CreateObject("Scripting.Dictionary")
         For j = 2 To lastRowProp
             v = Trim(CStr(wsProp.Cells(j, 1).Value))
             If v <> "" Then dictProp(v) = True
         Next j
 
-        ' Values in Proposed but NOT in CRL
         For j = 2 To lastRowProp
             v = Trim(CStr(wsProp.Cells(j, 1).Value))
             If v <> "" Then
@@ -689,7 +667,6 @@ Sub CheckU_V_Style(sName As String)
             End If
         Next j
 
-        ' Values in CRL but NOT in Proposed
         For i = 2 To lastRowCRL_A
             v = Trim(CStr(wsCRL.Cells(i, 1).Value))
             If v <> "" Then
@@ -718,8 +695,6 @@ End Sub
 
 '--------------------------------------------------------------------
 ' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, right after "Read Me"
-' (runs BEFORE BuildSummarySheet). Sheets are copied with their
-' original names - no "_Review" suffix is added.
 '--------------------------------------------------------------------
 Sub CopyFailingSheets()
     Dim i As Long
@@ -740,14 +715,7 @@ Sub CopyFailingSheets()
 End Sub
 
 '--------------------------------------------------------------------
-' BUILD SUMMARY SHEET (inserted right after "Read Me", runs LAST
-' so it becomes the immediate neighbor of "Read Me")
-'
-' Formatting:
-'   - Entire sheet font size = 11
-'   - Header row: background RGB(0,0,90), white bold font, AutoFilter on
-'   - "Manual validation required" rows: light red background, black text
-'   - "Sheet does not exists" rows: light yellow background, black text
+' BUILD SUMMARY SHEET
 '--------------------------------------------------------------------
 Sub BuildSummarySheet()
     Dim wsSummary As Worksheet
@@ -768,8 +736,6 @@ Sub BuildSummarySheet()
     Set wsSummary = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("Read Me"))
     wsSummary.Name = "Summary"
 
-    ' Set base font size for the whole sheet first, so any cell we don't
-    ' explicitly touch later still inherits size 11.
     wsSummary.Cells.Font.Size = 11
 
     wsSummary.Range("A1").Value = "Tab Name"
@@ -794,11 +760,11 @@ Sub BuildSummarySheet()
 
         Select Case resResult(i)
             Case "Manual validation required"
-                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 199, 206)  ' light red
-                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)            ' black
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 199, 206)
+                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)
             Case "Sheet does not exists"
-                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 255, 153)  ' light yellow
-                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)            ' black
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 255, 153)
+                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)
         End Select
     Next i
 
@@ -811,7 +777,6 @@ Sub BuildSummarySheet()
         .Rows("2:" & (resCount + 1)).AutoFit
         .Range("A1:D" & (resCount + 1)).Borders.LineStyle = xlContinuous
 
-        ' Turn on filter dropdowns for the header row
         .Range("A1:D" & (resCount + 1)).AutoFilter
     End With
 End Sub
