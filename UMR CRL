@@ -7,8 +7,8 @@ Option Explicit
 ' - Deletes all sheets except "Read Me" before each run
 ' - Validates a defined list of tabs in CRL Config workbook
 ' - If the Proposed Config file is NOT found at its saved path,
-'   the U99 and V99 checks are SKIPPED ENTIRELY (they will not
-'   appear as rows in the Summary sheet at all)
+'   U99 and V99 still appear in the Summary, flagged as
+'   "Manual validation required" with comment "Proposed File missing"
 ' - Copies any sheet that exists but fails validation right after "Read Me"
 ' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
 '
@@ -65,7 +65,7 @@ Sub ValidateCRLConfig()
     ElseIf Dir(proposedPath) = "" Then
         proposedAvailable = False
         MsgBox "Proposed Config file not found at:" & vbCrLf & proposedPath & vbCrLf & vbCrLf & _
-               "Continuing validation WITHOUT the U99 and V99 checks (they require the Proposed Config file).", vbExclamation
+               "Continuing validation. U99 and V99 will be flagged as 'Proposed File missing'.", vbExclamation
     Else
         proposedAvailable = True
     End If
@@ -108,6 +108,9 @@ Sub ValidateCRLConfig()
     If proposedAvailable Then
         Check_U99
         Check_V99
+    Else
+        AddResult "U99", "Manual validation required", "Proposed File missing"
+        AddResult "V99", "Manual validation required", "Proposed File missing"
     End If
 
     '---------------- Build outputs ----------------
@@ -126,7 +129,7 @@ Sub ValidateCRLConfig()
     Application.ScreenUpdating = True
 
     MsgBox "Validation complete (" & resCount & " tabs checked). Please review the 'Summary' sheet." & _
-           IIf(Not proposedAvailable, vbCrLf & vbCrLf & "Note: U99 and V99 were skipped because the Proposed Config file was not found.", ""), vbInformation
+           IIf(Not proposedAvailable, vbCrLf & vbCrLf & "Note: U99 and V99 are flagged because the Proposed Config file was not found.", ""), vbInformation
     Exit Sub
 
 ErrHandler:
@@ -600,6 +603,9 @@ End Sub
 ' 12 & 13) U99 / V99 - Column B must all be 1 (from row 2), and
 '          Column A values must match between CRL Config and the
 '          same-named sheet in the Proposed Config workbook.
+'
+'          NOTE: These subs are only called from ValidateCRLConfig
+'          when proposedAvailable = True.
 '--------------------------------------------------------------------
 Sub Check_U99()
     CheckU_V_Style "U99"
