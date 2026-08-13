@@ -6,6 +6,9 @@ Option Explicit
 '   State abbreviation (D15) from "Read Me" sheet in ThisWorkbook
 ' - Deletes all sheets except "Read Me" before each run
 ' - Validates a defined list of tabs in CRL Config workbook
+' - If the Proposed Config file is NOT found at its saved path,
+'   the U99 and V99 checks are SKIPPED ENTIRELY (they will not
+'   appear as rows in the Summary sheet at all)
 ' - Copies any sheet that exists but fails validation right after "Read Me"
 ' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
 '
@@ -21,6 +24,8 @@ Dim resComment() As String
 
 Dim wbProposed As Workbook
 Dim wbCRL As Workbook
+
+Dim proposedAvailable As Boolean   ' True only if Proposed Config file was found & opened
 
 '--------------------------------------------------------------------
 ' MAIN ENTRY POINT
@@ -38,18 +43,15 @@ Sub ValidateCRLConfig()
     ReDim resResult(1 To 1)
     ReDim resComment(1 To 1)
 
+    proposedAvailable = False
+
     Set wsReadMe = ThisWorkbook.Sheets("Read Me")
     proposedPath = Trim(wsReadMe.Range("D23").Value)
     crlPath = Trim(wsReadMe.Range("D24").Value)
     stateAbbr = Trim(wsReadMe.Range("D15").Value)
 
-    If proposedPath = "" Or crlPath = "" Then
-        MsgBox "Please provide both Proposed Config (D23) and CRL Config (D24) file paths in the 'Read Me' sheet.", vbExclamation
-        Exit Sub
-    End If
-
-    If Dir(proposedPath) = "" Then
-        MsgBox "Proposed Config file not found at:" & vbCrLf & proposedPath, vbCritical
+    If crlPath = "" Then
+        MsgBox "Please provide the CRL Config (D24) file path in the 'Read Me' sheet.", vbExclamation
         Exit Sub
     End If
 
@@ -58,14 +60,33 @@ Sub ValidateCRLConfig()
         Exit Sub
     End If
 
+    ' Proposed Config is now OPTIONAL. If the path is blank or the file
+    ' cannot be found, we simply skip the U99/V99 checks (which are the
+    ' only checks that depend on the Proposed Config workbook) instead
+    ' of stopping the whole run.
+    If proposedPath = "" Then
+        proposedAvailable = False
+    ElseIf Dir(proposedPath) = "" Then
+        proposedAvailable = False
+        MsgBox "Proposed Config file not found at:" & vbCrLf & proposedPath & vbCrLf & vbCrLf & _
+               "Continuing validation WITHOUT the U99 and V99 checks (they require the Proposed Config file).", vbExclamation
+    Else
+        proposedAvailable = True
+    End If
+
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
 
     '---------------- Clean up sheets from any previous run ----------------
     CleanupSheets
 
-    Set wbProposed = Workbooks.Open(proposedPath, ReadOnly:=True)
     Set wbCRL = Workbooks.Open(crlPath, ReadOnly:=True)
+
+    If proposedAvailable Then
+        Set wbProposed = Workbooks.Open(proposedPath, ReadOnly:=True)
+    Else
+        Set wbProposed = Nothing
+    End If
 
     '---------------- Run all checks in order ----------------
     Check_SimpleExist "C51"
@@ -87,22 +108,31 @@ Sub ValidateCRLConfig()
 
     Check_T90
     Check_T99
-    Check_U99
-    Check_V99
+
+    ' U99 / V99 depend on the Proposed Config workbook - only run (and
+    ' therefore only appear in the Summary) if that file was found.
+    If proposedAvailable Then
+        Check_U99
+        Check_V99
+    End If
 
     '---------------- Build outputs ----------------
     CopyFailingSheets
     BuildSummarySheet
 
-    wbProposed.Close SaveChanges:=False
     wbCRL.Close SaveChanges:=False
-    Set wbProposed = Nothing
     Set wbCRL = Nothing
+
+    If proposedAvailable Then
+        wbProposed.Close SaveChanges:=False
+        Set wbProposed = Nothing
+    End If
 
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Validation complete (" & resCount & " tabs checked). Please review the 'Summary' sheet.", vbInformation
+    MsgBox "Validation complete (" & resCount & " tabs checked). Please review the 'Summary' sheet." & _
+           IIf(Not proposedAvailable, vbCrLf & vbCrLf & "Note: U99 and V99 were skipped because the Proposed Config file was not found.", ""), vbInformation
     Exit Sub
 
 ErrHandler:
@@ -134,6 +164,10 @@ End Sub
 '--------------------------------------------------------------------
 Function SheetExists(wb As Workbook, sName As String) As Boolean
     Dim ws As Worksheet
+    If wb Is Nothing Then
+        SheetExists = False
+        Exit Function
+    End If
     On Error Resume Next
     Set ws = wb.Sheets(sName)
     On Error GoTo 0
@@ -581,6 +615,10 @@ End Sub
 '          Comment now lists ONLY the values that are NOT common to
 '          both files (i.e. present in one but not the other),
 '          in both directions.
+'
+'          NOTE: These subs are only called from ValidateCRLConfig
+'          when proposedAvailable = True, i.e. when the Proposed
+'          Config file was actually found and opened.
 '--------------------------------------------------------------------
 Sub Check_U99()
     CheckU_V_Style "U99"
@@ -704,6 +742,12 @@ End Sub
 '--------------------------------------------------------------------
 ' BUILD SUMMARY SHEET (inserted right after "Read Me", runs LAST
 ' so it becomes the immediate neighbor of "Read Me")
+'
+' Formatting:
+'   - Entire sheet font size = 11
+'   - Header row: background RGB(0,0,90), white bold font, AutoFilter on
+'   - "Manual validation required" rows: light red background, black text
+'   - "Sheet does not exists" rows: light yellow background, black text
 '--------------------------------------------------------------------
 Sub BuildSummarySheet()
     Dim wsSummary As Worksheet
@@ -724,11 +768,21 @@ Sub BuildSummarySheet()
     Set wsSummary = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("Read Me"))
     wsSummary.Name = "Summary"
 
+    ' Set base font size for the whole sheet first, so any cell we don't
+    ' explicitly touch later still inherits size 11.
+    wsSummary.Cells.Font.Size = 11
+
     wsSummary.Range("A1").Value = "Tab Name"
     wsSummary.Range("B1").Value = "Result"
     wsSummary.Range("C1").Value = "Comments"
     wsSummary.Range("D1").Value = "Analyst Comment"
-    wsSummary.Range("A1:D1").Font.Bold = True
+
+    With wsSummary.Range("A1:D1")
+        .Font.Bold = True
+        .Font.Size = 11
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(0, 0, 90)
+    End With
 
     For i = 1 To resCount
         wsSummary.Cells(i + 1, 1).Value = resName(i)
@@ -736,12 +790,15 @@ Sub BuildSummarySheet()
         wsSummary.Cells(i + 1, 3).Value = resComment(i)
         wsSummary.Cells(i + 1, 4).Value = ""
 
+        wsSummary.Range(wsSummary.Cells(i + 1, 1), wsSummary.Cells(i + 1, 4)).Font.Size = 11
+
         Select Case resResult(i)
             Case "Manual validation required"
-                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 0, 0)
-                wsSummary.Cells(i + 1, 2).Font.Color = RGB(255, 255, 255)
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 199, 206)  ' light red
+                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)            ' black
             Case "Sheet does not exists"
-                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 255, 0)
+                wsSummary.Cells(i + 1, 2).Interior.Color = RGB(255, 255, 153)  ' light yellow
+                wsSummary.Cells(i + 1, 2).Font.Color = RGB(0, 0, 0)            ' black
         End Select
     Next i
 
@@ -753,5 +810,8 @@ Sub BuildSummarySheet()
         .Columns("C").WrapText = True
         .Rows("2:" & (resCount + 1)).AutoFit
         .Range("A1:D" & (resCount + 1)).Borders.LineStyle = xlContinuous
+
+        ' Turn on filter dropdowns for the header row
+        .Range("A1:D" & (resCount + 1)).AutoFilter
     End With
 End Sub
