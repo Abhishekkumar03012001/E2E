@@ -40,7 +40,7 @@ Sub CopyDataBetweenWorkbooks()
     Set wbSrc = Workbooks.Open(Filename:=srcPath, ReadOnly:=True, UpdateLinks:=False)
     Set wbDst = Workbooks.Open(Filename:=dstPath, ReadOnly:=True, UpdateLinks:=False)
 
-    ' Sheets that use the "heading + key columns" logic
+    ' Sheets that use the "heading + key columns" logic (same name in both files now)
     regularSheets = Array("Auto", "Residence", "Motorcycle Rec Veh", "Boats")
     ' Sheets that use the "Limit column header" logic
     limitSheets = Array("Limits", "Discount")
@@ -74,8 +74,8 @@ Sub CopyDataBetweenWorkbooks()
 
         For i = LBound(regularSheets) To UBound(regularSheets)
             If SheetExists(wbDst, CStr(regularSheets(i))) Then
-                ' srcOffset:=0  -> read from column A/B/C/E/F... of the destination's own Auto/Residence/etc sheet
-                ' dstOffset:=3  -> write into column D/E/F/H/I... of Weighted Rates
+                ' srcOffset:=0 -> read from column A/B/C/E/F... of the destination's own sheet
+                ' dstOffset:=3 -> write into column D/E/F/H/I... of Weighted Rates
                 ProcessRegularSheet wbDst.Sheets(CStr(regularSheets(i))), wsWeighted, 0, 3
             End If
         Next i
@@ -169,26 +169,28 @@ Function GetFileExtension(fullPath As String) As String
 End Function
 
 '=====================================================================
-' REGULAR SHEETS (Auto, Residence, Motorcycle Rec Veh, Boats) — and now
-' also reusable for the "Weighted Rates" sheet via column offsets.
+' REGULAR SHEETS (Auto, Residence, Motorcycle Rec Veh, Boats) — also
+' reusable for the "Weighted Rates" sheet via column offsets.
 '
 ' srcOffset / dstOffset shift the whole column layout to the right:
 '   offset 0 -> heading/key col = A(1), value = C(3), block2 header/key = E(5), block2 values start F(6)
 '   offset 3 -> heading/key col = D(4), value = F(6), block2 header/key = H(8), block2 values start I(9)
 '
-' Layout assumption (matches your files, relative to the offset):
+' Layout assumption (relative to the offset):
 '   Heading row   : Col (1+offset) = "Some Text: CODE"   (heading text contains ":")
-'   Header row    : Col (5+offset) = "Terr"  (marks the start of "block 2")
+'   Header row    : somewhere below the heading (NOT necessarily the very next
+'                    row - there can be one or more blank rows in between),
+'                    Col (5+offset) = "Terr"
 '   Data rows     : Block 1 -> Col (1+offset) + Col (2+offset) = key -> Col (3+offset) = value
 '                    Block 2 -> Col (5+offset)                = key -> Col (6+offset)..last = values
 '=====================================================================
 Sub ProcessRegularSheet(wsSrc As Worksheet, wsDst As Worksheet, _
                          Optional srcOffset As Long = 0, Optional dstOffset As Long = 0)
 
-    Dim lastRowSrc As Long, r As Long, r2 As Long
+    Dim lastRowSrc As Long, r As Long, r2 As Long, rr As Long
     Dim headingText As String, headingRowDst As Long
     Dim targetRow As Long, c As Long
-    Dim lastColBlock2 As Long
+    Dim lastColBlock2 As Long, headerRowSrc As Long
 
     Dim sHead As Long, sKey1 As Long, sKey2 As Long, sVal As Long, sB2Head As Long, sB2ValStart As Long
     Dim dHead As Long, dKey1 As Long, dKey2 As Long, dVal As Long, dB2Key As Long, dB2ValStart As Long
@@ -210,12 +212,25 @@ Sub ProcessRegularSheet(wsSrc As Worksheet, wsDst As Worksheet, _
             headingText = Trim(CStr(wsSrc.Cells(r, sHead).Value))
             headingRowDst = FindHeadingRow(wsDst, headingText, dHead)
 
-            ' Work out how many columns "block 2" (Terr / limit codes) uses,
-            ' by reading the header row that sits right under the heading.
+            ' Locate the block-2 "Terr" header row by SCANNING FORWARD from the
+            ' heading row (not assuming it's exactly the next row - there can be
+            ' one or more blank rows in between), stopping if the next heading
+            ' is reached first (meaning this table has no block-2 at all).
+            headerRowSrc = 0
+            rr = r + 1
+            Do While rr <= lastRowSrc
+                If IsHeadingCell(wsSrc.Cells(rr, sHead).Value) Then Exit Do
+                If Trim(CStr(wsSrc.Cells(rr, sB2Head).Value)) = "Terr" Then
+                    headerRowSrc = rr
+                    Exit Do
+                End If
+                rr = rr + 1
+            Loop
+
             lastColBlock2 = 0
-            If Trim(CStr(wsSrc.Cells(r + 1, sB2Head).Value)) = "Terr" Then
+            If headerRowSrc > 0 Then
                 c = wsSrc.Columns.Count
-                Do While c > sB2Head And Len(Trim(CStr(wsSrc.Cells(r + 1, c).Value))) = 0
+                Do While c > sB2Head And Len(Trim(CStr(wsSrc.Cells(headerRowSrc, c).Value))) = 0
                     c = c - 1
                 Loop
                 lastColBlock2 = c
