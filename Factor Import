@@ -1,1 +1,156 @@
+Option Explicit
 
+Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFilePath As String)
+
+    Dim masterWS As Worksheet
+    Dim configWB As Workbook
+    Dim othersWB As Workbook
+    Dim lastRow As Long
+    Dim i As Long
+
+    Dim configSheetName As String   'Column A (raw)
+    Dim othersSheetName As String   'Column B
+
+    Dim effectiveA As String
+    Dim oldSheet As Worksheet
+    Dim foundIndex As Long
+    Dim newConfigPath As String
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    On Error GoTo CleanFail
+
+    Set masterWS = ThisWorkbook.Sheets("Master List")
+
+    Set configWB = Workbooks.Open(Filename:=ConfigFilePath, UpdateLinks:=0)
+    Set othersWB = Workbooks.Open(Filename:=OthersFilePath, UpdateLinks:=0, ReadOnly:=True)
+
+    lastRow = masterWS.Cells(masterWS.Rows.Count, "B").End(xlUp).Row
+
+    For i = 2 To lastRow
+
+        configSheetName = Trim(masterWS.Cells(i, "A").Value)
+        othersSheetName = Trim(masterWS.Cells(i, "B").Value)
+
+        masterWS.Cells(i, "D").Interior.ColorIndex = xlColorNone
+
+        'Skip if Column B is empty
+        If othersSheetName = "" Then GoTo NextRow
+
+        'Effective A = Column A, or Column B if Column A is blank
+        If configSheetName = "" Then
+            effectiveA = othersSheetName
+        Else
+            effectiveA = configSheetName
+        End If
+
+        'Step 1: does B exist in Others?
+        If Not SheetExists(othersWB, othersSheetName) Then
+            masterWS.Cells(i, "D").Value = "Sheet not found"
+            masterWS.Cells(i, "D").Interior.Color = RGB(255, 0, 0)
+            GoTo NextRow
+        End If
+
+        foundIndex = 0
+
+        'Step 2: search Effective A in Config first
+        If SheetExists(configWB, effectiveA) Then
+            Set oldSheet = configWB.Sheets(effectiveA)
+            foundIndex = oldSheet.Index
+            oldSheet.Delete
+
+            'avoid name clash before renaming copy to effectiveA
+            If SheetExists(configWB, effectiveA) Then configWB.Sheets(effectiveA).Delete
+
+            If foundIndex > 0 And foundIndex <= configWB.Sheets.Count Then
+                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(foundIndex)
+            Else
+                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
+            End If
+            configWB.ActiveSheet.Name = effectiveA
+            masterWS.Cells(i, "D").Value = "Replaced"
+
+        'Step 3: not found by Effective A -> search literal B in Config
+        ElseIf SheetExists(configWB, othersSheetName) Then
+            Set oldSheet = configWB.Sheets(othersSheetName)
+            foundIndex = oldSheet.Index
+            oldSheet.Delete
+
+            If foundIndex > 0 And foundIndex <= configWB.Sheets.Count Then
+                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(foundIndex)
+            Else
+                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
+            End If
+            configWB.ActiveSheet.Name = othersSheetName
+            masterWS.Cells(i, "D").Value = "Replaced"
+
+        'Step 4: neither found -> copy to end, name = Effective A
+        Else
+            othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
+
+            If configWB.ActiveSheet.Name <> effectiveA Then
+                configWB.ActiveSheet.Name = effectiveA
+            End If
+            masterWS.Cells(i, "D").Value = "Copied"
+
+        End If
+
+NextRow:
+    Next i
+
+    'Save Config under new name: "<original name> Updated factors.<ext>"
+    newConfigPath = BuildNewPath(ConfigFilePath)
+    configWB.SaveAs Filename:=newConfigPath, FileFormat:=configWB.FileFormat
+
+    othersWB.Close SaveChanges:=False
+    configWB.Close SaveChanges:=False
+
+CleanExit:
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    Exit Sub
+
+CleanFail:
+    MsgBox "Error: " & Err.Description, vbCritical
+    Resume CleanExit
+
+End Sub
+
+
+'Returns True if a sheet with the given name exists in the given workbook
+Private Function SheetExists(wb As Workbook, sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Sheets(sheetName)
+    On Error GoTo 0
+    SheetExists = Not ws Is Nothing
+End Function
+
+
+'Builds "<folder>\<name> Updated factors.<ext>" from the original config path
+Private Function BuildNewPath(ByVal originalPath As String) As String
+    Dim folderPath As String
+    Dim fileName As String
+    Dim baseName As String
+    Dim extPart As String
+    Dim slashPos As Long
+    Dim dotPos As Long
+
+    slashPos = InStrRev(originalPath, "\")
+    folderPath = Left(originalPath, slashPos)
+    fileName = Mid(originalPath, slashPos + 1)
+
+    dotPos = InStrRev(fileName, ".")
+    If dotPos > 0 Then
+        baseName = Left(fileName, dotPos - 1)
+        extPart = Mid(fileName, dotPos)
+    Else
+        baseName = fileName
+        extPart = ""
+    End If
+
+    BuildNewPath = folderPath & baseName & " Updated factors" & extPart
+End Function
