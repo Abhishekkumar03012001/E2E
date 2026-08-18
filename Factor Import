@@ -24,8 +24,12 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
 
     Set masterWS = ThisWorkbook.Sheets("Master List")
 
+    'Open both files completely hidden - no visible windows, no screen flicker
     Set configWB = Workbooks.Open(Filename:=ConfigFilePath, UpdateLinks:=0)
+    configWB.Windows(1).Visible = False
+
     Set othersWB = Workbooks.Open(Filename:=OthersFilePath, UpdateLinks:=0, ReadOnly:=True)
+    othersWB.Windows(1).Visible = False
 
     lastRow = masterWS.Cells(masterWS.Rows.Count, "B").End(xlUp).Row
 
@@ -34,10 +38,15 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
         configSheetName = Trim(masterWS.Cells(i, "A").Value)
         othersSheetName = Trim(masterWS.Cells(i, "B").Value)
 
-        masterWS.Cells(i, "D").Interior.ColorIndex = xlColorNone
+        masterWS.Cells(i, "D").Interior.ColorIndex = -4142   'xlColorNone - clear old fill
+        masterWS.Cells(i, "D").Value = ""
 
-        'Skip if Column B is empty
-        If othersSheetName = "" Then GoTo NextRow
+        'Step 0: Column B empty or contains invalid sheet-name characters
+        If Not IsValidSheetName(othersSheetName) Then
+            masterWS.Cells(i, "D").Value = "Invalid sheet name"
+            masterWS.Cells(i, "D").Interior.Color = RGB(255, 255, 153)  'light yellow
+            GoTo NextRow
+        End If
 
         'Effective A = Column A, or Column B if Column A is blank
         If configSheetName = "" Then
@@ -49,7 +58,7 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
         'Step 1: does B exist in Others?
         If Not SheetExists(othersWB, othersSheetName) Then
             masterWS.Cells(i, "D").Value = "Sheet not found"
-            masterWS.Cells(i, "D").Interior.Color = RGB(255, 0, 0)
+            masterWS.Cells(i, "D").Interior.Color = RGB(255, 199, 206)  'light red
             GoTo NextRow
         End If
 
@@ -107,15 +116,28 @@ NextRow:
     othersWB.Close SaveChanges:=False
     configWB.Close SaveChanges:=False
 
-CleanExit:
     Application.EnableEvents = True
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
+
+    MsgBox "Task completed.", vbInformation
+
     Exit Sub
 
 CleanFail:
-    MsgBox "Error: " & Err.Description, vbCritical
-    Resume CleanExit
+    Dim errMsg As String
+    errMsg = Err.Description
+
+    On Error Resume Next
+    If Not othersWB Is Nothing Then othersWB.Close SaveChanges:=False
+    If Not configWB Is Nothing Then configWB.Close SaveChanges:=False
+    On Error GoTo 0
+
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Error: " & errMsg, vbCritical
 
 End Sub
 
@@ -127,6 +149,35 @@ Private Function SheetExists(wb As Workbook, sheetName As String) As Boolean
     Set ws = wb.Sheets(sheetName)
     On Error GoTo 0
     SheetExists = Not ws Is Nothing
+End Function
+
+
+'Returns True only if the name is non-blank, <=31 chars, and has no invalid characters
+Private Function IsValidSheetName(ByVal nm As String) As Boolean
+    Dim invalidChars As String
+    Dim c As String
+    Dim k As Long
+
+    If Trim(nm) = "" Then
+        IsValidSheetName = False
+        Exit Function
+    End If
+
+    If Len(nm) > 31 Then
+        IsValidSheetName = False
+        Exit Function
+    End If
+
+    invalidChars = "\/?*[]:"
+    For k = 1 To Len(invalidChars)
+        c = Mid(invalidChars, k, 1)
+        If InStr(nm, c) > 0 Then
+            IsValidSheetName = False
+            Exit Function
+        End If
+    Next k
+
+    IsValidSheetName = True
 End Function
 
 
