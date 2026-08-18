@@ -1,0 +1,150 @@
+Option Explicit
+
+Private Sub UserForm_Initialize()
+    ' Set default option button
+    SingleTerr.Value = True
+    MultiTerr.Value = False
+
+    ' Disable Territory controls by default (Single is default)
+    txtTerr.Enabled = False
+    btnTerr.Enabled = False
+
+    ' Clear all textboxes just in case
+    txtRoc.Value = ""
+    txtFR.Value = ""
+    txtTerr.Value = ""
+
+    ' Initial button states
+    btnRefresh.Enabled = False
+    btnGenerate.Enabled = False
+End Sub
+
+'--------------------------------------------------
+' File picker buttons
+'--------------------------------------------------
+
+Private Sub btnRoc_Click()
+    Dim selectedPath As String
+    selectedPath = GetFilePath()
+    If selectedPath <> "" Then
+        txtRoc.Value = selectedPath
+    End If
+End Sub
+
+Private Sub btnFR_Click()
+    Dim selectedPath As String
+    selectedPath = GetFilePath()
+    If selectedPath <> "" Then
+        txtFR.Value = selectedPath
+    End If
+End Sub
+
+Private Sub btnTerr_Click()
+    Dim selectedPath As String
+    selectedPath = GetFilePath()
+    If selectedPath <> "" Then
+        txtTerr.Value = selectedPath
+    End If
+End Sub
+
+Private Function GetFilePath() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+
+    fd.AllowMultiSelect = False
+    fd.Title = "Select a File"
+
+    If fd.Show = -1 Then
+        GetFilePath = fd.SelectedItems(1)
+    Else
+        GetFilePath = ""
+    End If
+End Function
+
+'--------------------------------------------------
+' OptionButtons - mutually exclusive (native behavior)
+' but we still need to enable/disable txtTerr & btnTerr
+'--------------------------------------------------
+
+Private Sub SingleTerr_Click()
+    txtTerr.Enabled = False
+    btnTerr.Enabled = False
+    txtTerr.Value = ""   ' optional: clear territory path when switching to Single
+    UpdateButtons
+End Sub
+
+Private Sub MultiTerr_Click()
+    txtTerr.Enabled = True
+    btnTerr.Enabled = True
+    UpdateButtons
+End Sub
+
+'--------------------------------------------------
+' Textbox change events - track manual paste too
+'--------------------------------------------------
+
+Private Sub txtRoc_Change()
+    UpdateButtons
+End Sub
+
+Private Sub txtFR_Change()
+    UpdateButtons
+End Sub
+
+Private Sub txtTerr_Change()
+    UpdateButtons
+End Sub
+
+'--------------------------------------------------
+' Central logic to enable/disable Refresh & Generate
+'--------------------------------------------------
+
+Private Sub UpdateButtons()
+
+    ' Refresh button: active if ANY of the 3 textboxes has value
+    If Trim(txtRoc.Value) <> "" Or Trim(txtFR.Value) <> "" Or Trim(txtTerr.Value) <> "" Then
+        btnRefresh.Enabled = True
+    Else
+        btnRefresh.Enabled = False
+    End If
+
+    ' Generate button logic
+    If Trim(txtRoc.Value) <> "" And Trim(txtFR.Value) <> "" Then
+        If SingleTerr.Value = True Then
+            btnGenerate.Enabled = True
+        ElseIf MultiTerr.Value = True And Trim(txtTerr.Value) <> "" Then
+            btnGenerate.Enabled = True
+        Else
+            btnGenerate.Enabled = False
+        End If
+    Else
+        btnGenerate.Enabled = False
+    End If
+
+End Sub
+
+'--------------------------------------------------
+' Refresh button - resets all textboxes
+'--------------------------------------------------
+
+Private Sub btnRefresh_Click()
+    txtRoc.Value = ""
+    txtFR.Value = ""
+    txtTerr.Value = ""
+    UpdateButtons
+End Sub
+
+'--------------------------------------------------
+' Generate button - calls appropriate sub
+'--------------------------------------------------
+
+Private Sub btnGenerate_Click()
+
+    If SingleTerr.Value = True Then
+        Call TerritorySingle(txtRoc.Value, txtFR.Value)
+
+    ElseIf MultiTerr.Value = True Then
+        Call TerritoryMultiple(txtRoc.Value, txtFR.Value, txtTerr.Value)
+    End If
+
+End Sub
