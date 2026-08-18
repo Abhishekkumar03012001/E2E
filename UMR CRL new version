@@ -14,9 +14,36 @@ Private Sub UserForm_Initialize()
     txtFR.Value = ""
     txtTerr.Value = ""
 
+    ' Populate Statebox with US state abbreviations
+    PopulateStateBox
+
+    ' Default value "NA"
+    Statebox.Value = "NA"
+
     ' Initial button states
     btnRefresh.Enabled = False
     btnGenerate.Enabled = False
+End Sub
+
+'--------------------------------------------------
+' Populate State ComboBox
+'--------------------------------------------------
+
+Private Sub PopulateStateBox()
+    Dim states As Variant
+    Dim i As Long
+
+    states = Array("NA", "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", _
+                    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", _
+                    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", _
+                    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", _
+                    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", _
+                    "DC")
+
+    Statebox.Clear
+    For i = LBound(states) To UBound(states)
+        Statebox.AddItem states(i)
+    Next i
 End Sub
 
 '--------------------------------------------------
@@ -96,6 +123,14 @@ Private Sub txtTerr_Change()
 End Sub
 
 '--------------------------------------------------
+' Statebox change event
+'--------------------------------------------------
+
+Private Sub Statebox_Change()
+    UpdateButtons
+End Sub
+
+'--------------------------------------------------
 ' Central logic to enable/disable Refresh & Generate
 '--------------------------------------------------
 
@@ -109,7 +144,10 @@ Private Sub UpdateButtons()
     End If
 
     ' Generate button logic
-    If Trim(txtRoc.Value) <> "" And Trim(txtFR.Value) <> "" Then
+    Dim stateValid As Boolean
+    stateValid = (Trim(Statebox.Value) <> "" And Statebox.Value <> "NA")
+
+    If Trim(txtRoc.Value) <> "" And Trim(txtFR.Value) <> "" And stateValid Then
         If SingleTerr.Value = True Then
             btnGenerate.Enabled = True
         ElseIf MultiTerr.Value = True And Trim(txtTerr.Value) <> "" Then
@@ -131,6 +169,7 @@ Private Sub btnRefresh_Click()
     txtRoc.Value = ""
     txtFR.Value = ""
     txtTerr.Value = ""
+    Statebox.Value = "NA"
     UpdateButtons
 End Sub
 
@@ -141,10 +180,10 @@ End Sub
 Private Sub btnGenerate_Click()
 
     If SingleTerr.Value = True Then
-        Call TerritorySingle(txtRoc.Value, txtFR.Value)
+        Call TerritorySingle(txtRoc.Value, txtFR.Value, Statebox.Value)
 
     ElseIf MultiTerr.Value = True Then
-        Call TerritoryMultiple(txtRoc.Value, txtFR.Value, txtTerr.Value)
+        Call TerritoryMultiple(txtRoc.Value, txtFR.Value, txtTerr.Value, Statebox.Value)
     End If
 
 End Sub
