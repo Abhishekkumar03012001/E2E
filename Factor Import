@@ -1,5 +1,10 @@
 Option Explicit
 
+'If your Config or Others file has a protection password, put it here.
+'Leave as empty string "" if there's no password.
+Private Const CONFIG_PROTECT_PASSWORD As String = ""
+Private Const OTHERS_PROTECT_PASSWORD As String = ""
+
 Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFilePath As String)
 
     Dim masterWS As Worksheet
@@ -24,12 +29,18 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
 
     Set masterWS = ThisWorkbook.Sheets("Master List")
 
-    'Open both files completely hidden - no visible windows, no screen flicker
+    'Open both files, minimized (not fully hidden - Copy method needs a real window)
     Set configWB = Workbooks.Open(Filename:=ConfigFilePath, UpdateLinks:=0)
-    configWB.Windows(1).Visible = False
+    configWB.Windows(1).WindowState = xlMinimized
 
     Set othersWB = Workbooks.Open(Filename:=OthersFilePath, UpdateLinks:=0, ReadOnly:=True)
-    othersWB.Windows(1).Visible = False
+    othersWB.Windows(1).WindowState = xlMinimized
+
+    'Remove workbook structure protection (in memory only - not saved back to originals)
+    On Error Resume Next
+    configWB.Unprotect Password:=CONFIG_PROTECT_PASSWORD
+    othersWB.Unprotect Password:=OTHERS_PROTECT_PASSWORD
+    On Error GoTo CleanFail
 
     lastRow = masterWS.Cells(masterWS.Rows.Count, "B").End(xlUp).Row
 
