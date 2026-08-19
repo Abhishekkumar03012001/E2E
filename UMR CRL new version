@@ -282,8 +282,9 @@ Private Function GetSheetFuzzy(ByVal wb As Workbook, ByVal exactName As String, 
 End Function
 
 '=====================================================================
-' STEP 1 - Territory / Proportion mapping (uses the FIRST table only,
-' skips the "Total" row, matches destination rows by territory NUMBER)
+' STEP 1 - Territory / Proportion mapping (scans first several rows for
+' the header row; falls back to columns A/B starting at row 3 if no
+' headers are found. "Proportion" and "Proportions" both match.)
 '=====================================================================
 Private Sub MapTerritoryProportions(ByVal propWb As Workbook, ByVal frWs As Worksheet)
 
@@ -298,40 +299,60 @@ Private Sub MapTerritoryProportions(ByVal propWb As Workbook, ByVal frWs As Work
         Exit Sub
     End If
 
-    ' First table only (dynamic - uses CurrentRegion, not hardcoded rows)
-    Dim tbl As Range
-    Set tbl = propWs.Cells(1, 1).CurrentRegion
-    If tbl.Cells(1, 1).Row > 1 Or Len(Trim(CStr(tbl.Cells(1, 1).Value))) = 0 Then
-        ' anchor may not be at A1; search downward for first non-empty cell in col A
-        Dim r0 As Long
-        r0 = 1
-        Do While Len(Trim(CStr(propWs.Cells(r0, 1).Value))) = 0 And r0 < 50
-            r0 = r0 + 1
-        Loop
-        Set tbl = propWs.Cells(r0, 1).CurrentRegion
+    ' Figure out the used range so we know how far to scan
+    Dim lastRow As Long, lastCol As Long
+    On Error Resume Next
+    lastRow = propWs.UsedRange.Rows(propWs.UsedRange.Rows.Count).Row
+    lastCol = propWs.UsedRange.Columns(propWs.UsedRange.Columns.Count).Column
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+    If lastCol < 1 Then lastCol = 1
+
+    ' ---- Scan the first several rows (not just row 1) looking for a row
+    '      that contains BOTH a "Territory" cell and a "Proportion"/"Proportions" cell ----
+    Dim territoryCol As Long, proportionCol As Long, headerRow As Long
+    Dim r As Long, c As Long, v As String
+    Dim scanLimit As Long
+    scanLimit = lastRow
+    If scanLimit > 10 Then scanLimit = 10   ' headers are always near the top
+
+    headerRow = 0: territoryCol = 0: proportionCol = 0
+    For r = 1 To scanLimit
+        Dim tCol As Long, pCol As Long
+        tCol = 0: pCol = 0
+        For c = 1 To lastCol
+            v = UCase(Trim(CStr(propWs.Cells(r, c).Value)))
+            ' "PROPORTION" matches both "Proportion" and "Proportions"
+            If InStr(v, "TERRITORY") > 0 And tCol = 0 Then tCol = c
+            If InStr(v, "PROPORTION") > 0 And pCol = 0 Then pCol = c
+        Next c
+        If tCol > 0 And pCol > 0 Then
+            headerRow = r
+            territoryCol = tCol
+            proportionCol = pCol
+            Exit For
+        End If
+    Next r
+
+    Dim startRow As Long, endRow As Long
+    endRow = lastRow
+
+    If headerRow > 0 Then
+        ' Found real headers (row 1, row 2, wherever) - data starts right after
+        startRow = headerRow + 1
+    Else
+        ' ---- Fallback: no header row found anywhere.
+        ' Assume Territory is in column A and Proportion is in column B,
+        ' with data starting at row 3. ----
+        territoryCol = 1
+        proportionCol = 2
+        startRow = 3
     End If
 
-    ' Locate "Territory" and "Proportion" headers within the first row of that table
-    Dim territoryCol As Long, proportionCol As Long
-    Dim c As Range, v As String
-    For Each c In tbl.Rows(1).Cells
-        v = UCase(Trim(CStr(c.Value)))
-        If InStr(v, "TERRITORY") > 0 And territoryCol = 0 Then territoryCol = c.Column
-        If InStr(v, "PROPORTION") > 0 And proportionCol = 0 Then proportionCol = c.Column
-    Next c
-
-    If territoryCol = 0 Or proportionCol = 0 Then
-        MsgBox "Could not locate 'Territory' / 'Proportion' headers in first table of '" & propWs.Name & "'.", vbExclamation
-        Exit Sub
-    End If
-
-    Dim startRow As Long, endRow As Long, r As Long, terrVal As Variant, propVal As Variant
-    startRow = tbl.Row + 1
-    endRow = tbl.Row + tbl.Rows.Count - 1
-
+    Dim terrVal As Variant, propVal As Variant
     For r = startRow To endRow
         terrVal = propWs.Cells(r, territoryCol).Value
-        If IsNumeric(terrVal) Then   ' skips the "Total" row automatically
+        If IsNumeric(terrVal) And Len(Trim(CStr(terrVal))) > 0 Then   ' skips blank/"Total" rows automatically
             propVal = propWs.Cells(r, proportionCol).Value
             WriteTerritoryProportion frWs, CLng(terrVal), propVal
         End If
