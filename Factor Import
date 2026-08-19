@@ -1,7 +1,6 @@
 Option Explicit
 
 'If your Config or Others file has a protection password, put it here.
-'Leave as empty string "" if there's no password.
 Private Const CONFIG_PROTECT_PASSWORD As String = ""
 Private Const OTHERS_PROTECT_PASSWORD As String = ""
 
@@ -19,6 +18,7 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
     Dim effectiveA As String
     Dim oldSheet As Worksheet
     Dim foundIndex As Long
+    Dim insertBeforeIndex As Long
     Dim newConfigPath As String
 
     Application.ScreenUpdating = False
@@ -29,14 +29,12 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
 
     Set masterWS = ThisWorkbook.Sheets("Master List")
 
-    'Open both files, minimized (not fully hidden - Copy method needs a real window)
     Set configWB = Workbooks.Open(Filename:=ConfigFilePath, UpdateLinks:=0)
     configWB.Windows(1).WindowState = xlMinimized
 
     Set othersWB = Workbooks.Open(Filename:=OthersFilePath, UpdateLinks:=0, ReadOnly:=True)
     othersWB.Windows(1).WindowState = xlMinimized
 
-    'Remove workbook structure protection (in memory only - not saved back to originals)
     On Error Resume Next
     configWB.Unprotect Password:=CONFIG_PROTECT_PASSWORD
     othersWB.Unprotect Password:=OTHERS_PROTECT_PASSWORD
@@ -49,10 +47,10 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
         configSheetName = Trim(masterWS.Cells(i, "A").Value)
         othersSheetName = Trim(masterWS.Cells(i, "B").Value)
 
-        masterWS.Cells(i, "D").Interior.ColorIndex = -4142   'xlColorNone - clear old fill
+        masterWS.Cells(i, "D").Interior.ColorIndex = -4142   'xlColorNone
         masterWS.Cells(i, "D").Value = ""
 
-        'Step 0: Column B empty or contains invalid sheet-name characters
+        'Step 0: Column B empty or invalid characters
         If Not IsValidSheetName(othersSheetName) Then
             masterWS.Cells(i, "D").Value = "Invalid sheet name"
             masterWS.Cells(i, "D").Interior.Color = RGB(255, 255, 153)  'light yellow
@@ -81,7 +79,6 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
             foundIndex = oldSheet.Index
             oldSheet.Delete
 
-            'avoid name clash before renaming copy to effectiveA
             If SheetExists(configWB, effectiveA) Then configWB.Sheets(effectiveA).Delete
 
             If foundIndex > 0 And foundIndex <= configWB.Sheets.Count Then
@@ -106,9 +103,15 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
             configWB.ActiveSheet.Name = othersSheetName
             masterWS.Cells(i, "D").Value = "Replaced"
 
-        'Step 4: neither found -> copy to end, name = Effective A
+        'Step 4: neither found -> new sheet. Find correct sorted position, or append at end.
         Else
-            othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
+            insertBeforeIndex = FindInsertPosition(configWB, effectiveA)
+
+            If insertBeforeIndex > 0 Then
+                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(insertBeforeIndex)
+            Else
+                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
+            End If
 
             If configWB.ActiveSheet.Name <> effectiveA Then
                 configWB.ActiveSheet.Name = effectiveA
@@ -120,7 +123,6 @@ Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFil
 NextRow:
     Next i
 
-    'Save Config under new name: "<original name> Updated factors.<ext>"
     newConfigPath = BuildNewPath(ConfigFilePath)
     configWB.SaveAs Filename:=newConfigPath, FileFormat:=configWB.FileFormat
 
@@ -189,6 +191,101 @@ Private Function IsValidSheetName(ByVal nm As String) As Boolean
     Next k
 
     IsValidSheetName = True
+End Function
+
+
+'Parses "X_X_abc" pattern. Returns True if it matches:
+'  part1 = "R" or "T"
+'  part2 = a single letter A-Z
+'  part3 = anything, non-empty (may itself contain underscores)
+Private Function ParseSheetPattern(ByVal nm As String, ByRef firstLetter As String, _
+                                    ByRef secondLetter As String, ByRef abcPart As String) As Boolean
+    Dim parts() As String
+
+    parts = Split(nm, "_", 3)
+
+    If UBound(parts) < 2 Then
+        ParseSheetPattern = False
+        Exit Function
+    End If
+
+    firstLetter = parts(0)
+    secondLetter = parts(1)
+    abcPart = parts(2)
+
+    If UCase(firstLetter) <> "R" And UCase(firstLetter) <> "T" Then
+        ParseSheetPattern = False
+        Exit Function
+    End If
+
+    If Len(secondLetter) <> 1 Or Not (UCase(secondLetter) >= "A" And UCase(secondLetter) <= "Z") Then
+        ParseSheetPattern = False
+        Exit Function
+    End If
+
+    If Len(abcPart) = 0 Then
+        ParseSheetPattern = False
+        Exit Function
+    End If
+
+    ParseSheetPattern = True
+End Function
+
+
+'Compares two parsed keys. Returns -1 if key1 < key2, 1 if key1 > key2, 0 if equal.
+'Sort priority: secondLetter (A-Z) -> firstLetter (R before T) -> abcPart (alphabetical)
+Private Function CompareSortKey(ByVal firstLetter1 As String, ByVal secondLetter1 As String, ByVal abcPart1 As String, _
+                                 ByVal firstLetter2 As String, ByVal secondLetter2 As String, ByVal abcPart2 As String) As Integer
+
+    If UCase(secondLetter1) <> UCase(secondLetter2) Then
+        If UCase(secondLetter1) < UCase(secondLetter2) Then
+            CompareSortKey = -1
+        Else
+            CompareSortKey = 1
+        End If
+        Exit Function
+    End If
+
+    If UCase(firstLetter1) <> UCase(firstLetter2) Then
+        If UCase(firstLetter1) = "R" Then
+            CompareSortKey = -1   'R before T
+        Else
+            CompareSortKey = 1
+        End If
+        Exit Function
+    End If
+
+    CompareSortKey = StrComp(abcPart1, abcPart2, vbTextCompare)
+End Function
+
+
+'Finds the sheet index BEFORE which a new sheet named targetName should be inserted,
+'based on the X_X_abc sort order among existing matching sheets in configWB.
+'Returns 0 if targetName doesn't match the pattern, or if it should go at the very end.
+Private Function FindInsertPosition(ByVal configWB As Workbook, ByVal targetName As String) As Long
+    Dim newFirst As String, newSecond As String, newAbc As String
+    Dim curFirst As String, curSecond As String, curAbc As String
+    Dim ws As Worksheet
+    Dim cmp As Integer
+
+    FindInsertPosition = 0
+
+    If Not ParseSheetPattern(targetName, newFirst, newSecond, newAbc) Then
+        Exit Function   'not a X_X_abc name -> caller appends at end
+    End If
+
+    For Each ws In configWB.Sheets
+        If ParseSheetPattern(ws.Name, curFirst, curSecond, curAbc) Then
+            cmp = CompareSortKey(newFirst, newSecond, newAbc, curFirst, curSecond, curAbc)
+            If cmp < 0 Then
+                FindInsertPosition = ws.Index
+                Exit Function
+            End If
+        End If
+    Next ws
+
+    'No existing sheet is "greater" -> goes after all matching sheets, i.e. append at end
+    FindInsertPosition = 0
 End Function
 
 
