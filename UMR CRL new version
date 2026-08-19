@@ -4,6 +4,9 @@ Option Explicit
 ' CONSTANTS
 '=====================================================================
 Private Const WR_AB_MIN_COL As Long = 28   ' Column AB - start of the "paste values" block in Weighted Rates
+Private Const WR_AB_MAX_COL As Long = 39   ' Column AM - end of the "paste values" block in Weighted Rates
+Private Const WR_ROC_MIN_COL As Long = 4   ' Column D  - start of the ROC-fill block in Weighted Rates
+Private Const WR_ROC_MAX_COL As Long = 15  ' Column O  - end of the ROC-fill block in Weighted Rates
 
 '=====================================================================
 ' ENTRY POINT FOR YOUR USERFORM
@@ -129,7 +132,7 @@ Public Sub GenerateStateRateFile(ByVal rocPath As String, ByVal frPath As String
     propWb.Close SaveChanges:=False
     Set propWb = Nothing
 
-    '---------- STEP 2: fill ALL "Weighted Rates" table blocks (D:N, P:Z, AB:AL) from ROC ----------
+    '---------- STEP 2: fill "Weighted Rates" ONLY in columns D:O from ROC ----------
     Dim rocDict As Object
     Set rocDict = CreateObject("Scripting.Dictionary")
     If Not rocAuto Is Nothing Then MergeRateDict rocAuto, rocDict
@@ -138,18 +141,19 @@ Public Sub GenerateStateRateFile(ByVal rocPath As String, ByVal frPath As String
     If Not rocBoats Is Nothing Then MergeRateDict rocBoats, rocDict
 
     Dim wrAnchors As Collection
-    Set wrAnchors = CollectAnchors(xxWR)   ' every anchor across all 3 blocks
+    ' Only look for anchors within columns D (4) to O (15) - nothing outside this block gets touched
+    Set wrAnchors = CollectAnchors(xxWR, WR_ROC_MIN_COL, WR_ROC_MAX_COL)
     matchedCount = 0: unmatchedList = ""
     FillAnchorsFromDict xxWR, wrAnchors, rocDict, matchedCount, unmatchedList
-    Debug.Print "STEP 2 - Weighted Rates fill: matched=" & matchedCount & IIf(unmatchedList <> "", " | unmatched codes: " & unmatchedList, "")
+    Debug.Print "STEP 2 - Weighted Rates fill (D:O): matched=" & matchedCount & IIf(unmatchedList <> "", " | unmatched codes: " & unmatchedList, "")
 
     xxWb.Application.CalculateFullRebuild
     DoEvents
 
-    '---------- STEP 4a: push Weighted Rates (col AB onward) back into Auto/Residence/Motorcycle/Boats ----------
+    '---------- STEP 4a: push Weighted Rates (ONLY columns AB:AM) back into Auto/Residence/Motorcycle/Boats ----------
     Dim wrAbDict As Object
     Set wrAbDict = CreateObject("Scripting.Dictionary")
-    MergeRateDict xxWR, wrAbDict, WR_AB_MIN_COL   ' ONLY the AB+ block
+    MergeRateDict xxWR, wrAbDict, WR_AB_MIN_COL, WR_AB_MAX_COL   ' ONLY the AB:AM block
 
     Dim m As Long, u As String
 
@@ -282,9 +286,13 @@ Private Function GetSheetFuzzy(ByVal wb As Workbook, ByVal exactName As String, 
 End Function
 
 '=====================================================================
-' STEP 1 - Territory / Proportion mapping (scans first several rows for
-' the header row; falls back to columns A/B starting at row 3 if no
-' headers are found. "Proportion" and "Proportions" both match.)
+' STEP 1 - Territory / Proportion mapping.
+' - Scans first several rows for the header row; falls back to columns
+'   A/B starting at row 3 if no headers are found.
+' - "Proportion" and "Proportions" both match.
+' - ONLY territories 1 through 10 (001-010) are copied.
+' - If a territory number repeats, only the FIRST occurrence (the one
+'   with the smaller row number) is used; later duplicates are skipped.
 '=====================================================================
 Private Sub MapTerritoryProportions(ByVal propWb As Workbook, ByVal frWs As Worksheet)
 
@@ -349,12 +357,25 @@ Private Sub MapTerritoryProportions(ByVal propWb As Workbook, ByVal frWs As Work
         startRow = 3
     End If
 
-    Dim terrVal As Variant, propVal As Variant
+    ' Track which territory numbers we've already used, so duplicates
+    ' (further down the sheet) are skipped - only the first/topmost row wins.
+    Dim seenTerr As Object
+    Set seenTerr = CreateObject("Scripting.Dictionary")
+
+    Dim terrVal As Variant, propVal As Variant, tNumL As Long
     For r = startRow To endRow
         terrVal = propWs.Cells(r, territoryCol).Value
         If IsNumeric(terrVal) And Len(Trim(CStr(terrVal))) > 0 Then   ' skips blank/"Total" rows automatically
-            propVal = propWs.Cells(r, proportionCol).Value
-            WriteTerritoryProportion frWs, CLng(terrVal), propVal
+            tNumL = CLng(terrVal)
+            ' Only territories 001 through 010
+            If tNumL >= 1 And tNumL <= 10 Then
+                If Not seenTerr.exists(CStr(tNumL)) Then
+                    propVal = propWs.Cells(r, proportionCol).Value
+                    WriteTerritoryProportion frWs, tNumL, propVal
+                    seenTerr.Add CStr(tNumL), True
+                End If
+                ' else: duplicate further down the sheet - ignored on purpose
+            End If
         End If
     Next r
 
