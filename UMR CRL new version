@@ -5,8 +5,9 @@ Option Explicit
 '=====================================================================
 Private Const WR_AB_MIN_COL As Long = 28   ' Column AB - start of the "paste values" block in Weighted Rates
 Private Const WR_AB_MAX_COL As Long = 39   ' Column AM - end of the "paste values" block in Weighted Rates
-Private Const WR_ROC_MIN_COL As Long = 4   ' Column D  - start of the ROC-fill block in Weighted Rates
-Private Const WR_ROC_MAX_COL As Long = 15  ' Column O  - end of the ROC-fill block in Weighted Rates
+Private Const WR_ROC_MIN_COL As Long = 4   ' Column D  - start of the ROC-fill block AND the block that always has titles
+Private Const WR_ROC_MAX_COL As Long = 15  ' Column O  - end of the ROC-fill / title block
+Private Const WR_AB_OFFSET As Long = 24    ' AB block sits exactly 24 columns to the right of the D block (2 blocks over)
 
 '=====================================================================
 ' ENTRY POINT FOR YOUR USERFORM
@@ -150,10 +151,15 @@ Public Sub GenerateStateRateFile(ByVal rocPath As String, ByVal frPath As String
     xxWb.Application.CalculateFullRebuild
     DoEvents
 
-    '---------- STEP 4a: push Weighted Rates (ONLY columns AB:AM) back into Auto/Residence/Motorcycle/Boats ----------
+    '---------- STEP 4a: push Weighted Rates back into Auto/Residence/Motorcycle/Boats ----------
+    ' IMPORTANT: table titles ("Motorcycles Coverage: MOCYC", etc.) only exist in
+    ' the D:O block of Weighted Rates. The AB:AM block has the same BASE rows /
+    ' numbers but NO title text. So we locate every table using the D:O titles,
+    ' then pull the actual values to copy from the AB:AM columns at that SAME
+    ' row (the AB block sits exactly 24 columns to the right of the D block).
     Dim wrAbDict As Object
     Set wrAbDict = CreateObject("Scripting.Dictionary")
-    MergeRateDict xxWR, wrAbDict, WR_AB_MIN_COL, WR_AB_MAX_COL   ' ONLY the AB:AM block
+    MergeRateDictFromHeaderOffset xxWR, wrAbDict, WR_ROC_MIN_COL, WR_ROC_MAX_COL, WR_AB_OFFSET
 
     Dim m As Long, u As String
 
@@ -440,7 +446,7 @@ Private Function CodeOf(ByVal v As Variant) As String
 End Function
 
 '=====================================================================
-' SOURCE DICTIONARY BUILDER
+' SOURCE DICTIONARY BUILDER (standard - used for ROC sheets)
 ' Scans a sheet (optionally restricted to a column range) and merges
 ' found tables into targetDict: code -> Dictionary(terrNumStr -> value/array6)
 '=====================================================================
@@ -536,6 +542,117 @@ Private Sub MergeAnchorR(ByVal ws As Worksheet, ByVal tRow As Long, ByVal tCol A
         Dim arr(1 To 6) As Variant
         For vi = 1 To 6
             arr(vi) = ws.Cells(dataRow, valColStart + vi - 1).Value
+        Next vi
+        innerDict(CStr(tNum)) = arr
+        dataRow = dataRow + 1
+        If dataRow > ws.Rows.Count Then Exit Do
+    Loop
+End Sub
+
+'=====================================================================
+' SOURCE DICTIONARY BUILDER - HEADER-DRIVEN WITH COLUMN OFFSET
+' Used for the Weighted Rates -> Auto/Residence/Motorcycle/Boats step.
+' Finds table titles/anchors ONLY within headerMinCol..headerMaxCol
+' (the D:O block, which always has full titles), but reads the actual
+' Terr/Rate values from the same row, shifted right by colOffset
+' columns (i.e. from the AB:AM block, which has no title text of its
+' own but is row-aligned with the D:O block).
+'=====================================================================
+Private Sub MergeRateDictFromHeaderOffset(ByVal ws As Worksheet, ByVal targetDict As Object, _
+                                           ByVal headerMinCol As Long, ByVal headerMaxCol As Long, ByVal colOffset As Long)
+    Dim lastRow As Long, r As Long, c As Long
+    On Error Resume Next
+    lastRow = ws.UsedRange.Rows(ws.UsedRange.Rows.Count).Row
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+
+    For r = 1 To lastRow
+        For c = headerMinCol To headerMaxCol
+            Dim v As Variant
+            v = ws.Cells(r, c).Value
+            If VarType(v) = vbString Then
+                If IsTypeL(v) Then
+                    MergeAnchorLOffset ws, r, c, CodeOf(v), targetDict, colOffset
+                ElseIf IsTypeR(v) Then
+                    MergeAnchorROffset ws, r, c, CodeOf(v), targetDict, colOffset
+                End If
+            End If
+        Next c
+    Next r
+End Sub
+
+Private Sub MergeAnchorLOffset(ByVal ws As Worksheet, ByVal tRow As Long, ByVal tCol As Long, ByVal code As String, _
+                                ByVal targetDict As Object, ByVal colOffset As Long)
+    ' "BASE" marker and Terr numbers are read from the ORIGINAL (D:O) columns,
+    ' since that block reliably has them. Only the VALUE is read from the
+    ' offset (AB:AM) column.
+    Dim labelCol As Long, terrCol As Long, valColOriginal As Long, valColOffset As Long
+    labelCol = tCol: terrCol = tCol + 1: valColOriginal = tCol + 2
+    valColOffset = valColOriginal + colOffset
+
+    Dim dataRow As Long, rr As Long
+    dataRow = -1
+    For rr = tRow + 1 To tRow + 8
+        If UCase(Trim(CStr(ws.Cells(rr, labelCol).Value))) = "BASE" Then
+            dataRow = rr
+            Exit For
+        End If
+    Next rr
+    If dataRow = -1 Then Exit Sub
+
+    Dim innerDict As Object
+    If targetDict.exists(code) Then
+        Set innerDict = targetDict(code)
+    Else
+        Set innerDict = CreateObject("Scripting.Dictionary")
+        targetDict.Add code, innerDict
+    End If
+
+    Do While UCase(Trim(CStr(ws.Cells(dataRow, labelCol).Value))) = "BASE"
+        Dim tNum As Variant
+        tNum = ws.Cells(dataRow, terrCol).Value
+        If IsNumeric(tNum) Then
+            innerDict(CStr(CLng(tNum))) = ws.Cells(dataRow, valColOffset).Value
+        End If
+        dataRow = dataRow + 1
+        If dataRow > ws.Rows.Count Then Exit Do
+    Loop
+End Sub
+
+Private Sub MergeAnchorROffset(ByVal ws As Worksheet, ByVal tRow As Long, ByVal tCol As Long, ByVal code As String, _
+                                ByVal targetDict As Object, ByVal colOffset As Long)
+    ' "TERR" marker and Terr numbers are read from the ORIGINAL (D:O) columns.
+    ' The 6 value columns are read from the offset (AB:AM) columns.
+    Dim terrCol As Long, valColStartOriginal As Long, valColStartOffset As Long
+    terrCol = tCol - 1: valColStartOriginal = tCol
+    valColStartOffset = valColStartOriginal + colOffset
+
+    Dim headerRow As Long, rr As Long
+    headerRow = -1
+    For rr = tRow + 1 To tRow + 8
+        If UCase(Trim(CStr(ws.Cells(rr, terrCol).Value))) = "TERR" Then
+            headerRow = rr
+            Exit For
+        End If
+    Next rr
+    If headerRow = -1 Then Exit Sub
+
+    Dim innerDict As Object
+    If targetDict.exists(code) Then
+        Set innerDict = targetDict(code)
+    Else
+        Set innerDict = CreateObject("Scripting.Dictionary")
+        targetDict.Add code, innerDict
+    End If
+
+    Dim dataRow As Long, vi As Long
+    dataRow = headerRow + 1
+    Do While IsNumeric(ws.Cells(dataRow, terrCol).Value) And Len(Trim(CStr(ws.Cells(dataRow, terrCol).Value))) > 0
+        Dim tNum As Long
+        tNum = CLng(ws.Cells(dataRow, terrCol).Value)
+        Dim arr(1 To 6) As Variant
+        For vi = 1 To 6
+            arr(vi) = ws.Cells(dataRow, valColStartOffset + vi - 1).Value
         Next vi
         innerDict(CStr(tNum)) = arr
         dataRow = dataRow + 1
