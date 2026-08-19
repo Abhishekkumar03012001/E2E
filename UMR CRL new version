@@ -1,401 +1,679 @@
 Option Explicit
 
-Sub TerritorySingle(rocPath As String, frPath As String, stateAbbr As String)
+'=====================================================================
+' CONSTANTS
+'=====================================================================
+Private Const WR_AB_MIN_COL As Long = 28   ' Column AB - start of the "paste values" block in Weighted Rates
 
-    Dim wbSrc As Workbook, wbDst As Workbook
-    Dim srcPath As String, dstPath As String
-    Dim newFileBaseName As String, newFilePath As String
-    Dim regularSheets As Variant, limitSheets As Variant
-    Dim i As Long
-    Dim ext As String, saveFormat As Long
+'=====================================================================
+' ENTRY POINT FOR YOUR USERFORM
+' Call this directly from your form's button click, e.g.:
+'
+'   Private Sub cmdRun_Click()
+'       TerritoryMutiple txtRoc.Value, txtFR.Value, txtProp.Value, statebox.Value
+'   End Sub
+'
+' Parameters:
+'   rocPathIn   -> ROC file path            (txtRoc.Value)
+'   frPathIn    -> FR UMR file path          (txtFR.Value)
+'   propPathIn  -> Proportion file path      (txtProp.Value)
+'   stateAbbrev -> two-letter state code     (statebox.Value)
+'=====================================================================
+Public Sub TerritoryMutiple(ByVal rocPathIn As String, ByVal frPathIn As String, _
+                             ByVal propPathIn As String, ByVal stateAbbrev As String)
 
-    ' Map incoming parameters to the original variable names
-    srcPath = Trim(rocPath)
-    dstPath = Trim(frPath)
-    newFileBaseName = Trim(stateAbbr)
-
-    If Len(srcPath) = 0 Or Dir(srcPath) = "" Then
-        MsgBox "Roc file path is missing or invalid:" & vbCrLf & srcPath, vbCritical
+    ' ---- basic validation up front, so the form gets a clear message ----
+    If Len(Trim(rocPathIn)) = 0 Or Len(Trim(frPathIn)) = 0 Or Len(Trim(propPathIn)) = 0 Then
+        MsgBox "Please provide the ROC, FR, and Proportion file paths.", vbExclamation
         Exit Sub
     End If
-    If Len(dstPath) = 0 Or Dir(dstPath) = "" Then
-        MsgBox "FR file path is missing or invalid:" & vbCrLf & dstPath, vbCritical
+    If Len(Trim(stateAbbrev)) = 0 Then
+        MsgBox "Please provide a state abbreviation.", vbExclamation
         Exit Sub
     End If
-    If Len(newFileBaseName) = 0 Then
-        MsgBox "State abbreviation is missing.", vbCritical
+    If Dir(rocPathIn) = "" Then
+        MsgBox "ROC file not found:" & vbCrLf & rocPathIn, vbExclamation
         Exit Sub
     End If
+    If Dir(frPathIn) = "" Then
+        MsgBox "FR file not found:" & vbCrLf & frPathIn, vbExclamation
+        Exit Sub
+    End If
+    If Dir(propPathIn) = "" Then
+        MsgBox "Proportion file not found:" & vbCrLf & propPathIn, vbExclamation
+        Exit Sub
+    End If
+
+    Call GenerateStateRateFile(rocPathIn, frPathIn, propPathIn, Trim(stateAbbrev))
+
+End Sub
+
+'=====================================================================
+' OPTIONAL - manual test entry point (edit the 4 lines and run RunAll
+' if you ever want to test outside the UserForm)
+'=====================================================================
+Public Sub RunAll()
+
+    Dim rocPath As String, frPath As String, propPath As String
+    Dim stateAbbrev As String
+
+    ' ---- EDIT THESE 4 LINES ----
+    rocPath = "C:\Path\To\ROC.xlsx"
+    frPath = "C:\Path\To\FR UMR Current Rate Tables.xlsm"
+    propPath = "C:\Path\To\Proportion.xlsx"
+    stateAbbrev = "XX"
+    ' -----------------------------
+
+    TerritoryMutiple rocPath, frPath, propPath, stateAbbrev
+
+End Sub
+
+'=====================================================================
+' MAIN ORCHESTRATOR
+'=====================================================================
+Public Sub GenerateStateRateFile(ByVal rocPath As String, ByVal frPath As String, _
+                                  ByVal propPath As String, ByVal stateAbbrev As String)
+
+    Dim wasScreenUpdating As Boolean, wasEnableEvents As Boolean
+    Dim wasCalc As XlCalculation
+
+    wasScreenUpdating = Application.ScreenUpdating
+    wasEnableEvents = Application.EnableEvents
+    wasCalc = Application.Calculation
 
     Application.ScreenUpdating = False
-    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
     Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    Dim propWb As Workbook, frWb As Workbook, rocWb As Workbook, xxWb As Workbook
+    Dim newPath As String
+    Dim matchedCount As Long, unmatchedList As String
 
     On Error GoTo CleanFail
 
-    ' Open BOTH source files as read-only
-    Set wbSrc = Workbooks.Open(Filename:=srcPath, ReadOnly:=True, UpdateLinks:=False)
-    Set wbDst = Workbooks.Open(Filename:=dstPath, ReadOnly:=True, UpdateLinks:=False)
+    '---------- Open source workbooks ----------
+    Set propWb = Workbooks.Open(propPath, ReadOnly:=True)
+    Set frWb = Workbooks.Open(frPath)          ' will be renamed via SaveAs below
+    Set rocWb = Workbooks.Open(rocPath, ReadOnly:=True)
 
-    ' Sheets that use the "heading + key columns" logic
-    regularSheets = Array("Auto", "Residence", "Motorcycle Rec Veh", "Boats")
-    ' Sheets that use the "Limit column header" logic
-    limitSheets = Array("Limits", "Discount")
+    '---------- STEP 3 (done first on purpose): SaveAs -> XX file ----------
+    ' Doing this BEFORE any edits guarantees the original FR file on disk
+    ' is never written to - all subsequent edits happen only in the new copy.
+    newPath = BuildNewFilePath(frPath, stateAbbrev)
+    frWb.SaveAs Filename:=newPath, FileFormat:=GetFileFormat(newPath)
+    Set xxWb = frWb   ' same object, now saved under the new name/path
 
-    For i = LBound(regularSheets) To UBound(regularSheets)
-        If SheetExists(wbSrc, CStr(regularSheets(i))) And SheetExists(wbDst, CStr(regularSheets(i))) Then
-            ProcessRegularSheet wbSrc.Sheets(CStr(regularSheets(i))), wbDst.Sheets(CStr(regularSheets(i)))
-        Else
-            Debug.Print "Skipped (sheet missing in one file): " & regularSheets(i)
-        End If
-    Next i
+    '---------- Resolve sheets (fuzzy match handles the "Motorcycle Reh/Rec Veh" typo) ----------
+    Dim xxWR As Worksheet, xxAuto As Worksheet, xxRes As Worksheet, xxMoto As Worksheet, xxBoats As Worksheet
+    Dim xxLimits As Worksheet, xxDiscount As Worksheet
+    Set xxWR = xxWb.Worksheets("Weighted Rates")
+    Set xxAuto = GetSheetFuzzy(xxWb, "Auto", "AUTO")
+    Set xxRes = GetSheetFuzzy(xxWb, "Residence", "RESID")
+    Set xxMoto = GetSheetFuzzy(xxWb, "Motorcycle Rec Veh", "MOTOR", "VEH")
+    Set xxBoats = GetSheetFuzzy(xxWb, "Boats", "BOAT")
+    Set xxLimits = GetSheetFuzzy(xxWb, "Limits", "LIMIT")
+    Set xxDiscount = GetSheetFuzzy(xxWb, "Discount", "DISCOUNT")
 
-    For i = LBound(limitSheets) To UBound(limitSheets)
-        If SheetExists(wbSrc, CStr(limitSheets(i))) And SheetExists(wbDst, CStr(limitSheets(i))) Then
-            ProcessLimitSheet wbSrc.Sheets(CStr(limitSheets(i))), wbDst.Sheets(CStr(limitSheets(i)))
-        Else
-            Debug.Print "Skipped (sheet missing in one file): " & limitSheets(i)
-        End If
-    Next i
+    Dim rocAuto As Worksheet, rocRes As Worksheet, rocMoto As Worksheet, rocBoats As Worksheet
+    Dim rocLimits As Worksheet, rocDiscount As Worksheet
+    Set rocAuto = GetSheetFuzzy(rocWb, "Auto", "AUTO")
+    Set rocRes = GetSheetFuzzy(rocWb, "Residence", "RESID")
+    Set rocMoto = GetSheetFuzzy(rocWb, "Motorcycle Rec Veh", "MOTOR", "VEH")
+    Set rocBoats = GetSheetFuzzy(rocWb, "Boats", "BOAT")
+    Set rocLimits = GetSheetFuzzy(rocWb, "Limits", "LIMIT")
+    Set rocDiscount = GetSheetFuzzy(rocWb, "Discount", "DISCOUNT")
 
-    ' Build the new output file path (same folder as FR / target file)
-    ext = GetFileExtension(dstPath)
-    newFilePath = GetFolderFromPath(dstPath) & newFileBaseName & " UMR Current Rates Tables." & ext
+    '---------- STEP 1: Territory / Proportion mapping into "Weighted Rates" col A/B ----------
+    MapTerritoryProportions propWb, xxWR
+    propWb.Close SaveChanges:=False
+    Set propWb = Nothing
 
-    Select Case LCase(ext)
-        Case "xlsm"
-            saveFormat = xlOpenXMLWorkbookMacroEnabled
-        Case "xlsb"
-            saveFormat = xlExcel12
-        Case "xls"
-            saveFormat = xlExcel8
-        Case Else
-            saveFormat = xlOpenXMLWorkbook   ' xlsx
-    End Select
+    '---------- STEP 2: fill ALL "Weighted Rates" table blocks (D:N, P:Z, AB:AL) from ROC ----------
+    Dim rocDict As Object
+    Set rocDict = CreateObject("Scripting.Dictionary")
+    If Not rocAuto Is Nothing Then MergeRateDict rocAuto, rocDict
+    If Not rocRes Is Nothing Then MergeRateDict rocRes, rocDict
+    If Not rocMoto Is Nothing Then MergeRateDict rocMoto, rocDict
+    If Not rocBoats Is Nothing Then MergeRateDict rocBoats, rocDict
 
-    ' Save the in-memory updated workbook as a brand-new file
-    wbDst.SaveAs Filename:=newFilePath, FileFormat:=saveFormat
+    Dim wrAnchors As Collection
+    Set wrAnchors = CollectAnchors(xxWR)   ' every anchor across all 3 blocks
+    matchedCount = 0: unmatchedList = ""
+    FillAnchorsFromDict xxWR, wrAnchors, rocDict, matchedCount, unmatchedList
+    Debug.Print "STEP 2 - Weighted Rates fill: matched=" & matchedCount & IIf(unmatchedList <> "", " | unmatched codes: " & unmatchedList, "")
 
-    Application.Run "'" & wbDst.Name & "'!PickFile_And_Run_Mapping"
+    xxWb.Application.CalculateFullRebuild
+    DoEvents
 
-    ' Close both workbooks without saving changes back to the originals
-    wbSrc.Close SaveChanges:=False
-    wbDst.Close SaveChanges:=False
+    '---------- STEP 4a: push Weighted Rates (col AB onward) back into Auto/Residence/Motorcycle/Boats ----------
+    Dim wrAbDict As Object
+    Set wrAbDict = CreateObject("Scripting.Dictionary")
+    MergeRateDict xxWR, wrAbDict, WR_AB_MIN_COL   ' ONLY the AB+ block
 
+    Dim m As Long, u As String
+
+    If Not xxAuto Is Nothing Then
+        m = 0: u = ""
+        FillAnchorsFromDict xxAuto, CollectAnchors(xxAuto), wrAbDict, m, u
+        Debug.Print "STEP 4a - Auto fill: matched=" & m & IIf(u <> "", " | unmatched: " & u, "")
+    End If
+    If Not xxRes Is Nothing Then
+        m = 0: u = ""
+        FillAnchorsFromDict xxRes, CollectAnchors(xxRes), wrAbDict, m, u
+        Debug.Print "STEP 4a - Residence fill: matched=" & m & IIf(u <> "", " | unmatched: " & u, "")
+    End If
+    If Not xxMoto Is Nothing Then
+        m = 0: u = ""
+        FillAnchorsFromDict xxMoto, CollectAnchors(xxMoto), wrAbDict, m, u
+        Debug.Print "STEP 4a - Motorcycle/RecVeh fill: matched=" & m & IIf(u <> "", " | unmatched: " & u, "")
+    End If
+    If Not xxBoats Is Nothing Then
+        m = 0: u = ""
+        FillAnchorsFromDict xxBoats, CollectAnchors(xxBoats), wrAbDict, m, u
+        Debug.Print "STEP 4a - Boats fill: matched=" & m & IIf(u <> "", " | unmatched: " & u, "")
+    End If
+
+    '---------- STEP 4b: fill Limits / Discount from ROC (matched by row label, not position) ----------
+    If Not rocLimits Is Nothing And Not xxLimits Is Nothing Then
+        CopyKeyValueRows rocLimits, xxLimits
+    End If
+    If Not rocDiscount Is Nothing And Not xxDiscount Is Nothing Then
+        CopyKeyValueRows rocDiscount, xxDiscount
+    End If
+
+    rocWb.Close SaveChanges:=False
+    Set rocWb = Nothing
+
+    '---------- STEP 5: Save ----------
+    xxWb.Save
+    xxWb.Close SaveChanges:=False
+
+    Application.Calculation = wasCalc
+    Application.EnableEvents = wasEnableEvents
+    Application.ScreenUpdating = wasScreenUpdating
     Application.DisplayAlerts = True
-    Application.Calculation = xlCalculationAutomatic
-    Application.ScreenUpdating = True
 
-    MsgBox "Done!"
-
+    MsgBox "Done! Saved as:" & vbCrLf & newPath, vbInformation
     Exit Sub
 
 CleanFail:
     Dim errMsg As String
-    errMsg = Err.Description
-
+    errMsg = "Error " & Err.Number & ": " & Err.Description
     On Error Resume Next
-    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
-    If Not wbDst Is Nothing Then wbDst.Close SaveChanges:=False
-    On Error GoTo 0
-
+    If Not propWb Is Nothing Then propWb.Close SaveChanges:=False
+    If Not rocWb Is Nothing Then rocWb.Close SaveChanges:=False
+    If Not xxWb Is Nothing Then xxWb.Close SaveChanges:=False
+    Application.Calculation = wasCalc
+    Application.EnableEvents = wasEnableEvents
+    Application.ScreenUpdating = wasScreenUpdating
     Application.DisplayAlerts = True
-    Application.Calculation = xlCalculationAutomatic
-    Application.ScreenUpdating = True
-
-    MsgBox "Error: " & errMsg, vbCritical
+    On Error GoTo 0
+    MsgBox errMsg, vbCritical
 End Sub
 
 '=====================================================================
-' Does a sheet with this name exist in the workbook?
+' Build "XX UMR Current Rate Tables.xlsm" from "FR UMR Current Rate Tables.xlsm"
+' in the SAME folder, without touching the original.
 '=====================================================================
-Function SheetExists(wb As Workbook, sn As String) As Boolean
+Private Function BuildNewFilePath(ByVal originalPath As String, ByVal stateAbbrev As String) As String
+    Dim folderPath As String, fileName As String, baseName As String, ext As String
+    Dim posSlash As Long, posDot As Long
+
+    posSlash = InStrRev(originalPath, "\")
+    folderPath = Left(originalPath, posSlash)
+    fileName = Mid(originalPath, posSlash + 1)
+
+    posDot = InStrRev(fileName, ".")
+    baseName = Left(fileName, posDot - 1)
+    ext = Mid(fileName, posDot)   ' e.g. ".xlsm"
+
+    Dim newBaseName As String
+    If UCase(Left(baseName, 2)) = "FR" Then
+        newBaseName = stateAbbrev & Mid(baseName, 3)   ' "FR UMR..." -> "XX UMR..."
+    Else
+        newBaseName = stateAbbrev & " " & baseName
+    End If
+
+    BuildNewFilePath = folderPath & newBaseName & ext
+End Function
+
+Private Function GetFileFormat(ByVal path As String) As Long
+    Dim ext As String
+    ext = LCase(Mid(path, InStrRev(path, ".")))
+    Select Case ext
+        Case ".xlsm": GetFileFormat = 52   ' xlOpenXMLWorkbookMacroEnabled
+        Case ".xlsx": GetFileFormat = 51   ' xlOpenXMLWorkbook
+        Case ".xls":  GetFileFormat = 56   ' xlExcel8
+        Case Else:    GetFileFormat = 52
+    End Select
+End Function
+
+'=====================================================================
+' Fuzzy sheet lookup - handles typos like "Motorcycle Reh Veh" vs "Rec Veh"
+'=====================================================================
+Private Function GetSheetFuzzy(ByVal wb As Workbook, ByVal exactName As String, ParamArray keywords() As Variant) As Worksheet
     Dim ws As Worksheet
     On Error Resume Next
-    Set ws = wb.Sheets(sn)
+    Set ws = wb.Worksheets(exactName)
     On Error GoTo 0
-    SheetExists = Not ws Is Nothing
-End Function
-
-'=====================================================================
-' Returns the folder path (including trailing backslash) from a full file path
-'=====================================================================
-Function GetFolderFromPath(fullPath As String) As String
-    Dim pos As Long
-    pos = InStrRev(fullPath, "\")
-    If pos > 0 Then
-        GetFolderFromPath = Left(fullPath, pos)
-    Else
-        GetFolderFromPath = ""
+    If Not ws Is Nothing Then
+        Set GetSheetFuzzy = ws
+        Exit Function
     End If
-End Function
 
-'=====================================================================
-' Returns the file extension (without the dot) from a full file path
-'=====================================================================
-Function GetFileExtension(fullPath As String) As String
-    Dim pos As Long
-    pos = InStrRev(fullPath, ".")
-    If pos > 0 Then
-        GetFileExtension = Mid(fullPath, pos + 1)
-    Else
-        GetFileExtension = "xlsx"
-    End If
-End Function
-
-'=====================================================================
-' REGULAR SHEETS (Auto, Residence, Motorcycle Rec Veh, Boats)
-'
-' Layout assumption (matches your files):
-'   Heading row   : Col A = "Some Text: CODE"   (heading text contains ":")
-'   Header row    : Col E = "Terr"  (marks the start of "block 2")
-'   Data rows     : Block 1 -> Col A + Col B = key   -> Col C = value
-'                    Block 2 -> Col E          = key   -> Col F..last = values
-'
-' For every heading found in the source sheet, the same heading text is
-' located in the target sheet. Then every data row's key (A+B, or E) is
-' matched to a row under that SAME heading in the target sheet, and the
-' value column(s) are copied across. Rows that don't have a matching key
-' in the target are left untouched.
-'=====================================================================
-Sub ProcessRegularSheet(wsSrc As Worksheet, wsDst As Worksheet)
-
-    Dim lastRowSrc As Long, r As Long, r2 As Long
-    Dim headingText As String, headingRowDst As Long
-    Dim targetRow As Long, c As Long
-    Dim lastColBlock2 As Long
-
-    lastRowSrc = GetLastRow(wsSrc, 1)
-    If GetLastRow(wsSrc, 5) > lastRowSrc Then lastRowSrc = GetLastRow(wsSrc, 5)
-
-    r = 1
-    Do While r <= lastRowSrc
-
-        If IsHeadingCell(wsSrc.Cells(r, 1).Value) Then
-
-            headingText = Trim(CStr(wsSrc.Cells(r, 1).Value))
-            headingRowDst = FindHeadingRow(wsDst, headingText)
-
-            ' Work out how many columns "block 2" (Terr / limit codes) uses,
-            ' by reading the header row that sits right under the heading.
-            lastColBlock2 = 0
-            If Trim(CStr(wsSrc.Cells(r + 1, 5).Value)) = "Terr" Then
-                c = wsSrc.Columns.Count
-                Do While c > 5 And Len(Trim(CStr(wsSrc.Cells(r + 1, c).Value))) = 0
-                    c = c - 1
-                Loop
-                lastColBlock2 = c
+    Dim norm As String, i As Long, allMatch As Boolean
+    For Each ws In wb.Worksheets
+        norm = UCase(Replace(ws.Name, " ", ""))
+        allMatch = True
+        For i = LBound(keywords) To UBound(keywords)
+            If InStr(norm, UCase(CStr(keywords(i)))) = 0 Then
+                allMatch = False
+                Exit For
             End If
-
-            If headingRowDst > 0 Then
-
-                r2 = r + 1
-                Do While r2 <= lastRowSrc
-
-                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do ' next heading -> stop this section
-
-                    ' skip the sub-header row itself (Col E = "Terr")
-                    Dim isSubHeaderRow As Boolean
-                    isSubHeaderRow = (Trim(CStr(wsSrc.Cells(r2, 5).Value)) = "Terr")
-
-                    ' ---------- Block 1: Col A + Col B key -> Col C value ----------
-                    If Not isSubHeaderRow Then
-                        If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) > 0 And _
-                           Len(Trim(CStr(wsSrc.Cells(r2, 2).Value))) > 0 Then
-
-                            targetRow = FindKeyRow2Col(wsDst, headingRowDst, 1, 2, _
-                                        wsSrc.Cells(r2, 1).Value, wsSrc.Cells(r2, 2).Value)
-
-                            If targetRow > 0 Then
-                                wsDst.Cells(targetRow, 3).Value = wsSrc.Cells(r2, 3).Value
-                            End If
-                        End If
-                    End If
-
-                    ' ---------- Block 2: Col E key -> Col F..lastColBlock2 values ----------
-                    If Not isSubHeaderRow And lastColBlock2 >= 6 Then
-                        If Len(Trim(CStr(wsSrc.Cells(r2, 5).Value))) > 0 Then
-
-                            targetRow = FindKeyRow1Col(wsDst, headingRowDst, 5, wsSrc.Cells(r2, 5).Value)
-
-                            If targetRow > 0 Then
-                                For c = 6 To lastColBlock2
-                                    wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
-                                Next c
-                            End If
-                        End If
-                    End If
-
-                    r2 = r2 + 1
-                Loop
-
-                r = r2 - 1 ' continue scanning from where this section ended
-            End If
+        Next i
+        If allMatch Then
+            Set GetSheetFuzzy = ws
+            Exit Function
         End If
+    Next ws
 
-        r = r + 1
-    Loop
+    Set GetSheetFuzzy = Nothing
+End Function
+
+'=====================================================================
+' STEP 1 - Territory / Proportion mapping (uses the FIRST table only,
+' skips the "Total" row, matches destination rows by territory NUMBER)
+'=====================================================================
+Private Sub MapTerritoryProportions(ByVal propWb As Workbook, ByVal frWs As Worksheet)
+
+    Dim propWs As Worksheet
+    On Error Resume Next
+    Set propWs = propWb.Worksheets("Weighted Factors wRate")
+    If propWs Is Nothing Then Set propWs = propWb.Worksheets("Weighted Factors")
+    On Error GoTo 0
+
+    If propWs Is Nothing Then
+        MsgBox "Could not find 'Weighted Factors' or 'Weighted Factors wRate' sheet in Proportion file.", vbExclamation
+        Exit Sub
+    End If
+
+    ' First table only (dynamic - uses CurrentRegion, not hardcoded rows)
+    Dim tbl As Range
+    Set tbl = propWs.Cells(1, 1).CurrentRegion
+    If tbl.Cells(1, 1).Row > 1 Or Len(Trim(CStr(tbl.Cells(1, 1).Value))) = 0 Then
+        ' anchor may not be at A1; search downward for first non-empty cell in col A
+        Dim r0 As Long
+        r0 = 1
+        Do While Len(Trim(CStr(propWs.Cells(r0, 1).Value))) = 0 And r0 < 50
+            r0 = r0 + 1
+        Loop
+        Set tbl = propWs.Cells(r0, 1).CurrentRegion
+    End If
+
+    ' Locate "Territory" and "Proportion" headers within the first row of that table
+    Dim territoryCol As Long, proportionCol As Long
+    Dim c As Range, v As String
+    For Each c In tbl.Rows(1).Cells
+        v = UCase(Trim(CStr(c.Value)))
+        If InStr(v, "TERRITORY") > 0 And territoryCol = 0 Then territoryCol = c.Column
+        If InStr(v, "PROPORTION") > 0 And proportionCol = 0 Then proportionCol = c.Column
+    Next c
+
+    If territoryCol = 0 Or proportionCol = 0 Then
+        MsgBox "Could not locate 'Territory' / 'Proportion' headers in first table of '" & propWs.Name & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim startRow As Long, endRow As Long, r As Long, terrVal As Variant, propVal As Variant
+    startRow = tbl.Row + 1
+    endRow = tbl.Row + tbl.Rows.Count - 1
+
+    For r = startRow To endRow
+        terrVal = propWs.Cells(r, territoryCol).Value
+        If IsNumeric(terrVal) Then   ' skips the "Total" row automatically
+            propVal = propWs.Cells(r, proportionCol).Value
+            WriteTerritoryProportion frWs, CLng(terrVal), propVal
+        End If
+    Next r
 
 End Sub
 
-'=====================================================================
-' LIMITS / DISCOUNT SHEETS
-'
-' Layout assumption (matches your files):
-'   Somewhere in Col A there is a header cell whose value is "Limit"
-'   (e.g. row 6: "Limit" | "Factor").
-'   Below that, each row has a Limit amount in Col A and one or more
-'   values (Factor, etc.) in Col B onward.
-'
-' We locate the "Limit" header in both the source and target sheet,
-' then for every Limit value in the source table we find the SAME
-' Limit value in the target table and copy across all value columns.
-'=====================================================================
-Sub ProcessLimitSheet(wsSrc As Worksheet, wsDst As Worksheet)
+Private Sub WriteTerritoryProportion(ByVal frWs As Worksheet, ByVal territoryNum As Long, ByVal proportionVal As Variant)
+    Dim lastRow As Long, r As Long, found As Boolean
+    lastRow = frWs.Cells(frWs.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 1 Then lastRow = 1
 
-    Dim lastRowSrc As Long, r As Long, r2 As Long
-    Dim headerRowDst As Long
-    Dim lastColHdr As Long, c As Long
-    Dim targetRow As Long
-
-    lastRowSrc = GetLastRow(wsSrc, 1)
-
-    r = 1
-    Do While r <= lastRowSrc
-
-        If Trim(CStr(wsSrc.Cells(r, 1).Value)) = "Limit" Then
-
-            headerRowDst = FindLimitHeaderRow(wsDst)
-
-            If headerRowDst > 0 Then
-
-                ' last column of this Limit table, based on the header row
-                c = wsSrc.Columns.Count
-                Do While c > 1 And Len(Trim(CStr(wsSrc.Cells(r, c).Value))) = 0
-                    c = c - 1
-                Loop
-                lastColHdr = c
-
-                r2 = r + 1
-                Do While r2 <= lastRowSrc
-
-                    If Len(Trim(CStr(wsSrc.Cells(r2, 1).Value))) = 0 Then Exit Do   ' blank row = end of table
-                    If IsHeadingCell(wsSrc.Cells(r2, 1).Value) Then Exit Do          ' next section
-
-                    If IsNumeric(wsSrc.Cells(r2, 1).Value) Then
-
-                        targetRow = FindLimitValueRow(wsDst, headerRowDst, wsSrc.Cells(r2, 1).Value)
-
-                        If targetRow > 0 Then
-                            For c = 2 To lastColHdr
-                                wsDst.Cells(targetRow, c).Value = wsSrc.Cells(r2, c).Value
-                            Next c
-                        End If
-                    End If
-
-                    r2 = r2 + 1
-                Loop
+    found = False
+    For r = 1 To lastRow
+        If IsNumeric(frWs.Cells(r, 1).Value) Then
+            If CLng(frWs.Cells(r, 1).Value) = territoryNum Then
+                frWs.Cells(r, 2).Value = proportionVal
+                found = True
+                Exit For
             End If
         End If
+    Next r
 
-        r = r + 1
-    Loop
-
+    If Not found Then
+        Dim newRow As Long
+        newRow = lastRow + 1
+        frWs.Cells(newRow, 1).Value = territoryNum
+        frWs.Cells(newRow, 2).Value = proportionVal
+    End If
 End Sub
 
 '=====================================================================
-' HELPER FUNCTIONS
+' TITLE / CODE DETECTION
+' Type L : "Some Name: CODE"   -> single-value (Terr/Rate) table
+' Type R : "CODE*"             -> multi-value (Terr + 6 limit columns) table
 '=====================================================================
-
-Function GetLastRow(ws As Worksheet, col As Long) As Long
-    GetLastRow = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
-End Function
-
-' A "heading" row is one where Col A is text containing a colon,
-' e.g. "Auto - Initial Coverage: AUTO"
-Function IsHeadingCell(v As Variant) As Boolean
-    If IsError(v) Then
-        IsHeadingCell = False
-    ElseIf VarType(v) = vbString Then
-        IsHeadingCell = (InStr(v, ":") > 0)
-    Else
-        IsHeadingCell = False
+Private Function IsTypeL(ByVal v As Variant) As Boolean
+    If VarType(v) <> vbString Then Exit Function
+    Dim s As String, p As Long
+    s = CStr(v)
+    p = InStrRev(s, ":")
+    If p > 0 Then
+        If Len(Trim(Mid(s, p + 1))) > 0 Then IsTypeL = True
     End If
 End Function
 
-Function FindHeadingRow(ws As Worksheet, headingText As String) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindHeadingRow = 0
+Private Function IsTypeR(ByVal v As Variant) As Boolean
+    If VarType(v) <> vbString Then Exit Function
+    Dim s As String
+    s = Trim(CStr(v))
+    If Len(s) = 0 Then Exit Function
+    If Right(s, 1) = "*" Then IsTypeR = True
+End Function
+
+Private Function CodeOf(ByVal v As Variant) As String
+    Dim s As String, p As Long
+    s = CStr(v)
+    p = InStrRev(s, ":")
+    If p > 0 Then
+        CodeOf = UCase(Trim(Mid(s, p + 1)))
+    Else
+        CodeOf = UCase(Trim(s))
+    End If
+End Function
+
+'=====================================================================
+' SOURCE DICTIONARY BUILDER
+' Scans a sheet (optionally restricted to a column range) and merges
+' found tables into targetDict: code -> Dictionary(terrNumStr -> value/array6)
+'=====================================================================
+Private Sub MergeRateDict(ByVal ws As Worksheet, ByVal targetDict As Object, _
+                           Optional ByVal minCol As Long = 1, Optional ByVal maxCol As Long = 16384)
+    Dim lastRow As Long, lastCol As Long, r As Long, c As Long
+    On Error Resume Next
+    lastRow = ws.UsedRange.Rows(ws.UsedRange.Rows.Count).Row
+    lastCol = ws.UsedRange.Columns(ws.UsedRange.Columns.Count).Column
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+    If lastCol < 1 Then lastCol = 1
+
+    Dim colHi As Long
+    colHi = lastCol
+    If maxCol < colHi Then colHi = maxCol
+
     For r = 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then
-            If Trim(CStr(ws.Cells(r, 1).Value)) = headingText Then
-                FindHeadingRow = r
-                Exit Function
+        For c = minCol To colHi
+            Dim v As Variant
+            v = ws.Cells(r, c).Value
+            If VarType(v) = vbString Then
+                If IsTypeL(v) Then
+                    MergeAnchorL ws, r, c, CodeOf(v), targetDict
+                ElseIf IsTypeR(v) Then
+                    MergeAnchorR ws, r, c, CodeOf(v), targetDict
+                End If
+            End If
+        Next c
+    Next r
+End Sub
+
+Private Sub MergeAnchorL(ByVal ws As Worksheet, ByVal tRow As Long, ByVal tCol As Long, ByVal code As String, ByVal targetDict As Object)
+    Dim labelCol As Long, terrCol As Long, valCol As Long
+    labelCol = tCol: terrCol = tCol + 1: valCol = tCol + 2
+
+    Dim dataRow As Long, rr As Long
+    dataRow = -1
+    For rr = tRow + 1 To tRow + 8
+        If UCase(Trim(CStr(ws.Cells(rr, labelCol).Value))) = "BASE" Then
+            dataRow = rr
+            Exit For
+        End If
+    Next rr
+    If dataRow = -1 Then Exit Sub
+
+    Dim innerDict As Object
+    If targetDict.exists(code) Then
+        Set innerDict = targetDict(code)
+    Else
+        Set innerDict = CreateObject("Scripting.Dictionary")
+        targetDict.Add code, innerDict
+    End If
+
+    Do While UCase(Trim(CStr(ws.Cells(dataRow, labelCol).Value))) = "BASE"
+        Dim tNum As Variant
+        tNum = ws.Cells(dataRow, terrCol).Value
+        If IsNumeric(tNum) Then
+            innerDict(CStr(CLng(tNum))) = ws.Cells(dataRow, valCol).Value
+        End If
+        dataRow = dataRow + 1
+        If dataRow > ws.Rows.Count Then Exit Do
+    Loop
+End Sub
+
+Private Sub MergeAnchorR(ByVal ws As Worksheet, ByVal tRow As Long, ByVal tCol As Long, ByVal code As String, ByVal targetDict As Object)
+    Dim terrCol As Long, valColStart As Long
+    terrCol = tCol - 1: valColStart = tCol
+
+    Dim headerRow As Long, rr As Long
+    headerRow = -1
+    For rr = tRow + 1 To tRow + 8
+        If UCase(Trim(CStr(ws.Cells(rr, terrCol).Value))) = "TERR" Then
+            headerRow = rr
+            Exit For
+        End If
+    Next rr
+    If headerRow = -1 Then Exit Sub
+
+    Dim innerDict As Object
+    If targetDict.exists(code) Then
+        Set innerDict = targetDict(code)
+    Else
+        Set innerDict = CreateObject("Scripting.Dictionary")
+        targetDict.Add code, innerDict
+    End If
+
+    Dim dataRow As Long, vi As Long
+    dataRow = headerRow + 1
+    Do While IsNumeric(ws.Cells(dataRow, terrCol).Value) And Len(Trim(CStr(ws.Cells(dataRow, terrCol).Value))) > 0
+        Dim tNum As Long
+        tNum = CLng(ws.Cells(dataRow, terrCol).Value)
+        Dim arr(1 To 6) As Variant
+        For vi = 1 To 6
+            arr(vi) = ws.Cells(dataRow, valColStart + vi - 1).Value
+        Next vi
+        innerDict(CStr(tNum)) = arr
+        dataRow = dataRow + 1
+        If dataRow > ws.Rows.Count Then Exit Do
+    Loop
+End Sub
+
+'=====================================================================
+' DESTINATION ANCHOR COLLECTOR (keeps duplicates - e.g. Weighted Rates
+' has the same code 3x across its 3 blocks)
+'=====================================================================
+Private Function CollectAnchors(ByVal ws As Worksheet, Optional ByVal minCol As Long = 1, Optional ByVal maxCol As Long = 16384) As Collection
+    Dim result As New Collection
+    Dim lastRow As Long, lastCol As Long, r As Long, c As Long
+    On Error Resume Next
+    lastRow = ws.UsedRange.Rows(ws.UsedRange.Rows.Count).Row
+    lastCol = ws.UsedRange.Columns(ws.UsedRange.Columns.Count).Column
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+    If lastCol < 1 Then lastCol = 1
+
+    Dim colHi As Long
+    colHi = lastCol
+    If maxCol < colHi Then colHi = maxCol
+
+    For r = 1 To lastRow
+        For c = minCol To colHi
+            Dim v As Variant
+            v = ws.Cells(r, c).Value
+            If VarType(v) = vbString Then
+                If IsTypeL(v) Then
+                    result.Add Array(r, c, "L", CodeOf(v))
+                ElseIf IsTypeR(v) Then
+                    result.Add Array(r, c, "R", CodeOf(v))
+                End If
+            End If
+        Next c
+    Next r
+
+    Set CollectAnchors = result
+End Function
+
+'=====================================================================
+' FILL DESTINATION ANCHORS FROM A SOURCE DICTIONARY
+' Skips cells that already contain a formula (defensive - won't clobber
+' live formulas if the production file has them; this sample file doesn't).
+'=====================================================================
+Private Sub FillAnchorsFromDict(ByVal destWs As Worksheet, ByVal anchors As Collection, ByVal srcDict As Object, _
+                                 Optional ByRef matchedCount As Long, Optional ByRef unmatchedList As String)
+    Dim a As Variant
+    For Each a In anchors
+        Dim r As Long, c As Long, kind As String, code As String
+        r = a(0): c = a(1): kind = a(2): code = a(3)
+
+        If Not srcDict.exists(code) Then
+            unmatchedList = unmatchedList & code & "(" & destWs.Name & "!" & destWs.Cells(r, c).Address & "); "
+            GoTo ContinueLoop
+        End If
+
+        Dim innerDict As Object
+        Set innerDict = srcDict(code)
+
+        If kind = "L" Then
+            Dim labelCol As Long, terrCol As Long, valCol As Long
+            labelCol = c: terrCol = c + 1: valCol = c + 2
+
+            Dim dataRow As Long, rr As Long
+            dataRow = -1
+            For rr = r + 1 To r + 8
+                If UCase(Trim(CStr(destWs.Cells(rr, labelCol).Value))) = "BASE" Then
+                    dataRow = rr
+                    Exit For
+                End If
+            Next rr
+            If dataRow = -1 Then GoTo ContinueLoop
+
+            Do While UCase(Trim(CStr(destWs.Cells(dataRow, labelCol).Value))) = "BASE"
+                Dim tKey As Variant
+                tKey = destWs.Cells(dataRow, terrCol).Value
+                If IsNumeric(tKey) Then
+                    Dim k1 As String
+                    k1 = CStr(CLng(tKey))
+                    If innerDict.exists(k1) Then
+                        If Not destWs.Cells(dataRow, valCol).HasFormula Then
+                            destWs.Cells(dataRow, valCol).Value = innerDict(k1)
+                            matchedCount = matchedCount + 1
+                        End If
+                    End If
+                End If
+                dataRow = dataRow + 1
+                If dataRow > destWs.Rows.Count Then Exit Do
+            Loop
+
+        Else ' "R"
+            Dim terrColR As Long, valColStart As Long
+            terrColR = c - 1: valColStart = c
+
+            Dim headerRow As Long
+            headerRow = -1
+            For rr = r + 1 To r + 8
+                If UCase(Trim(CStr(destWs.Cells(rr, terrColR).Value))) = "TERR" Then
+                    headerRow = rr
+                    Exit For
+                End If
+            Next rr
+            If headerRow = -1 Then GoTo ContinueLoop
+
+            Dim dataRowR As Long, vi2 As Long
+            dataRowR = headerRow + 1
+            Do While IsNumeric(destWs.Cells(dataRowR, terrColR).Value) And Len(Trim(CStr(destWs.Cells(dataRowR, terrColR).Value))) > 0
+                Dim k2 As String
+                k2 = CStr(CLng(destWs.Cells(dataRowR, terrColR).Value))
+                If innerDict.exists(k2) Then
+                    Dim arrVals As Variant
+                    arrVals = innerDict(k2)
+                    For vi2 = 1 To 6
+                        If Not destWs.Cells(dataRowR, valColStart + vi2 - 1).HasFormula Then
+                            destWs.Cells(dataRowR, valColStart + vi2 - 1).Value = arrVals(vi2)
+                        End If
+                    Next vi2
+                    matchedCount = matchedCount + 1
+                End If
+                dataRowR = dataRowR + 1
+                If dataRowR > destWs.Rows.Count Then Exit Do
+            Loop
+        End If
+
+ContinueLoop:
+    Next a
+End Sub
+
+'=====================================================================
+' STEP 4b - Limits / Discount: simple key(col1) -> value(col2) row matching.
+' Handles the fact that ROC and FR/XX may have different row counts/order.
+'=====================================================================
+Private Sub CopyKeyValueRows(ByVal srcWs As Worksheet, ByVal destWs As Worksheet)
+    Dim srcDict As Object
+    Set srcDict = CreateObject("Scripting.Dictionary")
+
+    Dim lastRow As Long, r As Long
+    On Error Resume Next
+    lastRow = srcWs.UsedRange.Rows(srcWs.UsedRange.Rows.Count).Row
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+
+    For r = 1 To lastRow
+        Dim k As Variant, v As Variant
+        k = srcWs.Cells(r, 1).Value
+        v = srcWs.Cells(r, 2).Value
+        If Len(Trim(CStr(k))) > 0 And Len(Trim(CStr(v))) > 0 Then
+            Dim keyStr As String
+            keyStr = NormalizeKey(k)
+            If Not srcDict.exists(keyStr) Then srcDict.Add keyStr, v
+        End If
+    Next r
+
+    On Error Resume Next
+    lastRow = destWs.UsedRange.Rows(destWs.UsedRange.Rows.Count).Row
+    On Error GoTo 0
+    If lastRow < 1 Then lastRow = 1
+
+    For r = 1 To lastRow
+        Dim dk As Variant
+        dk = destWs.Cells(r, 1).Value
+        If Len(Trim(CStr(dk))) > 0 Then
+            Dim dKeyStr As String
+            dKeyStr = NormalizeKey(dk)
+            If srcDict.exists(dKeyStr) Then
+                If Not destWs.Cells(r, 2).HasFormula Then
+                    destWs.Cells(r, 2).Value = srcDict(dKeyStr)
+                End If
             End If
         End If
     Next r
-End Function
+End Sub
 
-' Finds a row (after startRow, before the next heading) where
-' Col(col1) = val1 AND Col(col2) = val2
-Function FindKeyRow2Col(ws As Worksheet, startRow As Long, col1 As Long, col2 As Long, _
-                         val1 As Variant, val2 As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
-
-    FindKeyRow2Col = 0
-    For r = startRow + 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
-        If CStr(ws.Cells(r, col1).Value) = CStr(val1) And CStr(ws.Cells(r, col2).Value) = CStr(val2) Then
-            FindKeyRow2Col = r
-            Exit Function
-        End If
-    Next r
-End Function
-
-' Finds a row (after startRow, before the next heading) where Col(col1) = val1
-Function FindKeyRow1Col(ws As Worksheet, startRow As Long, col1 As Long, val1 As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    If GetLastRow(ws, 5) > lastRow Then lastRow = GetLastRow(ws, 5)
-
-    FindKeyRow1Col = 0
-    For r = startRow + 1 To lastRow
-        If IsHeadingCell(ws.Cells(r, 1).Value) Then Exit For
-        If Trim(CStr(ws.Cells(r, col1).Value)) = "Terr" Then GoTo NextR   ' skip sub-header row
-        If CStr(ws.Cells(r, col1).Value) = CStr(val1) Then
-            FindKeyRow1Col = r
-            Exit Function
-        End If
-NextR:
-    Next r
-End Function
-
-Function FindLimitHeaderRow(ws As Worksheet) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindLimitHeaderRow = 0
-    For r = 1 To lastRow
-        If Trim(CStr(ws.Cells(r, 1).Value)) = "Limit" Then
-            FindLimitHeaderRow = r
-            Exit Function
-        End If
-    Next r
-End Function
-
-Function FindLimitValueRow(ws As Worksheet, startRow As Long, limitVal As Variant) As Long
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastRow(ws, 1)
-    FindLimitValueRow = 0
-    For r = startRow + 1 To lastRow
-        If Len(Trim(CStr(ws.Cells(r, 1).Value))) = 0 Then Exit For
-        If IsNumeric(ws.Cells(r, 1).Value) Then
-            If CDbl(ws.Cells(r, 1).Value) = CDbl(limitVal) Then
-                FindLimitValueRow = r
-                Exit Function
-            End If
-        End If
-    Next r
+Private Function NormalizeKey(ByVal v As Variant) As String
+    If IsNumeric(v) Then
+        NormalizeKey = "N:" & CStr(CDbl(v))
+    Else
+        NormalizeKey = "T:" & UCase(Trim(CStr(v)))
+    End If
 End Function
