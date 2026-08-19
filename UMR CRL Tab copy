@@ -1,23 +1,23 @@
 Option Explicit
 
+
+'========================================================
+' USERFORM INITIALIZE
+'========================================================
 Private Sub UserForm_Initialize()
 
-    'Initially both textboxes are empty
     txtProp.Value = ""
     txtCRL.Value = ""
 
-    'Update button states
     UpdateButtonStates
 
 End Sub
 
 
 '========================================================
-' Browse button for Property file/folder
+' PROPERTY BROWSE BUTTON
 '========================================================
 Private Sub btnProp_Click()
-
-    Dim selectedPath As String
 
     With Application.FileDialog(msoFileDialogFilePicker)
 
@@ -25,8 +25,7 @@ Private Sub btnProp_Click()
         .AllowMultiSelect = False
 
         If .Show = -1 Then
-            selectedPath = .SelectedItems(1)
-            txtProp.Value = selectedPath
+            txtProp.Value = .SelectedItems(1)
         End If
 
     End With
@@ -37,11 +36,9 @@ End Sub
 
 
 '========================================================
-' Browse button for CRL file/folder
+' CRL BROWSE BUTTON
 '========================================================
 Private Sub btnCRL_Click()
-
-    Dim selectedPath As String
 
     With Application.FileDialog(msoFileDialogFilePicker)
 
@@ -49,8 +46,7 @@ Private Sub btnCRL_Click()
         .AllowMultiSelect = False
 
         If .Show = -1 Then
-            selectedPath = .SelectedItems(1)
-            txtCRL.Value = selectedPath
+            txtCRL.Value = .SelectedItems(1)
         End If
 
     End With
@@ -61,7 +57,7 @@ End Sub
 
 
 '========================================================
-' Refresh button
+' REFRESH BUTTON
 ' Clears both textboxes
 '========================================================
 Private Sub btnRefresh_Click()
@@ -75,25 +71,47 @@ End Sub
 
 
 '========================================================
-' QC button
-' Runs QCrun only when both paths are provided
+' QC BUTTON
+'
+' Cases:
+'
+' 1. Both have values:
+'       QCrun txtProp.Value, txtCRL.Value
+'
+' 2. Only CRL has value:
+'       QCrun "", txtCRL.Value
+'
+' 3. Neither has value:
+'       Button is disabled, so this will not normally run.
 '========================================================
 Private Sub btnQC_Click()
 
-    If Trim(txtProp.Value) = "" Or Trim(txtCRL.Value) = "" Then
-        MsgBox "Please provide both Property and CRL paths.", _
-               vbExclamation, "Missing Path"
+    Dim propPath As String
+    Dim crlPath As String
+
+    propPath = Trim(txtProp.Value)
+    crlPath = Trim(txtCRL.Value)
+
+    'Safety check
+    If crlPath = "" Then
+        MsgBox "Please provide the CRL path.", _
+               vbExclamation, "Missing CRL Path"
         Exit Sub
     End If
 
-    'Call your QC procedure
-    QCrun txtProp.Value, txtCRL.Value
+    'If Property path is empty, pass an empty string
+    If propPath = "" Then
+        QCrun "", crlPath
+    Else
+        QCrun propPath, crlPath
+    End If
 
 End Sub
 
 
 '========================================================
-' Detect changes when user manually types paths
+' TEXTBOX CHANGE EVENTS
+' These detect manually typed paths
 '========================================================
 Private Sub txtProp_Change()
 
@@ -110,7 +128,7 @@ End Sub
 
 
 '========================================================
-' Enable / Disable buttons
+' UPDATE BUTTON STATES
 '========================================================
 Private Sub UpdateButtonStates()
 
@@ -120,10 +138,18 @@ Private Sub UpdateButtonStates()
     propEntered = (Trim(txtProp.Value) <> "")
     crlEntered = (Trim(txtCRL.Value) <> "")
 
-    'Refresh works if at least one textbox has a value
+    '----------------------------------------------------
+    ' REFRESH
+    ' Enabled if either textbox contains something
+    '----------------------------------------------------
     btnRefresh.Enabled = (propEntered Or crlEntered)
 
-    'QC works only if BOTH textboxes have values
-    btnQC.Enabled = (propEntered And crlEntered)
+    '----------------------------------------------------
+    ' QC
+    '
+    ' CRL MUST have a value.
+    ' Property can be empty.
+    '----------------------------------------------------
+    btnQC.Enabled = crlEntered
 
 End Sub
