@@ -4,6 +4,9 @@ Option Compare Text  '-- case-insensitive text comparisons (=, Like, Select Case
 '====================================================================
 ' MAIN ENTRY POINT
 '====================================================================
+'====================================================================
+' MAIN ENTRY POINT
+'====================================================================
 Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath As String = "")
     Dim wbConfig As Workbook, wbExport As Workbook
     Dim wsEQTabs As Worksheet
@@ -13,6 +16,7 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
     Dim success As Boolean, statusMsg As String
     Dim cfgRows As Long, expRows As Long, copiedRows As Long
     Dim newConfigPath As String
+    Dim matchedCase As Integer
 
     On Error GoTo ErrHandler
 
@@ -42,55 +46,53 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
 
         cfgRows = 0: expRows = 0: copiedRows = 0
 
-        If exportSheetName = "" Then
-            WriteResult wsEQTabs, r, "Export Sheet missing", "red", 0, 0, 0
-
-        ElseIf configSheetName = "" Then
-            WriteResult wsEQTabs, r, "Config Sheet missing", "red", 0, 0, 0
-
-        ElseIf LCase(yesNo) <> "yes" Then
-            WriteResult wsEQTabs, r, "Skipped (flag = '" & yesNo & "')", "none", 0, 0, 0
+        If exportSheetName = "" Or configSheetName = "" Then
+            '-- Either cell blank
+            WriteResult wsEQTabs, r, "Invalide Sheet name config/export", "red", 0, 0, 0
 
         Else
-            Set wsExport = Nothing
+            '-- STEP 1: does this sheet exist in Config, and does its name match a valid EQ pattern?
             Set wsConfig = Nothing
             On Error Resume Next
-            Set wsExport = wbExport.Sheets(exportSheetName)
             Set wsConfig = wbConfig.Sheets(configSheetName)
             On Error GoTo ErrHandler
 
-            If wsExport Is Nothing Then
-                WriteResult wsEQTabs, r, "Export Sheet missing", "red", 0, 0, 0
+            matchedCase = GetCaseType(configSheetName)
 
-            ElseIf wsConfig Is Nothing Then
-                WriteResult wsEQTabs, r, "Config Sheet missing", "red", 0, 0, 0
+            If wsConfig Is Nothing Or matchedCase = 0 Then
+                WriteResult wsEQTabs, r, "Not a Valid EQ sheet in Config", "red", 0, 0, 0
 
             Else
-                success = False
-                statusMsg = ""
+                '-- STEP 2: does this sheet exist in Export?
+                Set wsExport = Nothing
+                On Error Resume Next
+                Set wsExport = wbExport.Sheets(exportSheetName)
+                On Error GoTo ErrHandler
 
-                Select Case True
-                    Case configSheetName Like "R_O_EQCov*", configSheetName Like "R_O_EQIncrCov*"
-                        success = ProcessCase1(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                If wsExport Is Nothing Then
+                    WriteResult wsEQTabs, r, "Sheet on found in Export", "red", 0, 0, 0
 
-                    Case configSheetName Like "R_O_EQDed*"
-                        success = ProcessCase2(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                ElseIf LCase(yesNo) <> "yes" Then
+                    WriteResult wsEQTabs, r, "Skipped (flag = '" & yesNo & "')", "none", 0, 0, 0
 
-                    Case configSheetName Like "R_O_EQYearBuilt*"
-                        success = ProcessCase3(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                Else
+                    '-- STEP 3: proceed with the matched case
+                    success = False
+                    statusMsg = ""
 
-                    Case configSheetName Like "R_O_LossAssessmentEQ*"
-                        success = ProcessCase4(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                    Select Case matchedCase
+                        Case 1
+                            success = ProcessCase1(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                        Case 2
+                            success = ProcessCase2(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                        Case 3
+                            success = ProcessCase3(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                        Case 4
+                            success = ProcessCase4(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                        Case 5
+                            success = ProcessCase5(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
+                    End Select
 
-                    Case configSheetName Like "R_O_EQExpense*"
-                        success = ProcessCase5(wsExport, wsConfig, statusMsg, cfgRows, expRows, copiedRows)
-
-                    Case Else
-                        WriteResult wsEQTabs, r, "mapping not found", "yellow", 0, 0, 0
-                        statusMsg = ""
-                End Select
-
-                If statusMsg <> "" Then
                     If success Then
                         WriteResult wsEQTabs, r, "Validated", "green", cfgRows, expRows, copiedRows
                     Else
@@ -122,6 +124,26 @@ ErrHandler:
     Application.ScreenUpdating = True
     MsgBox "Unexpected error: " & Err.Description, vbCritical
 End Sub
+
+'====================================================================
+' Returns which case (1-5) a config sheet name matches, or 0 if none
+'====================================================================
+Private Function GetCaseType(configSheetName As String) As Integer
+    Select Case True
+        Case configSheetName Like "R_O_EQCov*", configSheetName Like "R_O_EQIncrCov*"
+            GetCaseType = 1
+        Case configSheetName Like "R_O_EQDed*"
+            GetCaseType = 2
+        Case configSheetName Like "R_O_EQYearBuilt*"
+            GetCaseType = 3
+        Case configSheetName Like "R_O_LossAssessmentEQ*"
+            GetCaseType = 4
+        Case configSheetName Like "R_O_EQExpense*"
+            GetCaseType = 5
+        Case Else
+            GetCaseType = 0
+    End Select
+End Function
 
 '====================================================================
 ' CASE 1: R_O_EQCovA/B/C/D , R_O_EQIncrCovA/B/C/D
