@@ -25,6 +25,7 @@ Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As 
     Dim matchedExport As Object
     Dim i As Long, masterRow As Long
     Dim cfgName As String, expMatch As String, expName As String
+    Dim newConfigPath As String
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -65,14 +66,17 @@ Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As 
     ' Keep Master Sheet as the last tab
     wsMaster.Move After:=wbConfig.Sheets(wbConfig.Sheets.Count)
 
-    wbConfig.Save
+    ' Save Config as "<OriginalName> Updated factors.<ext>"
+    newConfigPath = BuildUpdatedFactorsPath(ConfigPath)
+    wbConfig.SaveAs Filename:=newConfigPath, FileFormat:=wbConfig.FileFormat
+
     wbExport.Close SaveChanges:=False
 
     Application.Calculation = xlCalculationAutomatic
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Sync completed successfully.", vbInformation
+    MsgBox "Sync completed successfully." & vbCrLf & "Saved as: " & newConfigPath, vbInformation
     Exit Sub
 
 ErrHandler:
@@ -131,11 +135,11 @@ Private Sub ProcessCase1(ByVal wbConfig As Workbook, ByVal wbExport As Workbook,
     Next k
 
     If missingCols = "" And extraCols = "" Then
-        subCase = 1        ' exact match
+        subCase = 1        ' exact column match
     ElseIf missingCols = "" And extraCols <> "" Then
-        subCase = 2        ' config columns all present, export has extra
+        subCase = 2        ' Config has all its columns present in Export; Export has extra columns
     Else
-        subCase = 3         ' config has columns export doesn't have
+        subCase = 3         ' Config has columns that Export doesn't have -> don't copy
     End If
 
     Select Case subCase
@@ -154,14 +158,18 @@ Private Sub ProcessCase1(ByVal wbConfig As Workbook, ByVal wbExport As Workbook,
                 wsCfg.Range(wsCfg.Cells(2, 1), wsCfg.Cells(cfgLastRow, cfgLastCol)).ClearContents
             End If
 
-            ' Extend row formatting downward if Export has more rows than Config originally had
-            If exportDataCount > existingFormattedRows And existingFormattedRows > 0 Then
-                wsCfg.Rows(existingFormattedRows + 1).Copy
-                wsCfg.Range(wsCfg.Rows(existingFormattedRows + 2), wsCfg.Rows(1 + exportDataCount)).PasteSpecial xlPasteFormats
-                Application.CutCopyMode = False
+            ' If Export has MORE data rows than Config originally had, extend the
+            ' original row formatting (number format, alignment, borders, etc.)
+            ' downward from the last previously-formatted row.
+            If exportDataCount > existingFormattedRows Then
+                If existingFormattedRows > 0 Then
+                    wsCfg.Rows(existingFormattedRows + 1).Copy
+                    wsCfg.Range(wsCfg.Rows(existingFormattedRows + 2), wsCfg.Rows(1 + exportDataCount)).PasteSpecial xlPasteFormats
+                    Application.CutCopyMode = False
+                End If
             End If
 
-            ' Paste values column-by-column, matched by header name
+            ' Paste values column-by-column, matched by header name (Export columns not in Config are simply skipped)
             colsCopied = 0
             For Each k In cfgHeaders.Keys
                 If expHeaders.Exists(k) Then
@@ -425,4 +433,25 @@ Private Function LastNonMasterSheetName(ByVal wb As Workbook) As String
         If LCase(ws.Name) <> "master sheet" Then lastName = ws.Name
     Next ws
     LastNonMasterSheetName = lastName
+End Function
+
+' Builds "<folder>\<OriginalConfigName> Updated factors.<ext>"
+Private Function BuildUpdatedFactorsPath(ByVal originalPath As String) As String
+    Dim folderPath As String, fileName As String, baseName As String, ext As String
+    Dim dotPos As Long, slashPos As Long
+
+    slashPos = InStrRev(originalPath, "\")
+    folderPath = Left(originalPath, slashPos)
+    fileName = Mid(originalPath, slashPos + 1)
+
+    dotPos = InStrRev(fileName, ".")
+    If dotPos > 0 Then
+        baseName = Left(fileName, dotPos - 1)
+        ext = Mid(fileName, dotPos + 1)
+    Else
+        baseName = fileName
+        ext = "xlsx"
+    End If
+
+    BuildUpdatedFactorsPath = folderPath & baseName & " Updated factors." & ext
 End Function
