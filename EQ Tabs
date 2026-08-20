@@ -1,0 +1,636 @@
+Option Explicit
+Option Compare Text  '-- makes text comparisons (=, Like, Select Case) case-insensitive throughout this module
+
+'====================================================================
+' MAIN ENTRY POINT
+'====================================================================
+Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath As String = "")
+    Dim wbConfig As Workbook, wbExport As Workbook
+    Dim wsEQTabs As Worksheet
+    Dim r As Long
+    Dim exportSheetName As String, configSheetName As String, yesNo As String
+    Dim wsExport As Worksheet, wsConfig As Worksheet
+    Dim success As Boolean, msg As String
+
+    On Error GoTo ErrHandler
+
+    If Trim(configPath) = "" Then
+        configPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select CONFIG file")
+        If configPath = "False" Then Exit Sub
+    End If
+    If Trim(exportPath) = "" Then
+        exportPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select EXPORTS file")
+        If exportPath = "False" Then Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    Set wbConfig = Workbooks.Open(configPath)
+    Set wbExport = Workbooks.Open(exportPath)
+    Set wsEQTabs = ThisWorkbook.Sheets("EQ Tabs")
+
+    r = 2
+    Do While Not (Trim(wsEQTabs.Cells(r, 1).Value) = "" And Trim(wsEQTabs.Cells(r, 2).Value) = "")
+
+        exportSheetName = Trim(wsEQTabs.Cells(r, 1).Value)
+        configSheetName = Trim(wsEQTabs.Cells(r, 2).Value)
+        yesNo = Trim(wsEQTabs.Cells(r, 3).Value)
+
+        If exportSheetName = "" Then
+            WriteComment wsEQTabs, r, "Export Sheet missing", "red"
+
+        ElseIf configSheetName = "" Then
+            WriteComment wsEQTabs, r, "Config Sheet missing", "red"
+
+        ElseIf LCase(yesNo) <> "yes" Then
+            WriteComment wsEQTabs, r, "Skipped (flag = '" & yesNo & "')", "none"
+
+        Else
+            Set wsExport = Nothing
+            Set wsConfig = Nothing
+            On Error Resume Next
+            Set wsExport = wbExport.Sheets(exportSheetName)
+            Set wsConfig = wbConfig.Sheets(configSheetName)
+            On Error GoTo ErrHandler
+
+            If wsExport Is Nothing Then
+                WriteComment wsEQTabs, r, "Export Sheet missing", "red"
+
+            ElseIf wsConfig Is Nothing Then
+                WriteComment wsEQTabs, r, "Config Sheet missing", "red"
+
+            Else
+                success = False
+                msg = ""
+
+                Select Case True
+                    Case configSheetName Like "R_O_EQCov*", configSheetName Like "R_O_EQIncrCov*"
+                        success = ProcessCase1(wsExport, wsConfig, msg)
+
+                    Case configSheetName Like "R_O_EQDed*"
+                        success = ProcessCase2(wsExport, wsConfig, msg)
+
+                    Case configSheetName Like "R_O_EQYearBuilt*"
+                        success = ProcessCase3(wsExport, wsConfig, msg)
+
+                    Case configSheetName Like "R_O_LossAssessmentEQ*"
+                        success = ProcessCase4(wsExport, wsConfig, msg)
+
+                    Case configSheetName Like "R_O_EQExpense*"
+                        success = ProcessCase5(wsExport, wsConfig, msg)
+
+                    Case Else
+                        WriteComment wsEQTabs, r, "mapping not found", "yellow"
+                        msg = ""
+                End Select
+
+                If msg <> "" Then
+                    If success Then
+                        WriteComment wsEQTabs, r, msg, "green"
+                    Else
+                        WriteComment wsEQTabs, r, msg, "red"
+                    End If
+                End If
+            End If
+        End If
+
+        r = r + 1
+    Loop
+
+    Dim newConfigPath As String
+    newConfigPath = BuildSaveAsPath(configPath)
+
+    Application.DisplayAlerts = False
+    wbConfig.SaveAs Filename:=newConfigPath, FileFormat:=wbConfig.FileFormat
+    Application.DisplayAlerts = True
+
+    wbExport.Close SaveChanges:=False
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "Processing complete.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    MsgBox "Unexpected error: " & Err.Description, vbCritical
+End Sub
+
+'====================================================================
+' CASE 1: R_O_EQCovA/B/C/D , R_O_EQIncrCovA/B/C/D
+' Export: County Code | Earthquake Construction Type | Rate per $1000
+' Config: County | County Code | EQ Construction Type | Rate
+'====================================================================
+Private Function ProcessCase1(wsExport As Worksheet, wsConfig As Worksheet, ByRef msg As String) As Boolean
+    On Error GoTo EH
+
+    Dim expNames(1 To 3) As String, cfgNames(1 To 4) As String
+    expNames(1) = "County Code": expNames(2) = "Earthquake Construction Type": expNames(3) = "Rate per $1000"
+    cfgNames(1) = "County": cfgNames(2) = "County Code": cfgNames(3) = "EQ Construction Type": cfgNames(4) = "Rate"
+
+    Dim expHeaderRow As Long, cfgHeaderRow As Long
+    expHeaderRow = FindHeaderRow(wsExport, expNames)
+    cfgHeaderRow = FindHeaderRow(wsConfig, cfgNames)
+
+    Dim eCC As Long, eCT As Long, eRate As Long
+    Dim cCC As Long, cCT As Long, cRate As Long
+    eCC = FindColumn(wsExport, expHeaderRow, "County Code")
+    eCT = FindColumn(wsExport, expHeaderRow, "Earthquake Construction Type")
+    eRate = FindColumn(wsExport, expHeaderRow, "Rate per $1000")
+    cCC = FindColumn(wsConfig, cfgHeaderRow, "County Code")
+    cCT = FindColumn(wsConfig, cfgHeaderRow, "EQ Construction Type")
+    cRate = FindColumn(wsConfig, cfgHeaderRow, "Rate")
+
+    If eCC = 0 Or eCT = 0 Or eRate = 0 Or cCC = 0 Or cCT = 0 Or cRate = 0 Then
+        msg = "Required columns not found"
+        ProcessCase1 = False
+        Exit Function
+    End If
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastRowE As Long, r As Long, key As String
+    lastRowE = wsExport.Cells(wsExport.Rows.Count, eCC).End(xlUp).Row
+    For r = expHeaderRow + 1 To lastRowE
+        If Trim(wsExport.Cells(r, eCC).Value) <> "" Then
+            key = NormalizeKeyValue(wsExport.Cells(r, eCC).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eCT).Value, "text")
+            dict(key) = wsExport.Cells(r, eRate).Value
+        End If
+    Next r
+
+    Dim lastRowC As Long, matched As Long, total As Long
+    lastRowC = wsConfig.Cells(wsConfig.Rows.Count, cCC).End(xlUp).Row
+    matched = 0: total = 0
+    For r = cfgHeaderRow + 1 To lastRowC
+        If Trim(wsConfig.Cells(r, cCC).Value) <> "" Then
+            total = total + 1
+            key = NormalizeKeyValue(wsConfig.Cells(r, cCC).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cCT).Value, "text")
+            If dict.Exists(key) Then
+                wsConfig.Cells(r, cRate).Value = dict(key)
+                matched = matched + 1
+            End If
+        End If
+    Next r
+
+    If matched = 0 Then
+        msg = "No matching rows found between export and config"
+        ProcessCase1 = False
+    ElseIf matched < total Then
+        msg = "Copied with partial match (" & matched & "/" & total & " rows matched)"
+        ProcessCase1 = True
+    Else
+        msg = "Copied successfully (" & matched & " rows)"
+        ProcessCase1 = True
+    End If
+    Exit Function
+EH:
+    msg = "Error: " & Err.Description
+    ProcessCase1 = False
+End Function
+
+'====================================================================
+' CASE 2: R_O_EQDed
+' Export: Earthquake Deduct Percentage | Earthquake Construction Type | Factor
+' Config: EQ Deductible Percent | EQ Construction Type | Rate
+' ("5%" in export must match "5" in config)
+'====================================================================
+Private Function ProcessCase2(wsExport As Worksheet, wsConfig As Worksheet, ByRef msg As String) As Boolean
+    On Error GoTo EH
+
+    Dim expNames(1 To 3) As String, cfgNames(1 To 3) As String
+    expNames(1) = "Earthquake Deduct Percentage": expNames(2) = "Earthquake Construction Type": expNames(3) = "Factor"
+    cfgNames(1) = "EQ Deductible Percent": cfgNames(2) = "EQ Construction Type": cfgNames(3) = "Rate"
+
+    Dim expHeaderRow As Long, cfgHeaderRow As Long
+    expHeaderRow = FindHeaderRow(wsExport, expNames)
+    cfgHeaderRow = FindHeaderRow(wsConfig, cfgNames)
+
+    Dim eDed As Long, eCT As Long, eFactor As Long
+    Dim cDed As Long, cCT As Long, cRate As Long
+    eDed = FindColumn(wsExport, expHeaderRow, "Earthquake Deduct Percentage")
+    eCT = FindColumn(wsExport, expHeaderRow, "Earthquake Construction Type")
+    eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
+    cDed = FindColumn(wsConfig, cfgHeaderRow, "EQ Deductible Percent")
+    cCT = FindColumn(wsConfig, cfgHeaderRow, "EQ Construction Type")
+    cRate = FindColumn(wsConfig, cfgHeaderRow, "Rate")
+
+    If eDed = 0 Or eCT = 0 Or eFactor = 0 Or cDed = 0 Or cCT = 0 Or cRate = 0 Then
+        msg = "Required columns not found"
+        ProcessCase2 = False
+        Exit Function
+    End If
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastRowE As Long, r As Long, key As String
+    lastRowE = wsExport.Cells(wsExport.Rows.Count, eDed).End(xlUp).Row
+    For r = expHeaderRow + 1 To lastRowE
+        If Trim(wsExport.Cells(r, eDed).Value) <> "" Then
+            key = NormalizeKeyValue(wsExport.Cells(r, eDed).Value, "percent") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eCT).Value, "text")
+            dict(key) = wsExport.Cells(r, eFactor).Value
+        End If
+    Next r
+
+    Dim lastRowC As Long, matched As Long, total As Long
+    lastRowC = wsConfig.Cells(wsConfig.Rows.Count, cDed).End(xlUp).Row
+    matched = 0: total = 0
+    For r = cfgHeaderRow + 1 To lastRowC
+        If Trim(wsConfig.Cells(r, cDed).Value) <> "" Then
+            total = total + 1
+            key = NormalizeKeyValue(wsConfig.Cells(r, cDed).Value, "percent") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cCT).Value, "text")
+            If dict.Exists(key) Then
+                wsConfig.Cells(r, cRate).Value = dict(key)
+                matched = matched + 1
+            End If
+        End If
+    Next r
+
+    If matched = 0 Then
+        msg = "No matching rows found between export and config"
+        ProcessCase2 = False
+    ElseIf matched < total Then
+        msg = "Copied with partial match (" & matched & "/" & total & " rows matched)"
+        ProcessCase2 = True
+    Else
+        msg = "Copied successfully (" & matched & " rows)"
+        ProcessCase2 = True
+    End If
+    Exit Function
+EH:
+    msg = "Error: " & Err.Description
+    ProcessCase2 = False
+End Function
+
+'====================================================================
+' CASE 3: R_O_EQYearBuilt
+' Export: Year Build | Retrofit Indicator | County | Construction Type | Factor
+' Config: Year Build (Upper Bound) | Retrofit | County | County Code | EQ Construction Type | Rate
+' NOTE: export's "County" is matched against config's "County Code" (not config's "County")
+' Retrofit Indicator (Yes/No) maps to Retrofit (Y/N)
+'====================================================================
+Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, ByRef msg As String) As Boolean
+    On Error GoTo EH
+
+    Dim expNames(1 To 5) As String, cfgNames(1 To 6) As String
+    expNames(1) = "Year Build": expNames(2) = "Retrofit Indicator": expNames(3) = "County"
+    expNames(4) = "Construction Type": expNames(5) = "Factor"
+    cfgNames(1) = "Year Build (Upper Bound)": cfgNames(2) = "Retrofit": cfgNames(3) = "County"
+    cfgNames(4) = "County Code": cfgNames(5) = "EQ Construction Type": cfgNames(6) = "Rate"
+
+    Dim expHeaderRow As Long, cfgHeaderRow As Long
+    expHeaderRow = FindHeaderRow(wsExport, expNames)
+    cfgHeaderRow = FindHeaderRow(wsConfig, cfgNames)
+
+    Dim eYB As Long, eRetro As Long, eCounty As Long, eCT As Long, eFactor As Long
+    Dim cYB As Long, cRetro As Long, cCC As Long, cCT As Long, cRate As Long
+    eYB = FindColumn(wsExport, expHeaderRow, "Year Build")
+    eRetro = FindColumn(wsExport, expHeaderRow, "Retrofit Indicator")
+    eCounty = FindColumn(wsExport, expHeaderRow, "County")
+    eCT = FindColumn(wsExport, expHeaderRow, "Construction Type")
+    eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
+
+    cYB = FindColumn(wsConfig, cfgHeaderRow, "Year Build (Upper Bound)")
+    cRetro = FindColumn(wsConfig, cfgHeaderRow, "Retrofit")
+    cCC = FindColumn(wsConfig, cfgHeaderRow, "County Code")
+    cCT = FindColumn(wsConfig, cfgHeaderRow, "EQ Construction Type")
+    cRate = FindColumn(wsConfig, cfgHeaderRow, "Rate")
+
+    If eYB = 0 Or eRetro = 0 Or eCounty = 0 Or eCT = 0 Or eFactor = 0 Or _
+       cYB = 0 Or cRetro = 0 Or cCC = 0 Or cCT = 0 Or cRate = 0 Then
+        msg = "Required columns not found"
+        ProcessCase3 = False
+        Exit Function
+    End If
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastRowE As Long, r As Long, key As String
+    lastRowE = wsExport.Cells(wsExport.Rows.Count, eYB).End(xlUp).Row
+    For r = expHeaderRow + 1 To lastRowE
+        If Trim(wsExport.Cells(r, eYB).Value) <> "" Then
+            key = NormalizeKeyValue(wsExport.Cells(r, eYB).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eRetro).Value, "yn") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eCounty).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eCT).Value, "text")
+            dict(key) = wsExport.Cells(r, eFactor).Value
+        End If
+    Next r
+
+    Dim lastRowC As Long, matched As Long, total As Long
+    lastRowC = wsConfig.Cells(wsConfig.Rows.Count, cCC).End(xlUp).Row
+    matched = 0: total = 0
+    For r = cfgHeaderRow + 1 To lastRowC
+        If Trim(wsConfig.Cells(r, cCC).Value) <> "" Then
+            total = total + 1
+            key = NormalizeKeyValue(wsConfig.Cells(r, cYB).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cRetro).Value, "yn") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cCC).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cCT).Value, "text")
+            If dict.Exists(key) Then
+                wsConfig.Cells(r, cRate).Value = dict(key)
+                matched = matched + 1
+            End If
+        End If
+    Next r
+
+    If matched = 0 Then
+        msg = "No matching rows found between export and config"
+        ProcessCase3 = False
+    ElseIf matched < total Then
+        msg = "Copied with partial match (" & matched & "/" & total & " rows matched)"
+        ProcessCase3 = True
+    Else
+        msg = "Copied successfully (" & matched & " rows)"
+        ProcessCase3 = True
+    End If
+    Exit Function
+EH:
+    msg = "Error: " & Err.Description
+    ProcessCase3 = False
+End Function
+
+'====================================================================
+' CASE 4: R_O_LossAssessmentEQ
+' Export: County Code | Earthquake Construction Type | Factor
+' Config: County Code | County | Earthquake Construction Type | Factor
+'====================================================================
+Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, ByRef msg As String) As Boolean
+    On Error GoTo EH
+
+    Dim expNames(1 To 3) As String, cfgNames(1 To 4) As String
+    expNames(1) = "County Code": expNames(2) = "Earthquake Construction Type": expNames(3) = "Factor"
+    cfgNames(1) = "County Code": cfgNames(2) = "County": cfgNames(3) = "Earthquake Construction Type": cfgNames(4) = "Factor"
+
+    Dim expHeaderRow As Long, cfgHeaderRow As Long
+    expHeaderRow = FindHeaderRow(wsExport, expNames)
+    cfgHeaderRow = FindHeaderRow(wsConfig, cfgNames)
+
+    Dim eCC As Long, eCT As Long, eFactor As Long
+    Dim cCC As Long, cCT As Long, cFactor As Long
+    eCC = FindColumn(wsExport, expHeaderRow, "County Code")
+    eCT = FindColumn(wsExport, expHeaderRow, "Earthquake Construction Type")
+    eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
+    cCC = FindColumn(wsConfig, cfgHeaderRow, "County Code")
+    cCT = FindColumn(wsConfig, cfgHeaderRow, "Earthquake Construction Type")
+    cFactor = FindColumn(wsConfig, cfgHeaderRow, "Factor")
+
+    If eCC = 0 Or eCT = 0 Or eFactor = 0 Or cCC = 0 Or cCT = 0 Or cFactor = 0 Then
+        msg = "Required columns not found"
+        ProcessCase4 = False
+        Exit Function
+    End If
+
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    Dim lastRowE As Long, r As Long, key As String
+    lastRowE = wsExport.Cells(wsExport.Rows.Count, eCC).End(xlUp).Row
+    For r = expHeaderRow + 1 To lastRowE
+        If Trim(wsExport.Cells(r, eCC).Value) <> "" Then
+            key = NormalizeKeyValue(wsExport.Cells(r, eCC).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsExport.Cells(r, eCT).Value, "text")
+            dict(key) = wsExport.Cells(r, eFactor).Value
+        End If
+    Next r
+
+    Dim lastRowC As Long, matched As Long, total As Long
+    lastRowC = wsConfig.Cells(wsConfig.Rows.Count, cCC).End(xlUp).Row
+    matched = 0: total = 0
+    For r = cfgHeaderRow + 1 To lastRowC
+        If Trim(wsConfig.Cells(r, cCC).Value) <> "" Then
+            total = total + 1
+            key = NormalizeKeyValue(wsConfig.Cells(r, cCC).Value, "text") & "||" & _
+                  NormalizeKeyValue(wsConfig.Cells(r, cCT).Value, "text")
+            If dict.Exists(key) Then
+                wsConfig.Cells(r, cFactor).Value = dict(key)
+                matched = matched + 1
+            End If
+        End If
+    Next r
+
+    If matched = 0 Then
+        msg = "No matching rows found between export and config"
+        ProcessCase4 = False
+    ElseIf matched < total Then
+        msg = "Copied with partial match (" & matched & "/" & total & " rows matched)"
+        ProcessCase4 = True
+    Else
+        msg = "Copied successfully (" & matched & " rows)"
+        ProcessCase4 = True
+    End If
+    Exit Function
+EH:
+    msg = "Error: " & Err.Description
+    ProcessCase4 = False
+End Function
+
+'====================================================================
+' CASE 5: R_O_EQExpense
+' Config's single "Rate" value gets replaced by export's "Expense Load" value
+'====================================================================
+Private Function ProcessCase5(wsExport As Worksheet, wsConfig As Worksheet, ByRef msg As String) As Boolean
+    On Error GoTo EH
+
+    Dim expNames(1 To 1) As String, cfgNames(1 To 1) As String
+    expNames(1) = "Expense Load"
+    cfgNames(1) = "Rate"
+
+    Dim expHeaderRow As Long, cfgHeaderRow As Long
+    expHeaderRow = FindHeaderRow(wsExport, expNames)
+    cfgHeaderRow = FindHeaderRow(wsConfig, cfgNames)
+
+    Dim eExpense As Long, cRate As Long
+    eExpense = FindColumn(wsExport, expHeaderRow, "Expense Load")
+    cRate = FindColumn(wsConfig, cfgHeaderRow, "Rate")
+
+    If eExpense = 0 Or cRate = 0 Then
+        msg = "Required columns not found (Expense Load / Rate)"
+        ProcessCase5 = False
+        Exit Function
+    End If
+
+    Dim expVal As Variant
+    expVal = wsExport.Cells(expHeaderRow + 1, eExpense).Value
+    If Trim(CStr(expVal)) = "" Then
+        msg = "Expense Load value is blank in export"
+        ProcessCase5 = False
+        Exit Function
+    End If
+
+    Dim lastRowC As Long, r As Long, cnt As Long
+    lastRowC = wsConfig.Cells(wsConfig.Rows.Count, cRate).End(xlUp).Row
+    cnt = 0
+    For r = cfgHeaderRow + 1 To lastRowC
+        If Trim(wsConfig.Cells(r, cRate).Value) <> "" Then
+            wsConfig.Cells(r, cRate).Value = expVal
+            cnt = cnt + 1
+        End If
+    Next r
+
+    If cnt = 0 Then
+        msg = "No existing value found to replace in Rate column"
+        ProcessCase5 = False
+    Else
+        msg = "Copied successfully (Expense Load applied to " & cnt & " row(s))"
+        ProcessCase5 = True
+    End If
+    Exit Function
+EH:
+    msg = "Error: " & Err.Description
+    ProcessCase5 = False
+End Function
+
+'====================================================================
+' HELPER FUNCTIONS
+'====================================================================
+
+' Finds the best header row (1 to 4) for a sheet given a list of expected header names
+Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
+    Dim r As Long, bestRow As Long, bestMatches As Long, matches As Long, i As Long
+    bestMatches = -1
+    bestRow = 1
+    For r = 1 To 4
+        matches = 0
+        For i = LBound(targetNames) To UBound(targetNames)
+            If FindColumn(ws, r, targetNames(i)) > 0 Then matches = matches + 1
+        Next i
+        If matches > bestMatches Then
+            bestMatches = matches
+            bestRow = r
+        End If
+    Next r
+    FindHeaderRow = bestRow
+End Function
+
+' Finds the column number in a given header row whose text best matches targetName
+Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As String) As Long
+    Dim lastCol As Long, c As Long, bestCol As Long, bestScore As Long, score As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then lastCol = 1
+    bestScore = 0: bestCol = 0
+    For c = 1 To lastCol
+        score = HeaderSimilarity(CStr(ws.Cells(headerRow, c).Value), targetName)
+        If score > bestScore Then
+            bestScore = score
+            bestCol = c
+        End If
+    Next c
+    If bestScore >= 40 Then
+        FindColumn = bestCol
+    Else
+        FindColumn = 0
+    End If
+End Function
+
+' Strips spaces/punctuation and lowercases a header string for comparison
+Private Function NormalizeHeader(s As String) As String
+    Dim i As Long, c As String, res As String
+    s = LCase(Trim(s))
+    For i = 1 To Len(s)
+        c = Mid(s, i, 1)
+        If c Like "[a-z0-9]" Then res = res & c
+    Next i
+    NormalizeHeader = res
+End Function
+
+' Returns a similarity score (0-100) between two header strings
+Private Function HeaderSimilarity(a As String, b As String) As Long
+    Dim na As String, nb As String
+    na = NormalizeHeader(a): nb = NormalizeHeader(b)
+    If na = "" Or nb = "" Then
+        HeaderSimilarity = 0
+        Exit Function
+    End If
+    If na = nb Then
+        HeaderSimilarity = 100
+        Exit Function
+    End If
+    If InStr(na, nb) > 0 Or InStr(nb, na) > 0 Then
+        HeaderSimilarity = 80
+        Exit Function
+    End If
+
+    Dim tokensA() As String, tokensB() As String
+    Dim i As Long, j As Long, matchCount As Long
+    tokensA = Split(LCase(Trim(a)), " ")
+    tokensB = Split(LCase(Trim(b)), " ")
+    matchCount = 0
+    For i = LBound(tokensA) To UBound(tokensA)
+        For j = LBound(tokensB) To UBound(tokensB)
+            If tokensA(i) <> "" And tokensA(i) = tokensB(j) Then matchCount = matchCount + 1
+        Next j
+    Next i
+    If matchCount > 0 Then
+        HeaderSimilarity = 50 + (matchCount * 10)
+    Else
+        HeaderSimilarity = 0
+    End If
+End Function
+
+' Normalizes a cell value for key comparison.
+' fieldType: "text" (default/general), "percent" (strips trailing %), "yn" (Yes/No -> Y/N)
+Private Function NormalizeKeyValue(v As Variant, fieldType As String) As String
+    Dim s As String
+    s = Trim(CStr(v))
+
+    Select Case LCase(fieldType)
+        Case "percent"
+            If Right(s, 1) = "%" Then s = Left(s, Len(s) - 1)
+            If IsNumeric(s) Then
+                NormalizeKeyValue = CStr(CDbl(s))
+            Else
+                NormalizeKeyValue = LCase(s)
+            End If
+
+        Case "yn"
+            Select Case LCase(s)
+                Case "yes", "y": NormalizeKeyValue = "Y"
+                Case "no", "n": NormalizeKeyValue = "N"
+                Case Else: NormalizeKeyValue = UCase(s)
+            End Select
+
+        Case Else
+            If IsNumeric(s) Then
+                NormalizeKeyValue = CStr(CDbl(s))
+            Else
+                NormalizeKeyValue = LCase(s)
+            End If
+    End Select
+End Function
+
+' Writes a message + background color into Column D of the EQ Tabs sheet
+Private Sub WriteComment(ws As Worksheet, r As Long, msg As String, colorType As String)
+    ws.Cells(r, 4).Value = msg
+    Select Case LCase(colorType)
+        Case "red"
+            ws.Cells(r, 4).Interior.Color = RGB(255, 199, 206)   ' light red
+        Case "yellow"
+            ws.Cells(r, 4).Interior.Color = RGB(255, 235, 156)   ' light yellow
+        Case "green"
+            ws.Cells(r, 4).Interior.Color = RGB(198, 239, 206)   ' light green
+        Case Else
+            ws.Cells(r, 4).Interior.ColorIndex = xlNone
+    End Select
+End Sub
+' Builds a new file path: same folder, filename + "_updated_EQ", same extension
+Private Function BuildSaveAsPath(originalPath As String) As String
+    Dim folderPath As String, fileName As String, fileExt As String, baseName As String
+    Dim dotPos As Long, slashPos As Long
+
+    slashPos = InStrRev(originalPath, "\")
+    folderPath = Left(originalPath, slashPos)
+    fileName = Mid(originalPath, slashPos + 1)
+
+    dotPos = InStrRev(fileName, ".")
+    If dotPos > 0 Then
+        baseName = Left(fileName, dotPos - 1)
+        fileExt = Mid(fileName, dotPos) ' includes the dot, e.g. ".xlsx"
+    Else
+        baseName = fileName
+        fileExt = ""
+    End If
+
+    BuildSaveAsPath = folderPath & baseName & "_updated_EQ" & fileExt
+End Function
