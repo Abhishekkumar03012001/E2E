@@ -30,9 +30,10 @@ Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.Calculation = xlCalculationManual
+    Application.AskToUpdateLinks = False
 
-    Set wbConfig = Workbooks.Open(ConfigPath)
-    Set wbExport = Workbooks.Open(ExportPath, ReadOnly:=True)
+    Set wbConfig = Workbooks.Open(ConfigPath, UpdateLinks:=0, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
+    Set wbExport = Workbooks.Open(ExportPath, UpdateLinks:=0, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
 
     Set configNames = GetOrderedSheetNames(wbConfig)
     Set exportNames = GetOrderedSheetNames(wbExport)
@@ -40,7 +41,8 @@ Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As 
     Set matchedExport = CreateObject("Scripting.Dictionary")
     matchedExport.CompareMode = 1 ' vbTextCompare
 
-    Set wsMaster = ResetMasterSheet(wbConfig)
+    ' Master Sheet lives in THIS workbook (the one running the code), refreshed every run
+    Set wsMaster = ResetMasterSheet(ThisWorkbook)
     masterRow = 2
 
     ' STEP 1: Walk CONFIG sheets in order (skip ignored) -> Case 1 (name matches Export)
@@ -63,23 +65,31 @@ Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As 
         End If
     Next i
 
-    ' Keep Master Sheet as the last tab
-    wsMaster.Move After:=wbConfig.Sheets(wbConfig.Sheets.Count)
+    ' Autofit Master Sheet columns
+    wsMaster.Columns("A:E").AutoFit
 
-    ' Save Config as "<OriginalName> Updated factors.<ext>"
+    ' Save Config as "<OriginalName> Updated factors.<ext>" - silently overwrite if exists
     newConfigPath = BuildUpdatedFactorsPath(ConfigPath)
-    wbConfig.SaveAs Filename:=newConfigPath, FileFormat:=wbConfig.FileFormat
+    wbConfig.SaveAs Filename:=newConfigPath, FileFormat:=wbConfig.FileFormat, ConflictResolution:=xlLocalSessionChanges
 
+    wbConfig.Close SaveChanges:=False
     wbExport.Close SaveChanges:=False
 
+    ' Save ThisWorkbook (to persist the refreshed Master Sheet), if it's a saved file
+    If ThisWorkbook.Path <> "" Then
+        ThisWorkbook.Save
+    End If
+
+    Application.AskToUpdateLinks = True
     Application.Calculation = xlCalculationAutomatic
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Sync completed successfully." & vbCrLf & "Saved as: " & newConfigPath, vbInformation
+    MsgBox "Done", vbInformation
     Exit Sub
 
 ErrHandler:
+    Application.AskToUpdateLinks = True
     Application.Calculation = xlCalculationAutomatic
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
@@ -137,7 +147,7 @@ Private Sub ProcessCase1(ByVal wbConfig As Workbook, ByVal wbExport As Workbook,
     If missingCols = "" And extraCols = "" Then
         subCase = 1        ' exact column match
     ElseIf missingCols = "" And extraCols <> "" Then
-        subCase = 2        ' Config has all its columns present in Export; Export has extra columns
+        subCase = 2        ' Config's columns are all present in Export; Export has extra columns
     Else
         subCase = 3         ' Config has columns that Export doesn't have -> don't copy
     End If
@@ -222,10 +232,9 @@ Private Sub ProcessCase2(ByVal wbConfig As Workbook, ByVal wbExport As Workbook,
     Set existing = wbConfig.Sheets(expName)
     On Error GoTo 0
     If Not existing Is Nothing Then
-        Application.DisplayAlerts = False
-        existing.Delete
-        Application.DisplayAlerts = True
+        wbConfig.Sheets(expName).Delete
     End If
+    Set existing = Nothing
 
     insertBeforeName = DetermineInsertPosition(wbConfig, expName)
 
@@ -265,16 +274,14 @@ Private Function DetermineInsertPosition(ByVal wbConfig As Workbook, ByVal newNa
 
     bestName = ""
     For Each ws In wbConfig.Worksheets
-        If LCase(ws.Name) <> "master sheet" Then
-            If ParsePattern(ws.Name, fX, sX, ab) Then
-                If SortsBefore(nFirstX, nSecondX, nAbc, fX, sX, ab) Then
-                    If bestName = "" Then
+        If ParsePattern(ws.Name, fX, sX, ab) Then
+            If SortsBefore(nFirstX, nSecondX, nAbc, fX, sX, ab) Then
+                If bestName = "" Then
+                    bestName = ws.Name
+                Else
+                    ParsePattern bestName, bfX, bsX, babc
+                    If SortsBefore(fX, sX, ab, bfX, bsX, babc) Then
                         bestName = ws.Name
-                    Else
-                        ParsePattern bestName, bfX, bsX, babc
-                        If SortsBefore(fX, sX, ab, bfX, bsX, babc) Then
-                            bestName = ws.Name
-                        End If
                     End If
                 End If
             End If
@@ -365,12 +372,11 @@ Private Function FindMatch(ByVal name As String, ByVal col As Collection) As Str
     FindMatch = ""
 End Function
 
+' Creates/refreshes the Master Sheet in the given workbook (ThisWorkbook)
 Private Function ResetMasterSheet(ByVal wb As Workbook) As Worksheet
     Dim ws As Worksheet
     On Error Resume Next
-    Application.DisplayAlerts = False
     wb.Sheets("Master Sheet").Delete
-    Application.DisplayAlerts = True
     On Error GoTo 0
 
     Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
@@ -383,7 +389,6 @@ Private Function ResetMasterSheet(ByVal wb As Workbook) As Worksheet
         .Range("D1").Value = "No of rows copied"
         .Range("E1").Value = "No of Columns copied"
         .Range("A1:E1").Font.Bold = True
-        .Columns("A:E").AutoFit
     End With
 
     Set ResetMasterSheet = ws
