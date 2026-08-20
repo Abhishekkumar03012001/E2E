@@ -1,24 +1,49 @@
 Option Explicit
 
 '====================================================================
-' EDIT THESE 3 PATHS BEFORE RUNNING
+' PUBLIC ENTRY POINT - call this from another module like:
+'
+'   Call CopyTerritoryData("C:\path\Config.xlsx", _
+'                           "C:\path\Export.xlsx", _
+'                           "C:\path\CAT.xlsx")
+'
+' Set showDonePopup:=False if you don't even want the final message.
+' Returns the full path of the newly saved file.
 '====================================================================
-Sub CopyTerritoryData()
-
-    Dim configPath As String, exportPath As String, catPath As String
-    configPath = "C:\path\to\Config.xlsx"
-    exportPath = "C:\path\to\Export.xlsx"
-    catPath = "C:\path\to\CAT.xlsx"
+Public Function CopyTerritoryData(configPath As String, exportPath As String, _
+    catPath As String, Optional showDonePopup As Boolean = True) As String
 
     Dim wbConfig As Workbook, wbExport As Workbook, wbCat As Workbook
     Dim wsConfig As Worksheet, wsExport As Worksheet, wsCat As Worksheet
+    Dim newPath As String
+
+    Dim prevScreenUpdating As Boolean
+    Dim prevDisplayAlerts As Boolean
+    Dim prevAskToUpdateLinks As Boolean
+    Dim prevEnableEvents As Boolean
+
+    prevScreenUpdating = Application.ScreenUpdating
+    prevDisplayAlerts = Application.DisplayAlerts
+    prevAskToUpdateLinks = Application.AskToUpdateLinks
+    prevEnableEvents = Application.EnableEvents
+
+    On Error GoTo ErrHandler
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
+    Application.AskToUpdateLinks = False
+    Application.EnableEvents = False
 
-    Set wbConfig = Workbooks.Open(configPath)
-    Set wbExport = Workbooks.Open(exportPath)
-    Set wbCat = Workbooks.Open(catPath)
+    '----------------------------------------------------------------
+    ' Open all 3 files, forcing read-write and skipping any
+    ' "read-only recommended" / link-update prompts
+    '----------------------------------------------------------------
+    Set wbConfig = Workbooks.Open(FileName:=configPath, UpdateLinks:=0, _
+        ReadOnly:=False, IgnoreReadOnlyRecommended:=True, Notify:=False)
+    Set wbExport = Workbooks.Open(FileName:=exportPath, UpdateLinks:=0, _
+        ReadOnly:=True, IgnoreReadOnlyRecommended:=True, Notify:=False)
+    Set wbCat = Workbooks.Open(FileName:=catPath, UpdateLinks:=0, _
+        ReadOnly:=True, IgnoreReadOnlyRecommended:=True, Notify:=False)
 
     Set wsConfig = wbConfig.Sheets("R_L_Territory")
     Set wsExport = wbExport.Sheets(1)
@@ -102,7 +127,7 @@ Sub CopyTerritoryData()
     '----------------------------------------------------------------
     ' Step 5: Save Config as new file: <original name> updated territories
     '----------------------------------------------------------------
-    Dim newPath As String, folderPath As String, baseName As String, ext As String
+    Dim folderPath As String, baseName As String, ext As String
 
     folderPath = wbConfig.Path & "\"
     ext = "." & LCase(Right(wbConfig.Name, Len(wbConfig.Name) - InStrRev(wbConfig.Name, ".")))
@@ -110,17 +135,52 @@ Sub CopyTerritoryData()
 
     newPath = folderPath & baseName & " updated territories" & ext
 
-    wbConfig.SaveAs newPath, FileFormat:=wbConfig.FileFormat
+    ' Delete destination file first if it exists, so SaveAs doesn't prompt
+    If Len(Dir(newPath)) > 0 Then
+        Kill newPath
+    End If
 
+    wbConfig.SaveAs FileName:=newPath, FileFormat:=wbConfig.FileFormat, _
+        ConflictResolution:=xlLocalSessionChanges, CreateBackup:=False
+
+    wbConfig.Close SaveChanges:=False
     wbExport.Close SaveChanges:=False
     wbCat.Close SaveChanges:=False
 
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
+    GoTo CleanExit
 
-    MsgBox "Done. Saved as:" & vbCrLf & newPath, vbInformation
+ErrHandler:
+    Dim errMsg As String
+    errMsg = "Error " & Err.Number & ": " & Err.Description
 
-End Sub
+    On Error Resume Next
+    If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
+    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
+    If Not wbCat Is Nothing Then wbCat.Close SaveChanges:=False
+    On Error GoTo 0
+
+    Application.ScreenUpdating = prevScreenUpdating
+    Application.DisplayAlerts = prevDisplayAlerts
+    Application.AskToUpdateLinks = prevAskToUpdateLinks
+    Application.EnableEvents = prevEnableEvents
+
+    MsgBox errMsg, vbCritical, "Failed"
+    CopyTerritoryData = ""
+    Exit Function
+
+CleanExit:
+    Application.ScreenUpdating = prevScreenUpdating
+    Application.DisplayAlerts = prevDisplayAlerts
+    Application.AskToUpdateLinks = prevAskToUpdateLinks
+    Application.EnableEvents = prevEnableEvents
+
+    CopyTerritoryData = newPath
+
+    If showDonePopup Then
+        MsgBox "Done. Saved as:" & vbCrLf & newPath, vbInformation, "Completed"
+    End If
+
+End Function
 
 '====================================================================
 ' Copies matching columns from a source sheet (Export or CAT) into
@@ -128,7 +188,7 @@ End Sub
 ' pasting. Matching is case-insensitive, using direct header match
 ' first, then the alias map.
 '====================================================================
-Function PasteMatchingColumns(wsSource As Worksheet, wsConfig As Worksheet, _
+Private Function PasteMatchingColumns(wsSource As Worksheet, wsConfig As Worksheet, _
     configHeaders() As String, configFormats() As String, aliasMap As Object, _
     startRow As Long) As Long
 
