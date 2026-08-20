@@ -1,315 +1,428 @@
 Option Explicit
 
-'If your Config or Others file has a protection password, put it here.
-Private Const CONFIG_PROTECT_PASSWORD As String = ""
-Private Const OTHERS_PROTECT_PASSWORD As String = ""
+'====================================================================
+' PUBLIC ENTRY POINTS
+'====================================================================
 
-Sub CopySheetsFromOthersToConfig(ByVal ConfigFilePath As String, ByVal OthersFilePath As String)
+' Run this if you want a file-picker dialog experience
+Public Sub RunSyncWithDialog()
+    Dim configPath As String, exportPath As String
+    configPath = BrowseForFile("Select CONFIG Excel file")
+    If configPath = "" Then Exit Sub
+    exportPath = BrowseForFile("Select EXPORT Excel file")
+    If exportPath = "" Then Exit Sub
+    SyncConfigWithExport configPath, exportPath
+End Sub
 
-    Dim masterWS As Worksheet
-    Dim configWB As Workbook
-    Dim othersWB As Workbook
-    Dim lastRow As Long
-    Dim i As Long
+' Call this directly from another module:
+'   Call ModSheetSync.SyncConfigWithExport("C:\...\Config.xlsx", "C:\...\Export.xlsx")
+Public Sub SyncConfigWithExport(ByVal ConfigPath As String, ByVal ExportPath As String)
+    On Error GoTo ErrHandler
 
-    Dim configSheetName As String   'Column A (raw)
-    Dim othersSheetName As String   'Column B
-
-    Dim effectiveA As String
-    Dim oldSheet As Worksheet
-    Dim foundIndex As Long
-    Dim insertBeforeIndex As Long
-    Dim newConfigPath As String
+    Dim wbConfig As Workbook, wbExport As Workbook
+    Dim wsMaster As Worksheet
+    Dim configNames As Collection, exportNames As Collection
+    Dim matchedExport As Object
+    Dim i As Long, masterRow As Long
+    Dim cfgName As String, expMatch As String, expName As String
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
-    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
 
-    On Error GoTo CleanFail
+    Set wbConfig = Workbooks.Open(ConfigPath)
+    Set wbExport = Workbooks.Open(ExportPath, ReadOnly:=True)
 
-    Set masterWS = ThisWorkbook.Sheets("Master List")
+    Set configNames = GetOrderedSheetNames(wbConfig)
+    Set exportNames = GetOrderedSheetNames(wbExport)
 
-    Set configWB = Workbooks.Open(Filename:=ConfigFilePath, UpdateLinks:=0)
-    configWB.Windows(1).WindowState = xlMinimized
+    Set matchedExport = CreateObject("Scripting.Dictionary")
+    matchedExport.CompareMode = 1 ' vbTextCompare
 
-    Set othersWB = Workbooks.Open(Filename:=OthersFilePath, UpdateLinks:=0, ReadOnly:=True)
-    othersWB.Windows(1).WindowState = xlMinimized
+    Set wsMaster = ResetMasterSheet(wbConfig)
+    masterRow = 2
 
-    On Error Resume Next
-    configWB.Unprotect Password:=CONFIG_PROTECT_PASSWORD
-    othersWB.Unprotect Password:=OTHERS_PROTECT_PASSWORD
-    On Error GoTo CleanFail
-
-    lastRow = masterWS.Cells(masterWS.Rows.Count, "B").End(xlUp).Row
-
-    For i = 2 To lastRow
-
-        configSheetName = Trim(masterWS.Cells(i, "A").Value)
-        othersSheetName = Trim(masterWS.Cells(i, "B").Value)
-
-        masterWS.Cells(i, "D").Interior.ColorIndex = -4142   'xlColorNone
-        masterWS.Cells(i, "D").Value = ""
-
-        'Step 0: Column B empty or invalid characters
-        If Not IsValidSheetName(othersSheetName) Then
-            masterWS.Cells(i, "D").Value = "Invalid sheet name"
-            masterWS.Cells(i, "D").Interior.Color = RGB(255, 255, 153)  'light yellow
-            GoTo NextRow
+    ' STEP 1: Walk CONFIG sheets in order (skip ignored) -> Case 1 (name matches Export)
+    For i = 1 To configNames.Count
+        cfgName = configNames(i)
+        expMatch = FindMatch(cfgName, exportNames)
+        If expMatch <> "" Then
+            matchedExport(expMatch) = True
+            ProcessCase1 wbConfig, wbExport, cfgName, expMatch, wsMaster, masterRow
+            masterRow = masterRow + 1
         End If
-
-        'Effective A = Column A, or Column B if Column A is blank
-        If configSheetName = "" Then
-            effectiveA = othersSheetName
-        Else
-            effectiveA = configSheetName
-        End If
-
-        'Step 1: does B exist in Others?
-        If Not SheetExists(othersWB, othersSheetName) Then
-            masterWS.Cells(i, "D").Value = "Sheet not found"
-            masterWS.Cells(i, "D").Interior.Color = RGB(255, 199, 206)  'light red
-            GoTo NextRow
-        End If
-
-        foundIndex = 0
-
-        'Step 2: search Effective A in Config first
-        If SheetExists(configWB, effectiveA) Then
-            Set oldSheet = configWB.Sheets(effectiveA)
-            foundIndex = oldSheet.Index
-            oldSheet.Delete
-
-            If SheetExists(configWB, effectiveA) Then configWB.Sheets(effectiveA).Delete
-
-            If foundIndex > 0 And foundIndex <= configWB.Sheets.Count Then
-                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(foundIndex)
-            Else
-                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
-            End If
-            configWB.ActiveSheet.Name = effectiveA
-            masterWS.Cells(i, "D").Value = "Replaced"
-
-        'Step 3: not found by Effective A -> search literal B in Config
-        ElseIf SheetExists(configWB, othersSheetName) Then
-            Set oldSheet = configWB.Sheets(othersSheetName)
-            foundIndex = oldSheet.Index
-            oldSheet.Delete
-
-            If foundIndex > 0 And foundIndex <= configWB.Sheets.Count Then
-                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(foundIndex)
-            Else
-                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
-            End If
-            configWB.ActiveSheet.Name = othersSheetName
-            masterWS.Cells(i, "D").Value = "Replaced"
-
-        'Step 4: neither found -> new sheet. Find correct sorted position, or append at end.
-        Else
-            insertBeforeIndex = FindInsertPosition(configWB, effectiveA)
-
-            If insertBeforeIndex > 0 Then
-                othersWB.Sheets(othersSheetName).Copy Before:=configWB.Sheets(insertBeforeIndex)
-            Else
-                othersWB.Sheets(othersSheetName).Copy After:=configWB.Sheets(configWB.Sheets.Count)
-            End If
-
-            If configWB.ActiveSheet.Name <> effectiveA Then
-                configWB.ActiveSheet.Name = effectiveA
-            End If
-            masterWS.Cells(i, "D").Value = "Copied"
-
-        End If
-
-NextRow:
     Next i
 
-    newConfigPath = BuildNewPath(ConfigFilePath)
-    configWB.SaveAs Filename:=newConfigPath, FileFormat:=configWB.FileFormat
+    ' STEP 2: Walk EXPORT sheets in order (skip ignored) -> Case 2 (only in Export)
+    For i = 1 To exportNames.Count
+        expName = exportNames(i)
+        If Not matchedExport.Exists(expName) Then
+            ProcessCase2 wbConfig, wbExport, expName, wsMaster, masterRow
+            masterRow = masterRow + 1
+        End If
+    Next i
 
-    othersWB.Close SaveChanges:=False
-    configWB.Close SaveChanges:=False
+    ' Keep Master Sheet as the last tab
+    wsMaster.Move After:=wbConfig.Sheets(wbConfig.Sheets.Count)
 
-    Application.EnableEvents = True
+    wbConfig.Save
+    wbExport.Close SaveChanges:=False
+
+    Application.Calculation = xlCalculationAutomatic
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 
-    MsgBox "Task completed.", vbInformation
-
+    MsgBox "Sync completed successfully.", vbInformation
     Exit Sub
 
-CleanFail:
-    Dim errMsg As String
-    errMsg = Err.Description
-
-    On Error Resume Next
-    If Not othersWB Is Nothing Then othersWB.Close SaveChanges:=False
-    If Not configWB Is Nothing Then configWB.Close SaveChanges:=False
-    On Error GoTo 0
-
-    Application.EnableEvents = True
+ErrHandler:
+    Application.Calculation = xlCalculationAutomatic
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
-
-    MsgBox "Error: " & errMsg, vbCritical
-
+    MsgBox "Error: " & Err.Description, vbCritical
 End Sub
 
 
-'Returns True if a sheet with the given name exists in the given workbook
-Private Function SheetExists(wb As Workbook, sheetName As String) As Boolean
-    Dim ws As Worksheet
-    On Error Resume Next
-    Set ws = wb.Sheets(sheetName)
-    On Error GoTo 0
-    SheetExists = Not ws Is Nothing
-End Function
+'====================================================================
+' CASE 1: Sheet exists in both Config and Export
+'====================================================================
+Private Sub ProcessCase1(ByVal wbConfig As Workbook, ByVal wbExport As Workbook, _
+    ByVal cfgName As String, ByVal expName As String, ByVal wsMaster As Worksheet, ByVal masterRow As Long)
 
+    Dim wsCfg As Worksheet, wsExp As Worksheet
+    Dim cfgHeaders As Object, expHeaders As Object
+    Dim cfgLastCol As Long, expLastCol As Long
+    Dim cfgLastRow As Long, expLastRow As Long
+    Dim existingFormattedRows As Long, exportDataCount As Long
+    Dim subCase As Integer
+    Dim missingCols As String, extraCols As String
+    Dim k As Variant
+    Dim cfgCol As Long, expCol As Long
+    Dim colsCopied As Long, dataRowsCopied As Long
 
-'Returns True only if the name is non-blank, <=31 chars, and has no invalid characters
-Private Function IsValidSheetName(ByVal nm As String) As Boolean
-    Dim invalidChars As String
-    Dim c As String
-    Dim k As Long
+    Set wsCfg = wbConfig.Sheets(cfgName)
+    Set wsExp = wbExport.Sheets(expName)
 
-    If Trim(nm) = "" Then
-        IsValidSheetName = False
-        Exit Function
-    End If
+    wsMaster.Cells(masterRow, 1).Value = expName
+    wsMaster.Cells(masterRow, 2).Value = cfgName
 
-    If Len(nm) > 31 Then
-        IsValidSheetName = False
-        Exit Function
-    End If
+    cfgLastCol = GetLastCol(wsCfg)
+    expLastCol = GetLastCol(wsExp)
 
-    invalidChars = "\/?*[]:"
-    For k = 1 To Len(invalidChars)
-        c = Mid(invalidChars, k, 1)
-        If InStr(nm, c) > 0 Then
-            IsValidSheetName = False
-            Exit Function
+    Set cfgHeaders = GetHeaderMap(wsCfg, cfgLastCol)
+    Set expHeaders = GetHeaderMap(wsExp, expLastCol)
+
+    ' Columns in Config not present in Export
+    missingCols = ""
+    For Each k In cfgHeaders.Keys
+        If Not expHeaders.Exists(k) Then
+            If missingCols <> "" Then missingCols = missingCols & ", "
+            missingCols = missingCols & GetOriginalHeaderName(wsCfg, cfgHeaders(k))
         End If
     Next k
 
-    IsValidSheetName = True
-End Function
-
-
-'Parses "X_X_abc" pattern. Returns True if it matches:
-'  part1 = "R" or "T"
-'  part2 = a single letter A-Z
-'  part3 = anything, non-empty (may itself contain underscores)
-Private Function ParseSheetPattern(ByVal nm As String, ByRef firstLetter As String, _
-                                    ByRef secondLetter As String, ByRef abcPart As String) As Boolean
-    Dim parts() As String
-
-    parts = Split(nm, "_", 3)
-
-    If UBound(parts) < 2 Then
-        ParseSheetPattern = False
-        Exit Function
-    End If
-
-    firstLetter = parts(0)
-    secondLetter = parts(1)
-    abcPart = parts(2)
-
-    If UCase(firstLetter) <> "R" And UCase(firstLetter) <> "T" Then
-        ParseSheetPattern = False
-        Exit Function
-    End If
-
-    If Len(secondLetter) <> 1 Or Not (UCase(secondLetter) >= "A" And UCase(secondLetter) <= "Z") Then
-        ParseSheetPattern = False
-        Exit Function
-    End If
-
-    If Len(abcPart) = 0 Then
-        ParseSheetPattern = False
-        Exit Function
-    End If
-
-    ParseSheetPattern = True
-End Function
-
-
-'Compares two parsed keys. Returns -1 if key1 < key2, 1 if key1 > key2, 0 if equal.
-'Sort priority: secondLetter (A-Z) -> firstLetter (R before T) -> abcPart (alphabetical)
-Private Function CompareSortKey(ByVal firstLetter1 As String, ByVal secondLetter1 As String, ByVal abcPart1 As String, _
-                                 ByVal firstLetter2 As String, ByVal secondLetter2 As String, ByVal abcPart2 As String) As Integer
-
-    If UCase(secondLetter1) <> UCase(secondLetter2) Then
-        If UCase(secondLetter1) < UCase(secondLetter2) Then
-            CompareSortKey = -1
-        Else
-            CompareSortKey = 1
+    ' Columns in Export not present in Config
+    extraCols = ""
+    For Each k In expHeaders.Keys
+        If Not cfgHeaders.Exists(k) Then
+            If extraCols <> "" Then extraCols = extraCols & ", "
+            extraCols = extraCols & GetOriginalHeaderName(wsExp, expHeaders(k))
         End If
-        Exit Function
+    Next k
+
+    If missingCols = "" And extraCols = "" Then
+        subCase = 1        ' exact match
+    ElseIf missingCols = "" And extraCols <> "" Then
+        subCase = 2        ' config columns all present, export has extra
+    Else
+        subCase = 3         ' config has columns export doesn't have
     End If
 
-    If UCase(firstLetter1) <> UCase(firstLetter2) Then
-        If UCase(firstLetter1) = "R" Then
-            CompareSortKey = -1   'R before T
-        Else
-            CompareSortKey = 1
-        End If
-        Exit Function
+    Select Case subCase
+
+        Case 1, 2
+            expLastRow = GetLastRow(wsExp)
+            exportDataCount = expLastRow - 1
+            If exportDataCount < 0 Then exportDataCount = 0
+
+            cfgLastRow = GetLastRow(wsCfg)
+            existingFormattedRows = cfgLastRow - 1
+            If existingFormattedRows < 0 Then existingFormattedRows = 0
+
+            ' Clear old data (values only - keeps formatting/number format/alignment)
+            If cfgLastRow >= 2 Then
+                wsCfg.Range(wsCfg.Cells(2, 1), wsCfg.Cells(cfgLastRow, cfgLastCol)).ClearContents
+            End If
+
+            ' Extend row formatting downward if Export has more rows than Config originally had
+            If exportDataCount > existingFormattedRows And existingFormattedRows > 0 Then
+                wsCfg.Rows(existingFormattedRows + 1).Copy
+                wsCfg.Range(wsCfg.Rows(existingFormattedRows + 2), wsCfg.Rows(1 + exportDataCount)).PasteSpecial xlPasteFormats
+                Application.CutCopyMode = False
+            End If
+
+            ' Paste values column-by-column, matched by header name
+            colsCopied = 0
+            For Each k In cfgHeaders.Keys
+                If expHeaders.Exists(k) Then
+                    cfgCol = cfgHeaders(k)
+                    expCol = expHeaders(k)
+                    If exportDataCount > 0 Then
+                        wsCfg.Range(wsCfg.Cells(2, cfgCol), wsCfg.Cells(1 + exportDataCount, cfgCol)).Value = _
+                            wsExp.Range(wsExp.Cells(2, expCol), wsExp.Cells(1 + exportDataCount, expCol)).Value
+                    End If
+                    colsCopied = colsCopied + 1
+                End If
+            Next k
+
+            dataRowsCopied = exportDataCount
+
+            If subCase = 1 Then
+                wsMaster.Cells(masterRow, 3).Value = "Validated"
+                wsMaster.Cells(masterRow, 3).Interior.ColorIndex = xlColorIndexNone
+            Else
+                wsMaster.Cells(masterRow, 3).Value = "Extra column in exports: " & extraCols
+                wsMaster.Cells(masterRow, 3).Interior.Color = RGB(255, 199, 206) ' light red
+            End If
+
+            wsMaster.Cells(masterRow, 4).Value = dataRowsCopied
+            wsMaster.Cells(masterRow, 5).Value = colsCopied
+
+        Case 3
+            wsMaster.Cells(masterRow, 3).Value = "Values not copied and Columns are missing: " & missingCols
+            wsMaster.Cells(masterRow, 3).Interior.Color = RGB(255, 199, 206) ' light red
+            wsMaster.Cells(masterRow, 4).Value = 0
+            wsMaster.Cells(masterRow, 5).Value = 0
+
+    End Select
+End Sub
+
+
+'====================================================================
+' CASE 2: Sheet exists ONLY in Export -> copy full tab into Config
+'====================================================================
+Private Sub ProcessCase2(ByVal wbConfig As Workbook, ByVal wbExport As Workbook, _
+    ByVal expName As String, ByVal wsMaster As Worksheet, ByVal masterRow As Long)
+
+    Dim wsExp As Worksheet, existing As Worksheet, newWs As Worksheet
+    Dim insertBeforeName As String
+
+    Set wsExp = wbExport.Sheets(expName)
+
+    ' Safety: remove any pre-existing sheet with the same name in Config
+    On Error Resume Next
+    Set existing = wbConfig.Sheets(expName)
+    On Error GoTo 0
+    If Not existing Is Nothing Then
+        Application.DisplayAlerts = False
+        existing.Delete
+        Application.DisplayAlerts = True
     End If
 
-    CompareSortKey = StrComp(abcPart1, abcPart2, vbTextCompare)
-End Function
+    insertBeforeName = DetermineInsertPosition(wbConfig, expName)
+
+    If insertBeforeName <> "" Then
+        wsExp.Copy Before:=wbConfig.Sheets(insertBeforeName)
+    Else
+        wsExp.Copy After:=wbConfig.Sheets(LastNonMasterSheetName(wbConfig))
+    End If
+
+    Set newWs = wbConfig.Sheets(expName)
+
+    wsMaster.Cells(masterRow, 1).Value = expName
+    wsMaster.Cells(masterRow, 2).Value = expName
+    wsMaster.Cells(masterRow, 3).Value = "Tab is copied"
+    wsMaster.Cells(masterRow, 3).Interior.Color = RGB(255, 255, 153) ' light yellow
+    wsMaster.Cells(masterRow, 4).Value = ""
+    wsMaster.Cells(masterRow, 5).Value = ""
+End Sub
 
 
-'Finds the sheet index BEFORE which a new sheet named targetName should be inserted,
-'based on the X_X_abc sort order among existing matching sheets in configWB.
-'Returns 0 if targetName doesn't match the pattern, or if it should go at the very end.
-Private Function FindInsertPosition(ByVal configWB As Workbook, ByVal targetName As String) As Long
-    Dim newFirst As String, newSecond As String, newAbc As String
-    Dim curFirst As String, curSecond As String, curAbc As String
+'====================================================================
+' SHEET POSITIONING LOGIC (X_X_abc pattern)
+'====================================================================
+Private Function DetermineInsertPosition(ByVal wbConfig As Workbook, ByVal newName As String) As String
+    Dim nFirstX As String, nSecondX As String, nAbc As String
+    Dim isPattern As Boolean
     Dim ws As Worksheet
-    Dim cmp As Integer
+    Dim fX As String, sX As String, ab As String
+    Dim bestName As String
+    Dim bfX As String, bsX As String, babc As String
 
-    FindInsertPosition = 0
-
-    If Not ParseSheetPattern(targetName, newFirst, newSecond, newAbc) Then
-        Exit Function   'not a X_X_abc name -> caller appends at end
+    isPattern = ParsePattern(newName, nFirstX, nSecondX, nAbc)
+    If Not isPattern Then
+        DetermineInsertPosition = "" ' non-pattern sheet -> place at end
+        Exit Function
     End If
 
-    For Each ws In configWB.Sheets
-        If ParseSheetPattern(ws.Name, curFirst, curSecond, curAbc) Then
-            cmp = CompareSortKey(newFirst, newSecond, newAbc, curFirst, curSecond, curAbc)
-            If cmp < 0 Then
-                FindInsertPosition = ws.Index
-                Exit Function
+    bestName = ""
+    For Each ws In wbConfig.Worksheets
+        If LCase(ws.Name) <> "master sheet" Then
+            If ParsePattern(ws.Name, fX, sX, ab) Then
+                If SortsBefore(nFirstX, nSecondX, nAbc, fX, sX, ab) Then
+                    If bestName = "" Then
+                        bestName = ws.Name
+                    Else
+                        ParsePattern bestName, bfX, bsX, babc
+                        If SortsBefore(fX, sX, ab, bfX, bsX, babc) Then
+                            bestName = ws.Name
+                        End If
+                    End If
+                End If
             End If
         End If
     Next ws
 
-    'No existing sheet is "greater" -> goes after all matching sheets, i.e. append at end
-    FindInsertPosition = 0
+    DetermineInsertPosition = bestName
+End Function
+
+Private Function ParsePattern(ByVal name As String, ByRef firstX As String, ByRef secondX As String, ByRef abc As String) As Boolean
+    Dim re As Object, mc As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.IgnoreCase = True
+    re.Pattern = "^([RT])_([A-Za-z])_(.+)$"
+    If re.Test(name) Then
+        Set mc = re.Execute(name)
+        firstX = UCase(mc(0).SubMatches(0))
+        secondX = UCase(mc(0).SubMatches(1))
+        abc = mc(0).SubMatches(2)
+        ParsePattern = True
+    Else
+        ParsePattern = False
+    End If
+End Function
+
+' Returns True if item1 should be placed before item2
+Private Function SortsBefore(ByVal firstX1 As String, ByVal secondX1 As String, ByVal abc1 As String, _
+    ByVal firstX2 As String, ByVal secondX2 As String, ByVal abc2 As String) As Boolean
+
+    If secondX1 <> secondX2 Then
+        SortsBefore = (secondX1 < secondX2)
+    ElseIf firstX1 <> firstX2 Then
+        SortsBefore = (firstX1 = "R")   ' R always before T
+    Else
+        SortsBefore = (LCase(abc1) < LCase(abc2))
+    End If
 End Function
 
 
-'Builds "<folder>\<name> Updated factors.<ext>" from the original config path
-Private Function BuildNewPath(ByVal originalPath As String) As String
-    Dim folderPath As String
-    Dim fileName As String
-    Dim baseName As String
-    Dim extPart As String
-    Dim slashPos As Long
-    Dim dotPos As Long
-
-    slashPos = InStrRev(originalPath, "\")
-    folderPath = Left(originalPath, slashPos)
-    fileName = Mid(originalPath, slashPos + 1)
-
-    dotPos = InStrRev(fileName, ".")
-    If dotPos > 0 Then
-        baseName = Left(fileName, dotPos - 1)
-        extPart = Mid(fileName, dotPos)
+'====================================================================
+' HELPERS
+'====================================================================
+Private Function BrowseForFile(ByVal title As String) As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = title
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xlsx; *.xlsm; *.xls"
+    fd.AllowMultiSelect = False
+    If fd.Show = -1 Then
+        BrowseForFile = fd.SelectedItems(1)
     Else
-        baseName = fileName
-        extPart = ""
+        BrowseForFile = ""
     End If
+End Function
 
-    BuildNewPath = folderPath & baseName & " Updated factors" & extPart
+Private Function GetOrderedSheetNames(ByVal wb As Workbook) As Collection
+    Dim col As New Collection
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If Not IsIgnored(ws.Name) And LCase(Trim(ws.Name)) <> "master sheet" Then
+            col.Add ws.Name
+        End If
+    Next ws
+    Set GetOrderedSheetNames = col
+End Function
+
+Private Function IsIgnored(ByVal sheetName As String) As Boolean
+    Dim ignoreList As Variant, i As Long
+    ignoreList = Array("ChangeLog", "SQL", "Factor Definition", "CONTROL", "All_Pricing_Variables", "ROC")
+    For i = LBound(ignoreList) To UBound(ignoreList)
+        If StrComp(Trim(sheetName), ignoreList(i), vbTextCompare) = 0 Then
+            IsIgnored = True
+            Exit Function
+        End If
+    Next i
+    IsIgnored = False
+End Function
+
+Private Function FindMatch(ByVal name As String, ByVal col As Collection) As String
+    Dim itm As Variant
+    For Each itm In col
+        If StrComp(itm, name, vbTextCompare) = 0 Then
+            FindMatch = itm
+            Exit Function
+        End If
+    Next itm
+    FindMatch = ""
+End Function
+
+Private Function ResetMasterSheet(ByVal wb As Workbook) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wb.Sheets("Master Sheet").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set ws = wb.Sheets.Add(After:=wb.Sheets(wb.Sheets.Count))
+    ws.Name = "Master Sheet"
+
+    With ws
+        .Range("A1").Value = "Export Sheets"
+        .Range("B1").Value = "Config Sheets"
+        .Range("C1").Value = "Analyst Comments"
+        .Range("D1").Value = "No of rows copied"
+        .Range("E1").Value = "No of Columns copied"
+        .Range("A1:E1").Font.Bold = True
+        .Columns("A:E").AutoFit
+    End With
+
+    Set ResetMasterSheet = ws
+End Function
+
+Private Function GetHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long) As Object
+    Dim dict As Object
+    Dim c As Long, hName As String
+    Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = 1 ' vbTextCompare
+    For c = 1 To lastCol
+        hName = Trim(CStr(ws.Cells(1, c).Value))
+        If hName <> "" Then
+            If Not dict.Exists(LCase(hName)) Then
+                dict.Add LCase(hName), c
+            End If
+        End If
+    Next c
+    Set GetHeaderMap = dict
+End Function
+
+Private Function GetOriginalHeaderName(ByVal ws As Worksheet, ByVal colIndex As Long) As String
+    GetOriginalHeaderName = CStr(ws.Cells(1, colIndex).Value)
+End Function
+
+Private Function GetLastRow(ByVal ws As Worksheet) As Long
+    On Error Resume Next
+    GetLastRow = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
+        LookIn:=xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, _
+        SearchDirection:=xlPrevious, MatchCase:=False).Row
+    If Err.Number <> 0 Or GetLastRow = 0 Then GetLastRow = 1
+    On Error GoTo 0
+End Function
+
+Private Function GetLastCol(ByVal ws As Worksheet) As Long
+    On Error Resume Next
+    GetLastCol = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
+        LookIn:=xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, _
+        SearchDirection:=xlPrevious, MatchCase:=False).Column
+    If Err.Number <> 0 Or GetLastCol = 0 Then GetLastCol = 1
+    On Error GoTo 0
+End Function
+
+Private Function LastNonMasterSheetName(ByVal wb As Workbook) As String
+    Dim ws As Worksheet, lastName As String
+    For Each ws In wb.Worksheets
+        If LCase(ws.Name) <> "master sheet" Then lastName = ws.Name
+    Next ws
+    LastNonMasterSheetName = lastName
 End Function
