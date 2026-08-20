@@ -265,7 +265,7 @@ Private Function ProcessCase1(wsExport As Worksheet, wsConfig As Worksheet, coun
 
     Dim colIdx(0 To 3) As Long
     colIdx(0) = cCounty: colIdx(1) = cCC: colIdx(2) = cCT: colIdx(3) = cRate
-    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows
+    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows, cCC
 
     statusMsg = "OK"
     ProcessCase1 = True
@@ -330,7 +330,7 @@ Private Function ProcessCase2(wsExport As Worksheet, wsConfig As Worksheet, _
 
     Dim colIdx(0 To 2) As Long
     colIdx(0) = cDed: colIdx(1) = cCT: colIdx(2) = cRate
-    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows
+    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows, 0
 
     statusMsg = "OK"
     ProcessCase2 = True
@@ -413,7 +413,7 @@ Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, coun
     Dim colIdx(0 To 5) As Long
     colIdx(0) = cYB: colIdx(1) = cRetro: colIdx(2) = cCountyName: colIdx(3) = cCountyCode
     colIdx(4) = cCT: colIdx(5) = cRate
-    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows
+    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows, cCountyCode
 
     statusMsg = "OK"
     ProcessCase3 = True
@@ -486,7 +486,7 @@ Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, coun
 
     Dim colIdx(0 To 3) As Long
     colIdx(0) = cCC: colIdx(1) = cCounty: colIdx(2) = cCT: colIdx(3) = cFactor
-    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows
+    WriteRowsToConfig wsConfig, cfgHeaderRow, colIdx, outputRows, cCC
 
     statusMsg = "OK"
     ProcessCase4 = True
@@ -664,11 +664,11 @@ Private Function ConvertPercentToPlain(v As Variant) As Variant
     End If
 End Function
 
-' Maps Retrofit Indicator (Yes/No) to Retrofit (Y/N)
+' Maps Retrofit Indicator (Yes/No) to Retrofit (Yes/No) -- normalizes casing/abbreviations
 Private Function MapRetrofit(v As Variant) As String
     Select Case LCase(Trim(CStr(v)))
-        Case "yes", "y": MapRetrofit = "Y"
-        Case "no", "n": MapRetrofit = "N"
+        Case "yes", "y": MapRetrofit = "Yes"
+        Case "no", "n": MapRetrofit = "No"
         Case Else: MapRetrofit = CStr(v)
     End Select
 End Function
@@ -676,9 +676,11 @@ End Function
 ' Deletes existing data in the given Config columns (below header) and writes new rows
 ' in the order given by outputRows. If new rows exceed the original data row count,
 ' formatting is copied down from the last original data row to preserve layout.
-' Also captures and reapplies each column's original NumberFormat so values like
-' county codes ("001") keep the same display format they had before being cleared.
-Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIndices() As Long, outputRows As Collection)
+' Also captures/reapplies each column's original NumberFormat so values keep their look.
+' countyCodeCol: pass the destination column index that holds County Code (0 if none) --
+' that column is always force-formatted as "000" so codes like 1 display as 001,
+' regardless of whatever format the existing Config rows had.
+Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIndices() As Long, outputRows As Collection, Optional countyCodeCol As Long = 0)
     Dim neededRows As Long: neededRows = outputRows.Count
     Dim templateLastRow As Long: templateLastRow = cfgHeaderRow
     Dim i As Long, lr As Long
@@ -726,6 +728,11 @@ Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIn
                 wsConfig.Cells(targetRow, colIndices(j)).NumberFormat = colFormats(j)
             End If
         Next j
+
+        ' --- Force County Code column to "000" so 1 always displays as 001 ---
+        If countyCodeCol > 0 Then
+            wsConfig.Cells(targetRow, countyCodeCol).NumberFormat = "000"
+        End If
 
         Set rowDict = outputRows(i)
         For Each k In rowDict.Keys
