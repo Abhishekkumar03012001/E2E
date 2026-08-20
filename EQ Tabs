@@ -676,6 +676,8 @@ End Function
 ' Deletes existing data in the given Config columns (below header) and writes new rows
 ' in the order given by outputRows. If new rows exceed the original data row count,
 ' formatting is copied down from the last original data row to preserve layout.
+' Also captures and reapplies each column's original NumberFormat so values like
+' county codes ("001") keep the same display format they had before being cleared.
 Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIndices() As Long, outputRows As Collection)
     Dim neededRows As Long: neededRows = outputRows.Count
     Dim templateLastRow As Long: templateLastRow = cfgHeaderRow
@@ -686,6 +688,15 @@ Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIn
         If lr > templateLastRow Then templateLastRow = lr
     Next i
     Dim templateRowCount As Long: templateRowCount = templateLastRow - cfgHeaderRow
+
+    ' --- Capture original number format for each column BEFORE clearing ---
+    Dim colFormats() As String
+    ReDim colFormats(LBound(colIndices) To UBound(colIndices))
+    If templateRowCount > 0 Then
+        For i = LBound(colIndices) To UBound(colIndices)
+            colFormats(i) = wsConfig.Cells(cfgHeaderRow + 1, colIndices(i)).NumberFormat
+        Next i
+    End If
 
     Dim clearLastRow As Long: clearLastRow = templateLastRow
     If cfgHeaderRow + neededRows > clearLastRow Then clearLastRow = cfgHeaderRow + neededRows
@@ -707,6 +718,15 @@ Private Sub WriteRowsToConfig(wsConfig As Worksheet, cfgHeaderRow As Long, colIn
             wsConfig.Rows(targetRow).PasteSpecial xlPasteFormats
             Application.CutCopyMode = False
         End If
+
+        ' --- Reapply the original captured format to each target cell ---
+        Dim j As Long
+        For j = LBound(colIndices) To UBound(colIndices)
+            If templateRowCount > 0 Then
+                wsConfig.Cells(targetRow, colIndices(j)).NumberFormat = colFormats(j)
+            End If
+        Next j
+
         Set rowDict = outputRows(i)
         For Each k In rowDict.Keys
             wsConfig.Cells(targetRow, CLng(k)).Value = rowDict(k)
