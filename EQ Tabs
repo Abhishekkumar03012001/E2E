@@ -502,17 +502,36 @@ Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
 End Function
 
 ' Finds the column number whose header EXACTLY matches targetName (case-insensitive, trimmed only)
+' Finds the column number whose header matches targetName after normalization
+' (case-insensitive, ignores extra spaces/punctuation) but requires FULL match, not partial/substring
 Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As String) As Long
     Dim lastCol As Long, c As Long
+    Dim normTarget As String, normHeader As String
+    normTarget = NormalizeForCompare(targetName)
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
     If lastCol < 1 Then lastCol = 1
     For c = 1 To lastCol
-        If StrComp(Trim(CStr(ws.Cells(headerRow, c).Value)), Trim(targetName), vbTextCompare) = 0 Then
+        normHeader = NormalizeForCompare(CStr(ws.Cells(headerRow, c).Value))
+        If normHeader = normTarget Then
             FindColumn = c
             Exit Function
         End If
     Next c
     FindColumn = 0
+End Function
+
+' Strips spaces, punctuation, and non-breaking spaces; lowercases. Used ONLY for header comparison.
+Private Function NormalizeForCompare(s As String) As String
+    Dim i As Long, ch As String, res As String
+    s = Replace(s, Chr(160), " ")  ' non-breaking space -> regular space
+    s = LCase(Trim(s))
+    For i = 1 To Len(s)
+        ch = Mid(s, i, 1)
+        If ch Like "[a-z0-9]" Then
+            res = res & ch
+        End If
+    Next i
+    NormalizeForCompare = res
 End Function
 
 ' Normalizes a cell value for key comparison.
