@@ -4,9 +4,6 @@ Option Compare Text  '-- case-insensitive text comparisons (=, Like, Select Case
 '====================================================================
 ' MAIN ENTRY POINT
 '====================================================================
-'====================================================================
-' MAIN ENTRY POINT
-'====================================================================
 Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath As String = "")
     Dim wbConfig As Workbook, wbExport As Workbook
     Dim wsEQTabs As Worksheet
@@ -46,7 +43,15 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
 
         cfgRows = 0: expRows = 0: copiedRows = 0
 
-        If exportSheetName = "" Or configSheetName = "" Then
+        If LCase(yesNo) = "no" Then
+            '-- Column C is No: skip entirely, don't validate A/B, don't set row counts
+            wsEQTabs.Cells(r, 4).Value = "Skipped"
+            wsEQTabs.Cells(r, 4).Interior.ColorIndex = xlNone
+            wsEQTabs.Cells(r, 5).ClearContents
+            wsEQTabs.Cells(r, 6).ClearContents
+            wsEQTabs.Cells(r, 7).ClearContents
+
+        ElseIf exportSheetName = "" Or configSheetName = "" Then
             '-- Either cell blank
             WriteResult wsEQTabs, r, "Invalide Sheet name config/export", "red", 0, 0, 0
 
@@ -71,9 +76,6 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
 
                 If wsExport Is Nothing Then
                     WriteResult wsEQTabs, r, "Sheet on found in Export", "red", 0, 0, 0
-
-                ElseIf LCase(yesNo) <> "yes" Then
-                    WriteResult wsEQTabs, r, "Skipped (flag = '" & yesNo & "')", "none", 0, 0, 0
 
                 Else
                     '-- STEP 3: proceed with the matched case
@@ -505,7 +507,7 @@ End Function
 ' HELPER FUNCTIONS
 '====================================================================
 
-' Finds the best header row (1 to 4) using EXACT case-insensitive matching
+' Finds the best header row (1 to 4) using normalized matching
 Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
     Dim r As Long, bestRow As Long, bestMatches As Long, matches As Long, i As Long
     bestMatches = -1
@@ -523,7 +525,6 @@ Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
     FindHeaderRow = bestRow
 End Function
 
-' Finds the column number whose header EXACTLY matches targetName (case-insensitive, trimmed only)
 ' Finds the column number whose header matches targetName after normalization
 ' (case-insensitive, ignores extra spaces/punctuation) but requires FULL match, not partial/substring
 Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As String) As Long
@@ -556,7 +557,7 @@ Private Function NormalizeForCompare(s As String) As String
     NormalizeForCompare = res
 End Function
 
-' Normalizes a cell value for key comparison.
+' Normalizes a cell value for KEY comparison (data rows, not headers).
 ' fieldType: "text" (general), "percent" (strips trailing %), "yn" (Yes/No -> Y/N)
 Private Function NormalizeKeyValue(v As Variant, fieldType As String) As String
     Dim s As String
@@ -596,6 +597,10 @@ Private Sub WriteResult(ws As Worksheet, r As Long, statusMsg As String, colorTy
         ws.Cells(r, 5).Value = cfgRows
         ws.Cells(r, 6).Value = expRows
         ws.Cells(r, 7).Value = copiedRows
+    Else
+        ws.Cells(r, 5).ClearContents
+        ws.Cells(r, 6).ClearContents
+        ws.Cells(r, 7).ClearContents
     End If
 
     Select Case LCase(colorType)
