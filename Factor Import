@@ -123,8 +123,14 @@ Private Sub ProcessCase1(ByVal wbConfig As Workbook, ByVal wbExport As Workbook,
     cfgLastCol = GetLastCol(wsCfg)
     expLastCol = GetLastCol(wsExp)
 
-    Set cfgHeaders = GetHeaderMap(wsCfg, cfgLastCol)
-    Set expHeaders = GetHeaderMap(wsExp, expLastCol)
+    ' --- ORIGINAL (kept for reference, now replaced by alias-aware version below) ---
+    ' Set cfgHeaders = GetHeaderMap(wsCfg, cfgLastCol)
+    ' Set expHeaders = GetHeaderMap(wsExp, expLastCol)
+
+    ' UPDATED: pass sheet name so specific sheets can alias
+    ' "Coverage Amount(Dollar or Percent)" -> "Coverage Amount(Dollar)"
+    Set cfgHeaders = GetHeaderMap(wsCfg, cfgLastCol, cfgName)
+    Set expHeaders = GetHeaderMap(wsExp, expLastCol, expName)
 
     ' Columns in Config not present in Export
     missingCols = ""
@@ -217,38 +223,55 @@ End Sub
 
 
 '====================================================================
-' CASE 2: Sheet exists ONLY in Export -> copy full tab into Config
+' CASE 2: Sheet exists ONLY in Export
+' UPDATED BEHAVIOR: Do NOT copy the tab into Config anymore.
+' Just log it in the Master Sheet as "Skipped" (not present in config).
+' Original copy-the-tab logic is kept below, commented out, for reference.
 '====================================================================
 Private Sub ProcessCase2(ByVal wbConfig As Workbook, ByVal wbExport As Workbook, _
     ByVal expName As String, ByVal wsMaster As Worksheet, ByVal masterRow As Long)
 
-    Dim wsExp As Worksheet, existing As Worksheet, newWs As Worksheet
-    Dim insertBeforeName As String
+    ' ---------------------------------------------------------------
+    ' ORIGINAL CODE (kept for reference / rollback - now disabled)
+    ' ---------------------------------------------------------------
+    ' Dim wsExp As Worksheet, existing As Worksheet, newWs As Worksheet
+    ' Dim insertBeforeName As String
+    '
+    ' Set wsExp = wbExport.Sheets(expName)
+    '
+    ' ' Safety: remove any pre-existing sheet with the same name in Config
+    ' On Error Resume Next
+    ' Set existing = wbConfig.Sheets(expName)
+    ' On Error GoTo 0
+    ' If Not existing Is Nothing Then
+    '     wbConfig.Sheets(expName).Delete
+    ' End If
+    ' Set existing = Nothing
+    '
+    ' insertBeforeName = DetermineInsertPosition(wbConfig, expName)
+    '
+    ' If insertBeforeName <> "" Then
+    '     wsExp.Copy Before:=wbConfig.Sheets(insertBeforeName)
+    ' Else
+    '     wsExp.Copy After:=wbConfig.Sheets(LastNonMasterSheetName(wbConfig))
+    ' End If
+    '
+    ' Set newWs = wbConfig.Sheets(expName)
+    '
+    ' wsMaster.Cells(masterRow, 1).Value = expName
+    ' wsMaster.Cells(masterRow, 2).Value = expName
+    ' wsMaster.Cells(masterRow, 3).Value = "Tab is copied"
+    ' wsMaster.Cells(masterRow, 3).Interior.Color = RGB(255, 255, 153) ' light yellow
+    ' wsMaster.Cells(masterRow, 4).Value = ""
+    ' wsMaster.Cells(masterRow, 5).Value = ""
+    ' ---------------------------------------------------------------
+    ' END ORIGINAL CODE
+    ' ---------------------------------------------------------------
 
-    Set wsExp = wbExport.Sheets(expName)
-
-    ' Safety: remove any pre-existing sheet with the same name in Config
-    On Error Resume Next
-    Set existing = wbConfig.Sheets(expName)
-    On Error GoTo 0
-    If Not existing Is Nothing Then
-        wbConfig.Sheets(expName).Delete
-    End If
-    Set existing = Nothing
-
-    insertBeforeName = DetermineInsertPosition(wbConfig, expName)
-
-    If insertBeforeName <> "" Then
-        wsExp.Copy Before:=wbConfig.Sheets(insertBeforeName)
-    Else
-        wsExp.Copy After:=wbConfig.Sheets(LastNonMasterSheetName(wbConfig))
-    End If
-
-    Set newWs = wbConfig.Sheets(expName)
-
+    ' NEW BEHAVIOR: skip the sheet entirely, just log it
     wsMaster.Cells(masterRow, 1).Value = expName
-    wsMaster.Cells(masterRow, 2).Value = expName
-    wsMaster.Cells(masterRow, 3).Value = "Tab is copied"
+    wsMaster.Cells(masterRow, 2).Value = ""
+    wsMaster.Cells(masterRow, 3).Value = "Skipped as it is not present in config"
     wsMaster.Cells(masterRow, 3).Interior.Color = RGB(255, 255, 153) ' light yellow
     wsMaster.Cells(masterRow, 4).Value = ""
     wsMaster.Cells(masterRow, 5).Value = ""
@@ -257,6 +280,8 @@ End Sub
 
 '====================================================================
 ' SHEET POSITIONING LOGIC (X_X_abc pattern)
+' NOTE: No longer called since ProcessCase2 skips copying, but left
+' intact in case tab-copying behavior is restored later.
 '====================================================================
 Private Function DetermineInsertPosition(ByVal wbConfig As Workbook, ByVal newName As String) As String
     Dim nFirstX As String, nSecondX As String, nAbc As String
@@ -394,20 +419,68 @@ Private Function ResetMasterSheet(ByVal wb As Workbook) As Worksheet
     Set ResetMasterSheet = ws
 End Function
 
-Private Function GetHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long) As Object
+' --- ORIGINAL (kept for reference, now replaced by alias-aware overload below) ---
+' Private Function GetHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long) As Object
+'     Dim dict As Object
+'     Dim c As Long, hName As String
+'     Set dict = CreateObject("Scripting.Dictionary")
+'     dict.CompareMode = 1 ' vbTextCompare
+'     For c = 1 To lastCol
+'         hName = Trim(CStr(ws.Cells(1, c).Value))
+'         If hName <> "" Then
+'             If Not dict.Exists(LCase(hName)) Then
+'                 dict.Add LCase(hName), c
+'             End If
+'         End If
+'     Next c
+'     Set GetHeaderMap = dict
+' End Function
+
+' UPDATED: now accepts the sheet name so header aliasing can be applied
+' for specific sheets (see ApplyHeaderAlias below). Matching still happens
+' on the (possibly aliased) header name, case-insensitively.
+Private Function GetHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, Optional ByVal sheetName As String = "") As Object
     Dim dict As Object
-    Dim c As Long, hName As String
+    Dim c As Long, hName As String, mappedName As String
     Set dict = CreateObject("Scripting.Dictionary")
     dict.CompareMode = 1 ' vbTextCompare
     For c = 1 To lastCol
         hName = Trim(CStr(ws.Cells(1, c).Value))
         If hName <> "" Then
-            If Not dict.Exists(LCase(hName)) Then
-                dict.Add LCase(hName), c
+            mappedName = ApplyHeaderAlias(sheetName, hName)
+            If Not dict.Exists(LCase(mappedName)) Then
+                dict.Add LCase(mappedName), c
             End If
         End If
     Next c
     Set GetHeaderMap = dict
+End Function
+
+' NEW: header alias logic.
+' For sheets R_O_WaterBackup_Contents and R_O_WaterBackup_Listed,
+' treat "Coverage Amount(Dollar or Percent)" the same as "Coverage Amount(Dollar)"
+' so the two columns are matched/mapped to each other during sync.
+Private Function ApplyHeaderAlias(ByVal sheetName As String, ByVal headerName As String) As String
+    Dim targetSheets As Variant, i As Long
+    Dim isTargetSheet As Boolean
+
+    targetSheets = Array("R_O_WaterBackup_Contents", "R_O_WaterBackup_Listed")
+    isTargetSheet = False
+    For i = LBound(targetSheets) To UBound(targetSheets)
+        If StrComp(Trim(sheetName), targetSheets(i), vbTextCompare) = 0 Then
+            isTargetSheet = True
+            Exit For
+        End If
+    Next i
+
+    If isTargetSheet Then
+        If StrComp(Trim(headerName), "Coverage Amount(Dollar or Percent)", vbTextCompare) = 0 Then
+            ApplyHeaderAlias = "Coverage Amount(Dollar)"
+            Exit Function
+        End If
+    End If
+
+    ApplyHeaderAlias = headerName
 End Function
 
 Private Function GetOriginalHeaderName(ByVal ws As Worksheet, ByVal colIndex As Long) As String
