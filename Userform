@@ -8,7 +8,16 @@ Private strUpdatedConfigPath As String
 ' INITIALIZE
 '---------------------------------------------------
 Private Sub UserForm_Initialize()
+
+    ' Force each OptionButton into its own group so they act independently
+    ' (this is what lets you select any combination of them)
+    Option1.GroupName = "Grp1"
+    Option2.GroupName = "Grp2"
+    Option3.GroupName = "Grp3"
+    Option4.GroupName = "Grp4"
+
     btnRUN.Enabled = False
+
 End Sub
 
 '---------------------------------------------------
@@ -54,8 +63,6 @@ End Sub
 
 '---------------------------------------------------
 ' OPTION BUTTONS - each toggles independently
-' (give each OptionButton a DIFFERENT GroupName in Properties
-'  so they don't behave like a mutually-exclusive radio group)
 '---------------------------------------------------
 Private Sub Option1_Click()
     CheckRunButtonState
