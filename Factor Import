@@ -42,9 +42,34 @@ Public Sub RunSheetQC(ByVal configFilePath As String, ByVal exportFilePath As St
         configSheetName = Trim(CStr(wsQC.Cells(i, "B").Value))
         yesNo = Trim(CStr(wsQC.Cells(i, "C").Value))
 
-        ' Reset previous run's output for this row
+        ' Reset previous run's output/highlighting for this row
         wsQC.Range(wsQC.Cells(i, "D"), wsQC.Cells(i, "G")).ClearContents
         wsQC.Cells(i, "D").Interior.ColorIndex = xlColorIndexNone
+        wsQC.Cells(i, "A").Interior.ColorIndex = xlColorIndexNone
+        wsQC.Cells(i, "B").Interior.ColorIndex = xlColorIndexNone
+
+        ' --- Empty name check (overrides everything, always checked first) ---
+        Dim aEmpty As Boolean, bEmpty As Boolean
+        aEmpty = (exportSheetName = "")
+        bEmpty = (configSheetName = "")
+
+        If aEmpty Or bEmpty Then
+            If aEmpty Then Call SetCellColor(wsQC.Cells(i, "A"), "Yellow")
+            If bEmpty Then Call SetCellColor(wsQC.Cells(i, "B"), "Yellow")
+
+            If aEmpty And bEmpty Then
+                wsQC.Cells(i, "D").Value = "Export and Config sheet names are empty"
+            ElseIf aEmpty Then
+                wsQC.Cells(i, "D").Value = "Export sheet name is empty"
+            Else
+                wsQC.Cells(i, "D").Value = "Config sheet name is empty"
+            End If
+
+            wsQC.Cells(i, "E").Value = "NA"
+            wsQC.Cells(i, "F").Value = "NA"
+            wsQC.Cells(i, "G").Value = "NA"
+            GoTo NextRow
+        End If
 
         If UCase(yesNo) = "NO" Then
             wsQC.Cells(i, "D").Value = "Skipped"
@@ -522,6 +547,8 @@ Private Sub SetCellColor(rng As Range, colorType As String)
             rng.Interior.Color = RGB(198, 239, 206)
         Case "Red"
             rng.Interior.Color = RGB(255, 199, 206)
+        Case "Yellow"
+            rng.Interior.Color = RGB(255, 255, 153)
         Case "None"
             rng.Interior.ColorIndex = xlColorIndexNone
     End Select
