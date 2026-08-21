@@ -54,6 +54,15 @@ Public Sub RunSheetQC(ByVal configFilePath As String, ByVal exportFilePath As St
             GoTo NextRow
         End If
 
+        ' --- Blocked sheet name check (case-insensitive) ---
+        If StrComp(configSheetName, "R_L_Territory", vbTextCompare) = 0 Then
+            wsQC.Cells(i, "D").Value = "Unable to copy"
+            wsQC.Cells(i, "E").Value = "NA"
+            wsQC.Cells(i, "F").Value = "NA"
+            wsQC.Cells(i, "G").Value = "NA"
+            GoTo NextRow
+        End If
+
         On Error GoTo RowError
         Call ProcessRow(wsQC, i, wbConfig, wbExport, exportSheetName, configSheetName)
         GoTo NextRow
@@ -91,10 +100,19 @@ Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExp
                         exportName As String, configName As String)
 
     Dim foundExport As Boolean, foundConfig As Boolean
-    foundExport = (exportName <> "")
-    If foundExport Then foundExport = SheetExists(wbExport, exportName)
-    foundConfig = (configName <> "")
-    If foundConfig Then foundConfig = SheetExists(wbConfig, configName)
+    Dim wsExportMatch As Worksheet, wsConfigMatch As Worksheet
+
+    foundExport = False
+    If exportName <> "" Then
+        Set wsExportMatch = GetSheetByNameCI(wbExport, exportName)
+        foundExport = Not wsExportMatch Is Nothing
+    End If
+
+    foundConfig = False
+    If configName <> "" Then
+        Set wsConfigMatch = GetSheetByNameCI(wbConfig, configName)
+        foundConfig = Not wsConfigMatch Is Nothing
+    End If
 
     ' ---------- CASE 4: neither found ----------
     If Not foundExport And Not foundConfig Then
@@ -117,7 +135,7 @@ Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExp
     ' ---------- CASE 3: not found in Config -> copy whole Export sheet in ----------
     If foundExport And Not foundConfig Then
         Dim wsExp As Worksheet
-        Set wsExp = wbExport.Sheets(exportName)
+        Set wsExp = wsExportMatch
 
         Dim desiredName As String
         If configName = "" Then
@@ -147,8 +165,8 @@ Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExp
 
     ' ---------- CASE 1: both found ----------
     Dim wsExport As Worksheet, wsConfig As Worksheet
-    Set wsExport = wbExport.Sheets(exportName)
-    Set wsConfig = wbConfig.Sheets(configName)
+    Set wsExport = wsExportMatch
+    Set wsConfig = wsConfigMatch
 
     Dim exportColCount As Long, configColCount As Long
     exportColCount = GetLastColumn(wsExport)
@@ -431,12 +449,23 @@ End Function
 '====================================================================
 ' GENERIC HELPERS
 '====================================================================
-Private Function SheetExists(wb As Workbook, nm As String) As Boolean
+
+' Case-insensitive sheet lookup (returns Nothing if not found)
+Private Function GetSheetByNameCI(wb As Workbook, nm As String) As Worksheet
     Dim ws As Worksheet
-    On Error Resume Next
-    Set ws = wb.Sheets(nm)
-    On Error GoTo 0
-    SheetExists = Not ws Is Nothing
+    Dim target As String
+    target = Trim(nm)
+    For Each ws In wb.Worksheets
+        If StrComp(Trim(ws.Name), target, vbTextCompare) = 0 Then
+            Set GetSheetByNameCI = ws
+            Exit Function
+        End If
+    Next ws
+    Set GetSheetByNameCI = Nothing
+End Function
+
+Private Function SheetExists(wb As Workbook, nm As String) As Boolean
+    SheetExists = Not GetSheetByNameCI(wb, nm) Is Nothing
 End Function
 
 Private Function GetLastColumn(ws As Worksheet) As Long
