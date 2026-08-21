@@ -1,181 +1,242 @@
 Option Explicit
 
-'====================================================================
-' MAIN CALLABLE PROCEDURE
-' Call this from anywhere, e.g.:
-'   Call MergeExportIntoConfig("C:\Files\Config.xlsx", "C:\Files\Export.xlsx")
-'====================================================================
-Public Sub MergeExportIntoConfig(ByVal ConfigPath As String, _
-                                  ByVal ExportPath As String, _
-                                  Optional ByVal ShowDoneMsg As Boolean = True)
+' ==== CONFIGURE THESE IF YOUR HEADER ROW IS NOT ROW 1 ====
+Private Const HEADER_ROW As Long = 1
+Private Const CONFIG_SHEET_NAME As String = "R_L_Territory"
+' ===========================================================
 
-    Dim wbConfig As Workbook, wbExport As Workbook
-    Dim wsConfig As Worksheet, wsExport As Worksheet
-    Dim mapDict As Object, configHeaders As Object, exportHeaders As Object
-    Dim lastColConfig As Long, lastColExport As Long
-    Dim lastRowConfig As Long, lastRowExport As Long
-    Dim c As Long, r As Long
-    Dim configName As String, exportLookupName As String, keyLower As String
-    Dim eCol As Long
-    Dim neededRows As Long, existingRows As Long
-    Dim origCalc As XlCalculation
+Public Function RunTerritoryMapping(ByVal configPath As String, ByVal catPath As String) As String
+
+    Dim configWB As Workbook, catWB As Workbook
+    Dim configWasAlreadyOpen As Boolean, catWasAlreadyOpen As Boolean
+    Dim origScreenUpdating As Boolean, origDisplayAlerts As Boolean
+    Dim origEnableEvents As Boolean, origCalc As XlCalculation
 
     On Error GoTo ErrHandler
 
-    'Speed / no popups
+    ' ---- Save original app settings ----
+    origScreenUpdating = Application.ScreenUpdating
+    origDisplayAlerts = Application.DisplayAlerts
+    origEnableEvents = Application.EnableEvents
+    origCalc = Application.Calculation
+
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.EnableEvents = False
-    Application.AskToUpdateLinks = False
-    origCalc = Application.Calculation
     Application.Calculation = xlCalculationManual
+    Application.AskToUpdateLinks = False
 
-    'Basic file checks
-    If Dir(ConfigPath) = "" Then Err.Raise vbObjectError + 1, , "Config file not found: " & ConfigPath
-    If Dir(ExportPath) = "" Then Err.Raise vbObjectError + 2, , "Export file not found: " & ExportPath
+    ' ---- Open (or reuse) workbooks without any prompts ----
+    Set configWB = GetOrOpenWorkbook(configPath, False, configWasAlreadyOpen)
+    Set catWB = GetOrOpenWorkbook(catPath, True, catWasAlreadyOpen)
 
-    'Open Config normally (we need to write to it)
-    Set wbConfig = Workbooks.Open(Filename:=ConfigPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
+    ' ---- Get sheets ----
+    Dim configWS As Worksheet, catWS As Worksheet
+    On Error Resume Next
+    Set configWS = configWB.Sheets(CONFIG_SHEET_NAME)
+    On Error GoTo ErrHandler
+    If configWS Is Nothing Then
+        RunTerritoryMapping = "Sheet '" & CONFIG_SHEET_NAME & "' not found in Config file."
+        GoTo CleanExit
+    End If
 
-    'Open Export as ReadOnly (we only read from it) - avoids any read-only prompts
-    Set wbExport = Workbooks.Open(Filename:=ExportPath, UpdateLinks:=0, ReadOnly:=True, Notify:=False, IgnoreReadOnlyRecommended:=True)
+    Set catWS = catWB.Sheets(1) ' CAT has only one sheet / use first sheet
 
-    'Target sheets
-    Set wsConfig = wbConfig.Sheets("R_L_Territory")
-    Set wsExport = wbExport.Sheets(1)   'first and only sheet
+    ' ---- Find territory columns (case-insensitive: "Territory" or "ratingTerritory") ----
+    Dim territoryNames(1) As String
+    territoryNames(0) = "territory"
+    territoryNames(1) = "ratingterritory"
 
-    '----------------------------------------------------------------
-    'Build mapping dictionary: Config column name (lower) -> Export column name (lower)
-    '----------------------------------------------------------------
-    Set mapDict = CreateObject("Scripting.Dictionary")
-    mapDict.CompareMode = 1 'vbTextCompare (case-insensitive keys)
+    Dim configTerrCol As Long, catTerrCol As Long
+    configTerrCol = FindColumnByHeader(configWS, HEADER_ROW, territoryNames)
+    catTerrCol = FindColumnByHeader(catWS, HEADER_ROW, territoryNames)
 
-    mapDict.Add "territory", "rating territory"
-    mapDict.Add "waterwinter", "winterwater"
-    mapDict.Add "waternonwinter", "nwwtr"
-    mapDict.Add "windsummer", "summerwind"
-    mapDict.Add "windwinter", "winterwind"
-    mapDict.Add "liabilitypollution", "liab"
-    mapDict.Add "theftvandalism", "theft"
+    If configTerrCol = 0 Then
+        RunTerritoryMapping = "Territory column not found in Config sheet '" & CONFIG_SHEET_NAME & "'."
+        GoTo CleanExit
+    End If
+    If catTerrCol = 0 Then
+        RunTerritoryMapping = "Territory column not found in CAT sheet."
+        GoTo CleanExit
+    End If
 
-    '----------------------------------------------------------------
-    'Read headers (assumes header row = row 1 on both sheets)
-    '----------------------------------------------------------------
-    lastColConfig = wsConfig.Cells(1, wsConfig.Columns.Count).End(xlToLeft).Column
-    lastColExport = wsExport.Cells(1, wsExport.Columns.Count).End(xlToLeft).Column
+    ' ---- Build dictionary: territory value -> Config row number ----
+    Dim dictConfigRows As Object
+    Set dictConfigRows = CreateObject("Scripting.Dictionary")
 
-    Set configHeaders = CreateObject("Scripting.Dictionary") 'lower name -> col index
-    configHeaders.CompareMode = 1
-    Set exportHeaders = CreateObject("Scripting.Dictionary")
-    exportHeaders.CompareMode = 1
+    Dim configLastRow As Long
+    configLastRow = configWS.Cells(configWS.Rows.Count, configTerrCol).End(xlUp).Row
 
-    For c = 1 To lastColConfig
-        keyLower = LCase(Trim(CStr(wsConfig.Cells(1, c).Value)))
-        If Len(keyLower) > 0 Then
-            If Not configHeaders.Exists(keyLower) Then configHeaders.Add keyLower, c
+    Dim r As Long
+    Dim key As String
+    For r = HEADER_ROW + 1 To configLastRow
+        key = NormalizeKey(configWS.Cells(r, configTerrCol).Value)
+        If key <> "" Then
+            If Not dictConfigRows.Exists(key) Then
+                dictConfigRows.Add key, r
+            End If
+        End If
+    Next r
+
+    ' ---- Determine last used column/row in CAT sheet ----
+    Dim catLastCol As Long, catLastRow As Long
+    catLastCol = catWS.Cells(HEADER_ROW, catWS.Columns.Count).End(xlToLeft).Column
+    catLastRow = catWS.Cells(catWS.Rows.Count, catTerrCol).End(xlUp).Row
+
+    ' ---- Pre-fetch Config header names (case-insensitive lookup) ----
+    Dim configLastCol As Long
+    configLastCol = configWS.Cells(HEADER_ROW, configWS.Columns.Count).End(xlToLeft).Column
+
+    Dim dictConfigHeaders As Object
+    Set dictConfigHeaders = CreateObject("Scripting.Dictionary")
+    Dim c As Long
+    For c = 1 To configLastCol
+        Dim hName As String
+        hName = LCase(Trim(CStr(configWS.Cells(HEADER_ROW, c).Value)))
+        If hName <> "" And Not dictConfigHeaders.Exists(hName) Then
+            dictConfigHeaders.Add hName, c
         End If
     Next c
 
-    For c = 1 To lastColExport
-        keyLower = LCase(Trim(CStr(wsExport.Cells(1, c).Value)))
-        If Len(keyLower) > 0 Then
-            If Not exportHeaders.Exists(keyLower) Then exportHeaders.Add keyLower, c
-        End If
-    Next c
+    ' ---- Loop through each CAT column (skip territory column) ----
+    Dim colsProcessed As Long, valuesWritten As Long
+    Dim catCol As Long
+    For catCol = 1 To catLastCol
+        If catCol <> catTerrCol Then
+            Dim catHeader As String
+            catHeader = LCase(Trim(CStr(catWS.Cells(HEADER_ROW, catCol).Value)))
 
-    'Last data rows (based on column A, row 2 downward)
-    lastRowConfig = wsConfig.Cells(wsConfig.Rows.Count, 1).End(xlUp).Row
-    If lastRowConfig < 1 Then lastRowConfig = 1
-    lastRowExport = wsExport.Cells(wsExport.Rows.Count, 1).End(xlUp).Row
-    If lastRowExport < 1 Then lastRowExport = 1
+            If catHeader <> "" And dictConfigHeaders.Exists(catHeader) Then
+                Dim targetCol As Long
+                targetCol = dictConfigHeaders(catHeader)
 
-    neededRows = lastRowExport - 1        'export data rows (excluding header)
-    existingRows = lastRowConfig - 1      'existing config data rows (excluding header)
-    If neededRows < 0 Then neededRows = 0
-    If existingRows < 0 Then existingRows = 0
+                If targetCol <> configTerrCol Then
+                    colsProcessed = colsProcessed + 1
 
-    '----------------------------------------------------------------
-    'Loop through each Config column, find matching Export column, replace values
-    '----------------------------------------------------------------
-    Dim configKey As Variant
-    For Each configKey In configHeaders.Keys
-
-        c = configHeaders(configKey)
-        configName = CStr(configKey)
-
-        'Determine which export column name to look for
-        If mapDict.Exists(configName) Then
-            exportLookupName = LCase(Trim(mapDict(configName)))
-        Else
-            exportLookupName = configName 'direct case-insensitive match
-        End If
-
-        If exportHeaders.Exists(exportLookupName) Then
-            eCol = exportHeaders(exportLookupName)
-
-            'Extend Config's row formatting downward if Export has more rows than Config currently has
-            If neededRows > existingRows And existingRows >= 1 Then
-                wsConfig.Cells(2, c).Copy
-                wsConfig.Range(wsConfig.Cells(existingRows + 2, c), _
-                                wsConfig.Cells(neededRows + 1, c)).PasteSpecial Paste:=xlPasteFormats
-                Application.CutCopyMode = False
+                    ' Loop through CAT rows, match by territory, write value only
+                    Dim rr As Long
+                    For rr = HEADER_ROW + 1 To catLastRow
+                        Dim tKey As String
+                        tKey = NormalizeKey(catWS.Cells(rr, catTerrCol).Value)
+                        If tKey <> "" Then
+                            If dictConfigRows.Exists(tKey) Then
+                                Dim destRow As Long
+                                destRow = dictConfigRows(tKey)
+                                ' Only value is written -> Config's existing
+                                ' number format / alignment / layout is preserved
+                                configWS.Cells(destRow, targetCol).Value = catWS.Cells(rr, catCol).Value
+                                valuesWritten = valuesWritten + 1
+                            End If
+                        End If
+                    Next rr
+                End If
             End If
-
-            'Clear existing values only (keep formatting) across the full needed range
-            Dim clearRows As Long
-            clearRows = existingRows
-            If neededRows > clearRows Then clearRows = neededRows
-            If clearRows > 0 Then
-                wsConfig.Range(wsConfig.Cells(2, c), wsConfig.Cells(clearRows + 1, c)).ClearContents
-            End If
-
-            'Paste Export values into Config column, same order, row by row
-            For r = 1 To neededRows
-                wsConfig.Cells(r + 1, c).Value = wsExport.Cells(r + 1, eCol).Value
-            Next r
         End If
+    Next catCol
 
-    Next configKey
+    ' ---- Save Config file silently (no format/keep-as prompts) ----
+    Application.DisplayAlerts = False
+    configWB.Save
 
-    '----------------------------------------------------------------
-    'Save & close
-    '----------------------------------------------------------------
-    wbConfig.Save
-    wbConfig.Close SaveChanges:=False
-    wbExport.Close SaveChanges:=False
+    RunTerritoryMapping = "OK"
 
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
-    Application.EnableEvents = True
-    Application.AskToUpdateLinks = True
+CleanExit:
+    ' ---- Close CAT without saving (we only read from it) ----
+    If Not catWB Is Nothing Then
+        If Not catWasAlreadyOpen Then
+            catWB.Close SaveChanges:=False
+        End If
+    End If
+
+    ' Leave Config open (already saved) if it was already open before;
+    ' if we opened it ourselves, keep it open too so user can review it.
+
+    ' ---- Restore app settings ----
+    Application.ScreenUpdating = origScreenUpdating
+    Application.DisplayAlerts = origDisplayAlerts
+    Application.EnableEvents = origEnableEvents
     Application.Calculation = origCalc
 
-    If ShowDoneMsg Then MsgBox "Done", vbInformation
-
-    Exit Sub
+    Exit Function
 
 ErrHandler:
-    Dim errMsg As String
-    errMsg = "Error " & Err.Number & ": " & Err.Description
+    RunTerritoryMapping = Err.Description
+    Resume CleanExit
 
-    On Error Resume Next
-    If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
-    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
-    Application.EnableEvents = True
-    Application.AskToUpdateLinks = True
-    Application.Calculation = origCalc
-    On Error GoTo 0
+End Function
 
-    MsgBox errMsg, vbCritical
+' ------------------------------------------------------------------
+' Opens a workbook without any pop-ups (read-only recommended, links,
+' format prompts, etc.), or returns it if already open.
+' ------------------------------------------------------------------
+Private Function GetOrOpenWorkbook(ByVal fullPath As String, ByVal openReadOnly As Boolean, ByRef wasAlreadyOpen As Boolean) As Workbook
+    Dim wb As Workbook
+    Dim fileName As String
+    fileName = Mid(fullPath, InStrRev(fullPath, "\") + 1)
 
-End Sub
+    wasAlreadyOpen = False
+    For Each wb In Workbooks
+        If LCase(wb.Name) = LCase(fileName) Then
+            Set GetOrOpenWorkbook = wb
+            wasAlreadyOpen = True
+            Exit Function
+        End If
+    Next wb
 
-'====================================================================
-' EXAMPLE CALLER - edit the paths and run this, or call
-' MergeExportIntoConfig directly from your own Sub/Userform
-'====================================================================
-Public Sub RunMergeExample()
-    Call MergeExportIntoConfig("C:\Files\Config.xlsx", "C:\Files\Export.xlsx")
+    Set GetOrOpenWorkbook = Workbooks.Open( _
+        Filename:=fullPath, _
+        UpdateLinks:=0, _
+        ReadOnly:=openReadOnly, _
+        IgnoreReadOnlyRecommended:=True, _
+        Notify:=False)
+End Function
+
+' ------------------------------------------------------------------
+' Finds a column in headerRow whose header (case-insensitive, trimmed)
+' matches any name in acceptedNames(). Returns 0 if not found.
+' ------------------------------------------------------------------
+Private Function FindColumnByHeader(ws As Worksheet, ByVal headerRow As Long, acceptedNames() As String) As Long
+    Dim lastCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    Dim c As Long, i As Long
+    Dim hVal As String
+    For c = 1 To lastCol
+        hVal = LCase(Trim(CStr(ws.Cells(headerRow, c).Value)))
+        For i = LBound(acceptedNames) To UBound(acceptedNames)
+            If hVal = acceptedNames(i) Then
+                FindColumnByHeader = c
+                Exit Function
+            End If
+        Next i
+    Next c
+
+    FindColumnByHeader = 0
+End Function
+
+' ------------------------------------------------------------------
+' Normalizes a territory value into a comparable string key so that
+' 11020, "11020", and 11020.0 all match the same key.
+' ------------------------------------------------------------------
+Private Function NormalizeKey(ByVal v As Variant) As String
+    If IsError(v) Then
+        NormalizeKey = ""
+        Exit Function
+    End If
+    If Trim(CStr(v)) = "" Then
+        NormalizeKey = ""
+        Exit Function
+    End If
+    If IsNumeric(v) Then
+        NormalizeKey = CStr(CDbl(v))
+    Else
+        NormalizeKey = LCase(Trim(CStr(v)))
+    End If
+End Function
+
+' ------------------------------------------------------------------
+' Call this to launch the form (e.g. assign to a button/shortcut)
+' ------------------------------------------------------------------
+Public Sub ShowTerritoryMapperForm()
+    frmTerritoryMapper.Show
 End Sub
