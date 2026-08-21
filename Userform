@@ -1,1 +1,333 @@
+Option Explicit
 
+' Module-level variable holding the path to the updated config file
+' Available to all 4 options
+Private strUpdatedConfigPath As String
+
+'---------------------------------------------------
+' INITIALIZE
+'---------------------------------------------------
+Private Sub UserForm_Initialize()
+    btnRUN.Enabled = False
+End Sub
+
+'---------------------------------------------------
+' BROWSE BUTTONS - each fills its own textbox
+'---------------------------------------------------
+Private Sub btnBrowseConfig_Click()
+    BrowseIntoBox txtConfig
+End Sub
+
+Private Sub btnBrowseTerritory_Click()
+    BrowseIntoBox txtTerritory
+End Sub
+
+Private Sub btnBrowseCAT_Click()
+    BrowseIntoBox txtCAT
+End Sub
+
+Private Sub btnBrowseEQ_Click()
+    BrowseIntoBox txtEQ
+End Sub
+
+Private Sub btnBrowseOther_Click()
+    BrowseIntoBox txtOther
+End Sub
+
+Private Sub btnBrowseFile_Click()
+    BrowseIntoBox txtFile
+End Sub
+
+' Reusable file browse routine
+Private Sub BrowseIntoBox(ByVal targetBox As MSForms.TextBox)
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+
+    With fd
+        .Title = "Select a file"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            targetBox.Text = .SelectedItems(1)
+        End If
+    End With
+End Sub
+
+'---------------------------------------------------
+' OPTION BUTTONS - each toggles independently
+' (give each OptionButton a DIFFERENT GroupName in Properties
+'  so they don't behave like a mutually-exclusive radio group)
+'---------------------------------------------------
+Private Sub Option1_Click()
+    CheckRunButtonState
+End Sub
+
+Private Sub Option2_Click()
+    CheckRunButtonState
+End Sub
+
+Private Sub Option3_Click()
+    CheckRunButtonState
+End Sub
+
+Private Sub Option4_Click()
+    CheckRunButtonState
+End Sub
+
+' Enable RUN only if at least one option is checked
+Private Sub CheckRunButtonState()
+    btnRUN.Enabled = (Option1.Value Or Option2.Value Or Option3.Value Or Option4.Value)
+End Sub
+
+'---------------------------------------------------
+' RUN BUTTON
+'---------------------------------------------------
+Private Sub btnRUN_Click()
+
+    Dim anyTrue As Boolean
+    anyTrue = False
+
+    ' Step 0: Config path must not be empty
+    If Trim(txtConfig.Text) = "" Then
+        MsgBox "Config path missing", vbExclamation
+        Exit Sub
+    End If
+
+    ' Step 1: Save the updated config file FIRST (no popup, silent fail if bad path)
+    If Not SaveUpdatedConfig() Then
+        Exit Sub
+    End If
+
+    ' Step 2: Run each checked option, collect True/False result
+    If Option1.Value Then
+        If RunOption1() Then anyTrue = True
+    End If
+
+    If Option2.Value Then
+        If RunOption2() Then anyTrue = True
+    End If
+
+    If Option3.Value Then
+        If RunOption3() Then anyTrue = True
+    End If
+
+    If Option4.Value Then
+        If RunOption4() Then anyTrue = True
+    End If
+
+    ' Step 3: Decide final outcome
+    If anyTrue Then
+        MsgBox "Task completed - updated file is saved at " & strUpdatedConfigPath, vbInformation
+    Else
+        ' All checked options returned False -> delete the updated config file
+        On Error Resume Next
+        If Len(strUpdatedConfigPath) > 0 Then
+            If Dir(strUpdatedConfigPath) <> "" Then
+                Kill strUpdatedConfigPath
+            End If
+        End If
+        On Error GoTo 0
+
+        MsgBox "Files missing", vbExclamation
+    End If
+
+End Sub
+
+'---------------------------------------------------
+' SAVE UPDATED CONFIG FILE (original name + "updated")
+' Stores the new path in strUpdatedConfigPath
+'---------------------------------------------------
+Private Function SaveUpdatedConfig() As Boolean
+
+    Dim srcPath As String
+    Dim destPath As String
+    Dim fso As Object
+    Dim fileNameOnly As String
+    Dim fileExt As String
+    Dim folderPath As String
+
+    srcPath = Trim(txtConfig.Text)
+
+    ' File doesn't exist -> fail silently
+    If Dir(srcPath) = "" Then
+        SaveUpdatedConfig = False
+        Exit Function
+    End If
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    folderPath = fso.GetParentFolderName(srcPath)
+    fileNameOnly = fso.GetBaseName(srcPath)    ' file name without extension
+    fileExt = fso.GetExtensionName(srcPath)    ' extension without dot
+
+    ' Build new path: originalname_updated.ext
+    destPath = folderPath & "\" & fileNameOnly & "_updated"
+    If fileExt <> "" Then
+        destPath = destPath & "." & fileExt
+    End If
+
+    On Error Resume Next
+    fso.CopyFile srcPath, destPath, True
+    On Error GoTo 0
+
+    ' Confirm the copy actually happened
+    If Dir(destPath) = "" Then
+        SaveUpdatedConfig = False
+        Exit Function
+    End If
+
+    strUpdatedConfigPath = destPath
+    SaveUpdatedConfig = True
+
+End Function
+
+'---------------------------------------------------
+' OPTION 1 LOGIC - Territory / CAT
+'---------------------------------------------------
+Private Function RunOption1() As Boolean
+
+    Dim hasTerritory As Boolean
+    Dim hasCAT As Boolean
+
+    hasTerritory = (Trim(txtTerritory.Text) <> "")
+    hasCAT = (Trim(txtCAT.Text) <> "")
+
+    If hasTerritory And hasCAT Then
+        ' Case 1: both Territory and CAT present
+        Call copyTerriotry(strUpdatedConfigPath, txtTerritory.Value, txtCAT.Value)
+        RunOption1 = True
+
+    ElseIf hasTerritory And Not hasCAT Then
+        ' Case 2: only Territory present
+        Call copyTerriotry2(strUpdatedConfigPath, txtTerritory.Value)
+        RunOption1 = True
+
+    ElseIf hasCAT And Not hasTerritory Then
+        ' Case 3: only CAT present
+        Call copyTerriotry3(strUpdatedConfigPath, txtCAT.Value)
+        RunOption1 = True
+
+    Else
+        ' Case 4: neither present
+        MsgBox "Files missing for Territory/CAT", vbExclamation
+        RunOption1 = False
+    End If
+
+End Function
+
+'---------------------------------------------------
+' OPTION 2 LOGIC - EQ
+'---------------------------------------------------
+Private Function RunOption2() As Boolean
+
+    If Trim(txtEQ.Text) <> "" Then
+        ' Case 1: EQ present
+        Call copyEQ(strUpdatedConfigPath, txtEQ.Value)
+        RunOption2 = True
+    Else
+        ' Case 2: EQ missing
+        MsgBox "Files missing for EQ Tabs", vbExclamation
+        RunOption2 = False
+    End If
+
+End Function
+
+'---------------------------------------------------
+' OPTION 3 LOGIC - Other
+'---------------------------------------------------
+Private Function RunOption3() As Boolean
+
+    If Trim(txtOther.Text) <> "" Then
+        ' Case 1: Other present
+        Call copyOther(strUpdatedConfigPath, txtOther.Value)
+        RunOption3 = True
+    Else
+        ' Case 2: Other missing
+        MsgBox "Files missing for Additional Tabs", vbExclamation
+        RunOption3 = False
+    End If
+
+End Function
+
+'---------------------------------------------------
+' OPTION 4 LOGIC - QC
+'---------------------------------------------------
+Private Function RunOption4() As Boolean
+
+    Dim hasTerritory As Boolean
+    Dim hasCAT As Boolean
+    Dim hasFile As Boolean
+
+    hasTerritory = (Trim(txtTerritory.Text) <> "")
+    hasCAT = (Trim(txtCAT.Text) <> "")
+    hasFile = (Trim(txtFile.Text) <> "")
+
+    If hasTerritory And hasCAT And hasFile Then
+        ' Case 1
+        Call configQC1(strUpdatedConfigPath, txtTerritory.Value, txtFile.Value)
+        Call configQC1(strUpdatedConfigPath, txtCAT.Value, txtFile.Value)
+        RunOption4 = True
+
+    ElseIf hasTerritory And hasFile And Not hasCAT Then
+        ' Case 2
+        Call configQC1(strUpdatedConfigPath, txtTerritory.Value, txtFile.Value)
+        RunOption4 = True
+
+    ElseIf hasCAT And hasFile And Not hasTerritory Then
+        ' Case 3
+        Call configQC1(strUpdatedConfigPath, txtCAT.Value, txtFile.Value)
+        RunOption4 = True
+
+    ElseIf hasTerritory And hasCAT And Not hasFile Then
+        ' Case 4
+        Call configQC2(strUpdatedConfigPath, txtTerritory.Value)
+        Call configQC2(strUpdatedConfigPath, txtCAT.Value)
+        RunOption4 = True
+
+    ElseIf hasTerritory And Not hasCAT And Not hasFile Then
+        ' Case 5
+        Call configQC2(strUpdatedConfigPath, txtTerritory.Value)
+        RunOption4 = True
+
+    ElseIf hasCAT And Not hasTerritory And Not hasFile Then
+        ' Case 6
+        Call configQC2(strUpdatedConfigPath, txtCAT.Value)
+        RunOption4 = True
+
+    Else
+        ' Case 7: none of the above combinations matched
+        RunOption4 = False
+    End If
+
+End Function
+
+'---------------------------------------------------
+' HELPER FUNCTIONS CALLED ABOVE
+' Replace these with your actual implementations
+'---------------------------------------------------
+Private Sub copyTerriotry(ByVal configPath As String, ByVal territoryPath As String, ByVal catPath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub copyTerriotry2(ByVal configPath As String, ByVal territoryPath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub copyTerriotry3(ByVal configPath As String, ByVal catPath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub copyEQ(ByVal configPath As String, ByVal eqPath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub copyOther(ByVal configPath As String, ByVal otherPath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub configQC1(ByVal configPath As String, ByVal sourcePath As String, ByVal filePath As String)
+    ' TODO: your logic here
+End Sub
+
+Private Sub configQC2(ByVal configPath As String, ByVal sourcePath As String)
+    ' TODO: your logic here
+End Sub
