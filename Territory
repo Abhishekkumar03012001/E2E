@@ -1,41 +1,192 @@
-# Tool Instructions
+Option Explicit
 
-## 1. Input Files / Paths
+'=========================================================
+' PUBLIC ENTRY POINT — call this from anywhere
+'   Call MapConfigExportData "C:\path\Config.xlsx", "C:\path\Export.xlsx"
+'=========================================================
+Public Sub MapConfigExportData(ByVal ConfigPath As String, ByVal ExportPath As String)
 
-* Open the tool. A UserForm will appear with **6 text boxes**.
-* For each input, you can either **paste the file path/link** or **browse and select the file**.
+    Dim wbConfig As Workbook, wbExport As Workbook
+    Dim wsConfig As Worksheet, wsExport As Worksheet
+    Dim aliasMap As Object, configHeaders As Object
+    Dim c As Long, lastColConfig As Long, lastColExport As Long
+    Dim exportHeader As String, key As String, wantedConfigHeader As String
+    Dim matchedConfigCol As Long
+    Dim exportLastRow As Long, oldConfigLastRow As Long, newLastRow As Long
+    Dim r As Long
+    Dim matchCount As Long
 
-1. **Config File** – Browse the Config file.
-2. **Territory Factors** – Browse the Territory Factors file to be imported into the Config.
-3. **CAT Factors** – Browse the CAT Factors file to be imported into the Config.
-4. **EQ Tabs** – Browse the file containing the EQ tabs to be imported. The tabs to be imported are mapped in the **"EQ"** sheet.
-5. **Additional Tabs** – Browse the file containing the additional tabs to be copied. The tabs are mapped in the **"Additional Tabs"** sheet.
-6. **Territory File for QC** – Browse the Territory file to be used for QC.
+    Const HEADER_ROW As Long = 1
+    Const DATA_START_ROW As Long = 2
 
-## 2. Checkboxes
+    On Error GoTo ErrHandler
 
-The UserForm contains **4 checkboxes**:
+    '--- Silence everything ---
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+    Application.AskToUpdateLinks = False
+    Application.Calculation = xlCalculationManual
 
-1. **Territory/CAT** – Check this option to copy Territory/CAT factors into the Config.
-2. **EQ Tabs** – Check this option to copy EQ factors/tabs.
-3. **Additional** – Check this option to copy the mapped additional tabs.
-4. **QC** – Check this option to perform QC on the Territory files.
+    '--- Validate files exist ---
+    If Dir(ConfigPath) = "" Then Err.Raise vbObjectError + 1, , "Config file not found: " & ConfigPath
+    If Dir(ExportPath) = "" Then Err.Raise vbObjectError + 2, , "Export file not found: " & ExportPath
 
-## 3. Run
+    '--- Open workbooks ---
+    Set wbConfig = Workbooks.Open(FileName:=ConfigPath, UpdateLinks:=0, ReadOnly:=False)
+    Set wbExport = Workbooks.Open(FileName:=ExportPath, UpdateLinks:=0, ReadOnly:=True)
 
-* Click the **Run** button to execute the selected operations based on the input paths and checked options.
+    Set wsConfig = wbConfig.Sheets("R_L_Territory")
+    Set wsExport = wbExport.Sheets(1) ' first & only sheet
 
-## 4. Important Notes
+    '--- Alias map: ExportHeader(lowercase) -> ConfigHeader(lowercase) ---
+    ' (built as Config->Export per your spec, then reversed for lookup by export header)
+    Set aliasMap = CreateObject("Scripting.Dictionary")
+    aliasMap.CompareMode = vbTextCompare
+    aliasMap.Add "rating territory", "territory"
+    aliasMap.Add "winterwater", "waterwinter"
+    aliasMap.Add "nwwtr", "waternonwinter"
+    aliasMap.Add "summerwind", "windsummer"
+    aliasMap.Add "winterwind", "windwinter"
+    aliasMap.Add "liab", "liabilitypollution"
+    aliasMap.Add "theft", "theftvandalism"
 
-### Additional Tabs
+    '--- Build Config header lookup: header(lowercase, trimmed) -> column index ---
+    Set configHeaders = CreateObject("Scripting.Dictionary")
+    configHeaders.CompareMode = vbTextCompare
+    lastColConfig = wsConfig.Cells(HEADER_ROW, wsConfig.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastColConfig
+        key = LCase$(Trim$(CStr(wsConfig.Cells(HEADER_ROW, c).Value)))
+        If key <> "" Then
+            If Not configHeaders.Exists(key) Then configHeaders.Add key, c
+        End If
+    Next c
 
-* Column-header mapping is applied to certain columns in the **Additional Tabs** process.
-* The column names must **match exactly** with the mapped column names.
-* In the **"Additional Tabs"** sheet, ensure that the appropriate **Yes/No** values are marked to indicate whether the tabs/factors should be **copied/replaced**.
-* After the process is completed, review the **Additional Tabs** sheet to perform QC and verify that the required tabs/factors were copied or replaced correctly.
+    '--- Loop through EXPORT columns in order, find matching Config column, copy data ---
+    lastColExport = wsExport.Cells(HEADER_ROW, wsExport.Columns.Count).End(xlToLeft).Column
+    matchCount = 0
 
-### EQ Tabs
+    For c = 1 To lastColExport
+        exportHeader = Trim$(CStr(wsExport.Cells(HEADER_ROW, c).Value))
+        If exportHeader <> "" Then
 
-* Column-header mapping is also applied to the **EQ** tabs.
-* If any mapped column headers are changed, the process may fail.
-* After the process is completed, review the **"EQ"** sheet for QC and verify that the required EQ tabs/factors were copied correctly.
+            key = LCase$(exportHeader)
+            matchedConfigCol = 0
+
+            ' 1) Try alias mapping first (export header -> config header)
+            If aliasMap.Exists(key) Then
+                wantedConfigHeader = LCase$(aliasMap(key))
+                If configHeaders.Exists(wantedConfigHeader) Then
+                    matchedConfigCol = configHeaders(wantedConfigHeader)
+                End If
+            End If
+
+            ' 2) Fall back to direct case-insensitive name match
+            If matchedConfigCol = 0 Then
+                If configHeaders.Exists(key) Then
+                    matchedConfigCol = configHeaders(key)
+                End If
+            End If
+
+            ' 3) If matched, replace Config's values with Export's values
+            If matchedConfigCol > 0 Then
+
+                exportLastRow = wsExport.Cells(wsExport.Rows.Count, c).End(xlUp).Row
+
+                ' Always clear out ALL existing values in this config column first
+                oldConfigLastRow = wsConfig.Cells(wsConfig.Rows.Count, matchedConfigCol).End(xlUp).Row
+                If oldConfigLastRow >= DATA_START_ROW Then
+                    wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                   wsConfig.Cells(oldConfigLastRow, matchedConfigCol)).ClearContents
+                End If
+
+                If exportLastRow >= DATA_START_ROW Then
+                    newLastRow = DATA_START_ROW + (exportLastRow - DATA_START_ROW)
+
+                    ' Stretch Config's own row-2 formatting down across the needed range
+                    wsConfig.Cells(DATA_START_ROW, matchedConfigCol).Copy
+                    wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                   wsConfig.Cells(newLastRow, matchedConfigCol)).PasteSpecial Paste:=xlPasteFormats
+                    Application.CutCopyMode = False
+
+                    ' Write Export values in — row by row to avoid 1-row array/.Value2 issues
+                    If exportLastRow = DATA_START_ROW Then
+                        wsConfig.Cells(DATA_START_ROW, matchedConfigCol).Value2 = _
+                            wsExport.Cells(DATA_START_ROW, c).Value2
+                    Else
+                        wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                       wsConfig.Cells(newLastRow, matchedConfigCol)).Value2 = _
+                            wsExport.Range(wsExport.Cells(DATA_START_ROW, c), _
+                                           wsExport.Cells(exportLastRow, c)).Value2
+                    End If
+                End If
+
+                matchCount = matchCount + 1
+            End If
+        End If
+    Next c
+
+    '--- Save Config safely (retry-proof, no popups) ---
+    Call SafeSaveWorkbook(wbConfig)
+
+    '--- Close everything ---
+    wbExport.Close SaveChanges:=False
+    wbConfig.Close SaveChanges:=False
+
+    '--- Restore app state ---
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+
+    MsgBox "Done. " & matchCount & " column(s) updated.", vbInformation, "Config/Export Mapping"
+    Exit Sub
+
+ErrHandler:
+    On Error Resume Next
+    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
+    If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    MsgBox "Failed: " & Err.Description, vbCritical, "Config/Export Mapping"
+End Sub
+
+
+'=========================================================
+' Helper — saves without triggering "Keep current format?"
+' or file-lock popups, with retries if the file is briefly
+' locked (e.g. antivirus/OneDrive sync).
+'=========================================================
+Private Sub SafeSaveWorkbook(ByVal wb As Workbook)
+    Dim attempt As Long
+    On Error Resume Next
+    For attempt = 1 To 3
+        Err.Clear
+        wb.Save
+        If Err.Number = 0 Then Exit Sub
+        Application.Wait Now + TimeValue("0:00:01")
+    Next attempt
+    On Error GoTo 0
+    If Err.Number <> 0 Then
+        Err.Raise Err.Number, , "Could not save Config file: " & Err.Description
+    End If
+End Sub
+
+
+'=========================================================
+' STANDALONE LAUNCHER — run this directly (Alt+F8) if you
+' just want to pick the two files manually.
+'=========================================================
+Public Sub RunConfigExportMapping()
+    Dim configPath As Variant, exportPath As Variant
+
+    configPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select the CONFIG file")
+    If configPath = False Then Exit Sub
+
+    exportPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select the EXPORT file")
+    If exportPath = False Then Exit Sub
+
+    MapConfigExportData CStr(configPath), CStr(exportPath)
+End Sub
