@@ -45,37 +45,29 @@ Public Sub RunSheetQC(ByVal configFilePath As String, ByVal exportFilePath As St
         ' Reset previous run's output/highlighting for this row
         wsQC.Range(wsQC.Cells(i, "D"), wsQC.Cells(i, "G")).ClearContents
         wsQC.Cells(i, "D").Interior.ColorIndex = xlColorIndexNone
-        wsQC.Cells(i, "A").Interior.ColorIndex = xlColorIndexNone
-        wsQC.Cells(i, "B").Interior.ColorIndex = xlColorIndexNone
 
-        ' --- Empty name check (overrides everything, always checked first) ---
-        Dim aEmpty As Boolean, bEmpty As Boolean
-        aEmpty = (exportSheetName = "")
-        bEmpty = (configSheetName = "")
-
-        If aEmpty Or bEmpty Then
-            If aEmpty Then Call SetCellColor(wsQC.Cells(i, "A"), "Yellow")
-            If bEmpty Then Call SetCellColor(wsQC.Cells(i, "B"), "Yellow")
-
-            If aEmpty And bEmpty Then
-                wsQC.Cells(i, "D").Value = "Export and Config sheet names are empty"
-            ElseIf aEmpty Then
-                wsQC.Cells(i, "D").Value = "Export sheet name is empty"
-            Else
-                wsQC.Cells(i, "D").Value = "Config sheet name is empty"
-            End If
-
+        ' --- Export name empty: cannot proceed at all ---
+        If exportSheetName = "" Then
+            wsQC.Cells(i, "D").Value = "Export sheet name is empty"
+            Call SetCellColor(wsQC.Cells(i, "D"), "Yellow")
             wsQC.Cells(i, "E").Value = "NA"
             wsQC.Cells(i, "F").Value = "NA"
             wsQC.Cells(i, "G").Value = "NA"
             GoTo NextRow
         End If
 
+        ' --- Yes/No check ---
         If UCase(yesNo) = "NO" Then
             wsQC.Cells(i, "D").Value = "Skipped"
             GoTo NextRow
         ElseIf UCase(yesNo) <> "YES" Then
             wsQC.Cells(i, "D").Value = "Skipped"
+            GoTo NextRow
+        End If
+
+        ' --- Config name empty: try to copy sheet from Export using Export's own name ---
+        If configSheetName = "" Then
+            Call HandleEmptyConfigName(wsQC, i, wbConfig, wbExport, exportSheetName)
             GoTo NextRow
         End If
 
@@ -119,7 +111,49 @@ End Sub
 
 
 '====================================================================
-' PROCESS ONE ROW OF THE QC SHEET
+' HANDLE CASE: Config name (column B) is empty
+' -> If the Export name exists in the Export file, copy that sheet into
+'    Config using the SAME name as in Export, highlight D dark green.
+' -> If it's not found in Export either, highlight D yellow and stop.
+'====================================================================
+Private Sub HandleEmptyConfigName(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExport As Workbook, exportName As String)
+
+    Dim wsExp As Worksheet
+    Set wsExp = GetSheetByNameCI(wbExport, exportName)
+
+    If wsExp Is Nothing Then
+        wsQC.Cells(r, "D").Value = "Config sheet name is empty and '" & exportName & "' was not found in Export"
+        Call SetCellColor(wsQC.Cells(r, "D"), "Yellow")
+        wsQC.Cells(r, "E").Value = "NA"
+        wsQC.Cells(r, "F").Value = "NA"
+        wsQC.Cells(r, "G").Value = "NA"
+        Exit Sub
+    End If
+
+    Dim finalName As String
+    finalName = GetUniqueSheetName(wbConfig, exportName)
+
+    Call InsertCopiedSheet(wbConfig, wsExp, finalName)
+
+    Dim wsNew As Worksheet
+    Set wsNew = wbConfig.Sheets(finalName)
+
+    Dim ncol As Long, nrow As Long
+    ncol = GetLastColumn(wsNew)
+    nrow = GetLastRow(wsNew, ncol) - 1
+    If nrow < 0 Then nrow = 0
+
+    wsQC.Cells(r, "D").Value = "Config sheet name was empty - sheet copied as '" & finalName & "'"
+    Call SetCellColor(wsQC.Cells(r, "D"), "DarkGreen")
+    wsQC.Cells(r, "E").Value = ncol
+    wsQC.Cells(r, "F").Value = ncol
+    wsQC.Cells(r, "G").Value = nrow
+
+End Sub
+
+
+'====================================================================
+' PROCESS ONE ROW OF THE QC SHEET (both A and B are non-empty here)
 '====================================================================
 Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExport As Workbook, _
                         exportName As String, configName As String)
@@ -127,17 +161,11 @@ Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExp
     Dim foundExport As Boolean, foundConfig As Boolean
     Dim wsExportMatch As Worksheet, wsConfigMatch As Worksheet
 
-    foundExport = False
-    If exportName <> "" Then
-        Set wsExportMatch = GetSheetByNameCI(wbExport, exportName)
-        foundExport = Not wsExportMatch Is Nothing
-    End If
+    Set wsExportMatch = GetSheetByNameCI(wbExport, exportName)
+    foundExport = Not wsExportMatch Is Nothing
 
-    foundConfig = False
-    If configName <> "" Then
-        Set wsConfigMatch = GetSheetByNameCI(wbConfig, configName)
-        foundConfig = Not wsConfigMatch Is Nothing
-    End If
+    Set wsConfigMatch = GetSheetByNameCI(wbConfig, configName)
+    foundConfig = Not wsConfigMatch Is Nothing
 
     ' ---------- CASE 4: neither found ----------
     If Not foundExport And Not foundConfig Then
@@ -162,14 +190,8 @@ Private Sub ProcessRow(wsQC As Worksheet, r As Long, wbConfig As Workbook, wbExp
         Dim wsExp As Worksheet
         Set wsExp = wsExportMatch
 
-        Dim desiredName As String
-        If configName = "" Then
-            desiredName = "Empty Sheet Name"
-        Else
-            desiredName = configName
-        End If
         Dim finalName As String
-        finalName = GetUniqueSheetName(wbConfig, desiredName)
+        finalName = GetUniqueSheetName(wbConfig, configName)
 
         Call InsertCopiedSheet(wbConfig, wsExp, finalName)
 
@@ -544,11 +566,13 @@ End Function
 Private Sub SetCellColor(rng As Range, colorType As String)
     Select Case colorType
         Case "Green"
-            rng.Interior.Color = RGB(198, 239, 206)
+            rng.Interior.Color = RGB(198, 239, 206)   ' light green
+        Case "DarkGreen"
+            rng.Interior.Color = RGB(84, 130, 53)     ' dark green
         Case "Red"
-            rng.Interior.Color = RGB(255, 199, 206)
+            rng.Interior.Color = RGB(255, 199, 206)   ' light red
         Case "Yellow"
-            rng.Interior.Color = RGB(255, 255, 153)
+            rng.Interior.Color = RGB(255, 255, 153)   ' light yellow
         Case "None"
             rng.Interior.ColorIndex = xlColorIndexNone
     End Select
