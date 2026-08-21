@@ -1,167 +1,158 @@
 Option Explicit
 
 '====================================================================
-' PUBLIC ENTRY POINT - call this from another module like:
-'
-'   result = CopyTerritoryData("C:\path\Config.xlsx", _
-'                               "C:\path\Export.xlsx", _
-'                               "C:\path\CAT.xlsx")
+' MAIN CALLABLE PROCEDURE
+' Call this from anywhere, e.g.:
+'   Call MergeExportIntoConfig("C:\Files\Config.xlsx", "C:\Files\Export.xlsx")
 '====================================================================
-Public Function CopyTerritoryData(configPath As String, exportPath As String, _
-    catPath As String, Optional showDonePopup As Boolean = True) As String
+Public Sub MergeExportIntoConfig(ByVal ConfigPath As String, _
+                                  ByVal ExportPath As String, _
+                                  Optional ByVal ShowDoneMsg As Boolean = True)
 
-    Dim wbConfig As Workbook, wbExport As Workbook, wbCat As Workbook
-    Dim wsConfig As Worksheet, wsExport As Worksheet, wsCat As Worksheet
-    Dim newPath As String
-
-    Dim prevScreenUpdating As Boolean
-    Dim prevDisplayAlerts As Boolean
-    Dim prevAskToUpdateLinks As Boolean
-    Dim prevEnableEvents As Boolean
-
-    prevScreenUpdating = Application.ScreenUpdating
-    prevDisplayAlerts = Application.DisplayAlerts
-    prevAskToUpdateLinks = Application.AskToUpdateLinks
-    prevEnableEvents = Application.EnableEvents
+    Dim wbConfig As Workbook, wbExport As Workbook
+    Dim wsConfig As Worksheet, wsExport As Worksheet
+    Dim mapDict As Object, configHeaders As Object, exportHeaders As Object
+    Dim lastColConfig As Long, lastColExport As Long
+    Dim lastRowConfig As Long, lastRowExport As Long
+    Dim c As Long, r As Long
+    Dim configName As String, exportLookupName As String, keyLower As String
+    Dim eCol As Long
+    Dim neededRows As Long, existingRows As Long
+    Dim origCalc As XlCalculation
 
     On Error GoTo ErrHandler
 
+    'Speed / no popups
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
-    Application.AskToUpdateLinks = False
     Application.EnableEvents = False
+    Application.AskToUpdateLinks = False
+    origCalc = Application.Calculation
+    Application.Calculation = xlCalculationManual
 
-    '----------------------------------------------------------------
-    ' Open all 3 files, suppressing read-only / link-update prompts
-    '----------------------------------------------------------------
-    Set wbConfig = Workbooks.Open(FileName:=configPath, UpdateLinks:=0, _
-        ReadOnly:=False, IgnoreReadOnlyRecommended:=True, Notify:=False)
-    Set wbExport = Workbooks.Open(FileName:=exportPath, UpdateLinks:=0, _
-        ReadOnly:=True, IgnoreReadOnlyRecommended:=True, Notify:=False)
-    Set wbCat = Workbooks.Open(FileName:=catPath, UpdateLinks:=0, _
-        ReadOnly:=True, IgnoreReadOnlyRecommended:=True, Notify:=False)
+    'Basic file checks
+    If Dir(ConfigPath) = "" Then Err.Raise vbObjectError + 1, , "Config file not found: " & ConfigPath
+    If Dir(ExportPath) = "" Then Err.Raise vbObjectError + 2, , "Export file not found: " & ExportPath
 
+    'Open Config normally (we need to write to it)
+    Set wbConfig = Workbooks.Open(Filename:=ConfigPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
+
+    'Open Export as ReadOnly (we only read from it) - avoids any read-only prompts
+    Set wbExport = Workbooks.Open(Filename:=ExportPath, UpdateLinks:=0, ReadOnly:=True, Notify:=False, IgnoreReadOnlyRecommended:=True)
+
+    'Target sheets
     Set wsConfig = wbConfig.Sheets("R_L_Territory")
-    Set wsExport = wbExport.Sheets(1)
-    Set wsCat = wbCat.Sheets(1)
+    Set wsExport = wbExport.Sheets(1)   'first and only sheet
 
     '----------------------------------------------------------------
-    ' Alias mapping: Config header (key) -> Export/CAT header (value)
-    ' Normalized = lowercase + spaces removed, so "Rating Territory",
-    ' "ratingTerritory", "RATING_TERRITORY" etc. don't need exact match
-    ' (underscore also stripped below)
+    'Build mapping dictionary: Config column name (lower) -> Export column name (lower)
     '----------------------------------------------------------------
-    Dim aliasMap As Object
-    Set aliasMap = CreateObject("Scripting.Dictionary")
-    aliasMap.Add "territory", "ratingterritory"
-    aliasMap.Add "waterwinter", "winterwater"
-    aliasMap.Add "waternonwinter", "nwwtr"
-    aliasMap.Add "windsummer", "summerwind"
-    aliasMap.Add "windwinter", "winterwind"
-    aliasMap.Add "liabilitypollution", "liab"
-    aliasMap.Add "theftvandalism", "theft"
+    Set mapDict = CreateObject("Scripting.Dictionary")
+    mapDict.CompareMode = 1 'vbTextCompare (case-insensitive keys)
+
+    mapDict.Add "territory", "rating territory"
+    mapDict.Add "waterwinter", "winterwater"
+    mapDict.Add "waternonwinter", "nwwtr"
+    mapDict.Add "windsummer", "summerwind"
+    mapDict.Add "windwinter", "winterwind"
+    mapDict.Add "liabilitypollution", "liab"
+    mapDict.Add "theftvandalism", "theft"
 
     '----------------------------------------------------------------
-    ' Step 1: Capture Config header names + previous number formats
-    ' and alignment, based on row 2, before deleting anything
+    'Read headers (assumes header row = row 1 on both sheets)
     '----------------------------------------------------------------
-    Dim lastColConfig As Long
     lastColConfig = wsConfig.Cells(1, wsConfig.Columns.Count).End(xlToLeft).Column
+    lastColExport = wsExport.Cells(1, wsExport.Columns.Count).End(xlToLeft).Column
 
-    Dim lastRowConfig As Long
-    lastRowConfig = wsConfig.Cells(wsConfig.Rows.Count, 1).End(xlUp).Row
+    Set configHeaders = CreateObject("Scripting.Dictionary") 'lower name -> col index
+    configHeaders.CompareMode = 1
+    Set exportHeaders = CreateObject("Scripting.Dictionary")
+    exportHeaders.CompareMode = 1
 
-    Dim configHeaders() As String
-    Dim configFormats() As String
-    Dim configHAlign() As Variant
-    Dim configVAlign() As Variant
-    ReDim configHeaders(1 To lastColConfig)
-    ReDim configFormats(1 To lastColConfig)
-    ReDim configHAlign(1 To lastColConfig)
-    ReDim configVAlign(1 To lastColConfig)
-
-    Dim c As Long
     For c = 1 To lastColConfig
-        configHeaders(c) = NormalizeHeader(wsConfig.Cells(1, c).Value)
-        If lastRowConfig >= 2 Then
-            configFormats(c) = wsConfig.Cells(2, c).NumberFormat
-            configHAlign(c) = wsConfig.Cells(2, c).HorizontalAlignment
-            configVAlign(c) = wsConfig.Cells(2, c).VerticalAlignment
-        Else
-            configFormats(c) = "General"
-            configHAlign(c) = xlCenter
-            configVAlign(c) = xlCenter
+        keyLower = LCase(Trim(CStr(wsConfig.Cells(1, c).Value)))
+        If Len(keyLower) > 0 Then
+            If Not configHeaders.Exists(keyLower) Then configHeaders.Add keyLower, c
         End If
     Next c
 
-    '----------------------------------------------------------------
-    ' Step 2: Delete all non-header rows in R_L_Territory
-    '----------------------------------------------------------------
-    If lastRowConfig >= 2 Then
-        wsConfig.Rows("2:" & lastRowConfig).Delete
-    End If
-
-    '----------------------------------------------------------------
-    ' Step 3: Paste Export data as new rows into matching columns
-    '----------------------------------------------------------------
-    Dim nextRow As Long
-    nextRow = 2
-
-    nextRow = PasteMatchingColumns(wsExport, wsConfig, configHeaders, _
-        configFormats, configHAlign, configVAlign, aliasMap, nextRow)
-
-    '----------------------------------------------------------------
-    ' Step 4: Merge CAT data - match by Territory value against the
-    ' rows just created from Export, and update matching columns
-    '----------------------------------------------------------------
-    Call MergeCatByTerritory(wsCat, wsConfig, configHeaders, _
-        configFormats, configHAlign, configVAlign, aliasMap, nextRow)
-
-    '----------------------------------------------------------------
-    ' Step 5: Set "Fixed" column to 1.0000 for all territory rows,
-    ' keeping the original format/alignment
-    '----------------------------------------------------------------
-    Dim fixedCol As Long, territoryCol As Long
-    fixedCol = 0
-    territoryCol = 0
-    For c = 1 To lastColConfig
-        If configHeaders(c) = "fixed" Then fixedCol = c
-        If configHeaders(c) = "territory" Then territoryCol = c
+    For c = 1 To lastColExport
+        keyLower = LCase(Trim(CStr(wsExport.Cells(1, c).Value)))
+        If Len(keyLower) > 0 Then
+            If Not exportHeaders.Exists(keyLower) Then exportHeaders.Add keyLower, c
+        End If
     Next c
 
-    If fixedCol > 0 And territoryCol > 0 And nextRow > 2 Then
-        Dim r As Long
-        For r = 2 To nextRow - 1
-            If Trim(CStr(wsConfig.Cells(r, territoryCol).Value)) <> "" Then
-                wsConfig.Cells(r, fixedCol).Value = 1
-                wsConfig.Cells(r, fixedCol).NumberFormat = configFormats(fixedCol)
-                wsConfig.Cells(r, fixedCol).HorizontalAlignment = configHAlign(fixedCol)
-                wsConfig.Cells(r, fixedCol).VerticalAlignment = configVAlign(fixedCol)
+    'Last data rows (based on column A, row 2 downward)
+    lastRowConfig = wsConfig.Cells(wsConfig.Rows.Count, 1).End(xlUp).Row
+    If lastRowConfig < 1 Then lastRowConfig = 1
+    lastRowExport = wsExport.Cells(wsExport.Rows.Count, 1).End(xlUp).Row
+    If lastRowExport < 1 Then lastRowExport = 1
+
+    neededRows = lastRowExport - 1        'export data rows (excluding header)
+    existingRows = lastRowConfig - 1      'existing config data rows (excluding header)
+    If neededRows < 0 Then neededRows = 0
+    If existingRows < 0 Then existingRows = 0
+
+    '----------------------------------------------------------------
+    'Loop through each Config column, find matching Export column, replace values
+    '----------------------------------------------------------------
+    Dim configKey As Variant
+    For Each configKey In configHeaders.Keys
+
+        c = configHeaders(configKey)
+        configName = CStr(configKey)
+
+        'Determine which export column name to look for
+        If mapDict.Exists(configName) Then
+            exportLookupName = LCase(Trim(mapDict(configName)))
+        Else
+            exportLookupName = configName 'direct case-insensitive match
+        End If
+
+        If exportHeaders.Exists(exportLookupName) Then
+            eCol = exportHeaders(exportLookupName)
+
+            'Extend Config's row formatting downward if Export has more rows than Config currently has
+            If neededRows > existingRows And existingRows >= 1 Then
+                wsConfig.Cells(2, c).Copy
+                wsConfig.Range(wsConfig.Cells(existingRows + 2, c), _
+                                wsConfig.Cells(neededRows + 1, c)).PasteSpecial Paste:=xlPasteFormats
+                Application.CutCopyMode = False
             End If
-        Next r
-    End If
+
+            'Clear existing values only (keep formatting) across the full needed range
+            Dim clearRows As Long
+            clearRows = existingRows
+            If neededRows > clearRows Then clearRows = neededRows
+            If clearRows > 0 Then
+                wsConfig.Range(wsConfig.Cells(2, c), wsConfig.Cells(clearRows + 1, c)).ClearContents
+            End If
+
+            'Paste Export values into Config column, same order, row by row
+            For r = 1 To neededRows
+                wsConfig.Cells(r + 1, c).Value = wsExport.Cells(r + 1, eCol).Value
+            Next r
+        End If
+
+    Next configKey
 
     '----------------------------------------------------------------
-    ' Step 6: Save Config as new file: <original name> updated territories
+    'Save & close
     '----------------------------------------------------------------
-    Dim folderPath As String, baseName As String, ext As String
-
-    folderPath = wbConfig.Path & "\"
-    ext = "." & LCase(Right(wbConfig.Name, Len(wbConfig.Name) - InStrRev(wbConfig.Name, ".")))
-    baseName = Left(wbConfig.Name, Len(wbConfig.Name) - Len(ext))
-
-    newPath = folderPath & baseName & " updated territories" & ext
-
-    If Len(Dir(newPath)) > 0 Then Kill newPath
-
-    wbConfig.SaveAs FileName:=newPath, FileFormat:=wbConfig.FileFormat, _
-        ConflictResolution:=xlLocalSessionChanges, CreateBackup:=False
-
+    wbConfig.Save
     wbConfig.Close SaveChanges:=False
     wbExport.Close SaveChanges:=False
-    wbCat.Close SaveChanges:=False
 
-    GoTo CleanExit
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.AskToUpdateLinks = True
+    Application.Calculation = origCalc
+
+    If ShowDoneMsg Then MsgBox "Done", vbInformation
+
+    Exit Sub
 
 ErrHandler:
     Dim errMsg As String
@@ -170,230 +161,21 @@ ErrHandler:
     On Error Resume Next
     If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
     If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
-    If Not wbCat Is Nothing Then wbCat.Close SaveChanges:=False
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.AskToUpdateLinks = True
+    Application.Calculation = origCalc
     On Error GoTo 0
 
-    Application.ScreenUpdating = prevScreenUpdating
-    Application.DisplayAlerts = prevDisplayAlerts
-    Application.AskToUpdateLinks = prevAskToUpdateLinks
-    Application.EnableEvents = prevEnableEvents
+    MsgBox errMsg, vbCritical
 
-    MsgBox errMsg, vbCritical, "Failed"
-    CopyTerritoryData = ""
-    Exit Function
-
-CleanExit:
-    Application.ScreenUpdating = prevScreenUpdating
-    Application.DisplayAlerts = prevDisplayAlerts
-    Application.AskToUpdateLinks = prevAskToUpdateLinks
-    Application.EnableEvents = prevEnableEvents
-
-    CopyTerritoryData = newPath
-
-    If showDonePopup Then
-        MsgBox "Done. Saved as:" & vbCrLf & newPath, vbInformation, "Completed"
-    End If
-
-End Function
+End Sub
 
 '====================================================================
-' Normalizes a header: lowercase, trim, strip spaces/underscores
+' EXAMPLE CALLER - edit the paths and run this, or call
+' MergeExportIntoConfig directly from your own Sub/Userform
 '====================================================================
-Private Function NormalizeHeader(h As Variant) As String
-    Dim s As String
-    s = LCase(Trim(CStr(h)))
-    s = Replace(s, " ", "")
-    s = Replace(s, "_", "")
-    NormalizeHeader = s
-End Function
-
-'====================================================================
-' Copies matching columns from a source sheet (Export) into wsConfig
-' as brand new rows, starting at startRow. Returns next free row.
-'====================================================================
-Private Function PasteMatchingColumns(wsSource As Worksheet, wsConfig As Worksheet, _
-    configHeaders() As String, configFormats() As String, _
-    configHAlign() As Variant, configVAlign() As Variant, _
-    aliasMap As Object, startRow As Long) As Long
-
-    Dim lastColSrc As Long, lastRowSrc As Long
-    lastColSrc = wsSource.Cells(1, wsSource.Columns.Count).End(xlToLeft).Column
-    lastRowSrc = wsSource.Cells(wsSource.Rows.Count, 1).End(xlUp).Row
-
-    If lastRowSrc < 2 Then
-        PasteMatchingColumns = startRow
-        Exit Function
-    End If
-
-    Dim srcHeaders() As String
-    ReDim srcHeaders(1 To lastColSrc)
-
-    Dim sc As Long
-    For sc = 1 To lastColSrc
-        srcHeaders(sc) = NormalizeHeader(wsSource.Cells(1, sc).Value)
-    Next sc
-
-    Dim lastColConfig As Long
-    lastColConfig = UBound(configHeaders)
-
-    Dim colMatch() As Long
-    ReDim colMatch(1 To lastColConfig)
-
-    Dim cc As Long
-    For cc = 1 To lastColConfig
-        colMatch(cc) = FindMatchingColumn(configHeaders(cc), srcHeaders, aliasMap)
-    Next cc
-
-    Dim srcRow As Long, destRow As Long
-    destRow = startRow
-
-    For srcRow = 2 To lastRowSrc
-        For cc = 1 To lastColConfig
-            If colMatch(cc) > 0 Then
-                wsConfig.Cells(destRow, cc).Value = wsSource.Cells(srcRow, colMatch(cc)).Value
-                wsConfig.Cells(destRow, cc).NumberFormat = configFormats(cc)
-                wsConfig.Cells(destRow, cc).HorizontalAlignment = configHAlign(cc)
-                wsConfig.Cells(destRow, cc).VerticalAlignment = configVAlign(cc)
-            End If
-        Next cc
-        destRow = destRow + 1
-    Next srcRow
-
-    PasteMatchingColumns = destRow
-
-End Function
-
-'====================================================================
-' Finds the source column index matching a given (normalized) config
-' header, either directly or via the alias map (checked both ways).
-' Returns 0 if no match found.
-'====================================================================
-Private Function FindMatchingColumn(configHeaderNorm As String, _
-    srcHeaders() As String, aliasMap As Object) As Long
-
-    Dim sc As Long
-    FindMatchingColumn = 0
-
-    If configHeaderNorm = "" Then Exit Function
-
-    For sc = 1 To UBound(srcHeaders)
-        If srcHeaders(sc) = configHeaderNorm Then
-            FindMatchingColumn = sc
-            Exit Function
-        ElseIf aliasMap.Exists(configHeaderNorm) Then
-            If srcHeaders(sc) = aliasMap(configHeaderNorm) Then
-                FindMatchingColumn = sc
-                Exit Function
-            End If
-        End If
-    Next sc
-
-End Function
-
-'====================================================================
-' Merges CAT data into wsConfig by matching Territory values against
-' rows already pasted from Export (rows 2 to lastPastedRow-1).
-' For each CAT row, finds the CAT Territory value, locates the config
-' row with the same Territory, and copies CAT's other matching
-' columns into that row (keeping original format/alignment).
-' If a CAT territory has no match in Config, it is skipped (per the
-' spec: CAT only updates existing Territory rows, doesn't add new ones).
-'====================================================================
-Private Sub MergeCatByTerritory(wsCat As Worksheet, wsConfig As Worksheet, _
-    configHeaders() As String, configFormats() As String, _
-    configHAlign() As Variant, configVAlign() As Variant, _
-    aliasMap As Object, lastPastedRow As Long)
-
-    Dim lastColConfig As Long
-    lastColConfig = UBound(configHeaders)
-
-    ' Find the Territory column index in Config
-    Dim territoryColConfig As Long
-    territoryColConfig = 0
-    Dim cc As Long
-    For cc = 1 To lastColConfig
-        If configHeaders(cc) = "territory" Then
-            territoryColConfig = cc
-            Exit For
-        End If
-    Next cc
-
-    If territoryColConfig = 0 Then Exit Sub  ' no Territory column found, nothing to match on
-
-    ' Build a dictionary: normalized Territory value -> Config row number
-    Dim territoryRowMap As Object
-    Set territoryRowMap = CreateObject("Scripting.Dictionary")
-
-    Dim r As Long
-    For r = 2 To lastPastedRow - 1
-        Dim tVal As String
-        tVal = NormalizeHeader(wsConfig.Cells(r, territoryColConfig).Value)
-        If tVal <> "" And Not territoryRowMap.Exists(tVal) Then
-            territoryRowMap.Add tVal, r
-        End If
-    Next r
-
-    ' Read CAT headers
-    Dim lastColCat As Long, lastRowCat As Long
-    lastColCat = wsCat.Cells(1, wsCat.Columns.Count).End(xlToLeft).Column
-    lastRowCat = wsCat.Cells(wsCat.Rows.Count, 1).End(xlUp).Row
-
-    If lastRowCat < 2 Then Exit Sub
-
-    Dim catHeaders() As String
-    ReDim catHeaders(1 To lastColCat)
-
-    Dim sc As Long
-    For sc = 1 To lastColCat
-        catHeaders(sc) = NormalizeHeader(wsCat.Cells(1, sc).Value)
-    Next sc
-
-    ' Find CAT's own Territory column (direct "territory" or alias "ratingterritory")
-    Dim territoryColCat As Long
-    territoryColCat = 0
-    For sc = 1 To lastColCat
-        If catHeaders(sc) = "territory" Or catHeaders(sc) = "ratingterritory" Then
-            territoryColCat = sc
-            Exit For
-        End If
-    Next sc
-
-    If territoryColCat = 0 Then Exit Sub  ' CAT has no territory column, nothing to match on
-
-    ' Map each Config column to a CAT column (skip the Territory column itself,
-    ' since that's the key we're matching on, not a value to overwrite)
-    Dim colMatch() As Long
-    ReDim colMatch(1 To lastColConfig)
-
-    For cc = 1 To lastColConfig
-        If cc = territoryColConfig Then
-            colMatch(cc) = 0
-        Else
-            colMatch(cc) = FindMatchingColumn(configHeaders(cc), catHeaders, aliasMap)
-        End If
-    Next cc
-
-    ' Walk CAT rows, find matching Config row by Territory, copy values in
-    Dim catRow As Long
-    For catRow = 2 To lastRowCat
-        Dim catTerritory As String
-        catTerritory = NormalizeHeader(wsCat.Cells(catRow, territoryColCat).Value)
-
-        If catTerritory <> "" Then
-            If territoryRowMap.Exists(catTerritory) Then
-                Dim destRow As Long
-                destRow = territoryRowMap(catTerritory)
-
-                For cc = 1 To lastColConfig
-                    If colMatch(cc) > 0 Then
-                        wsConfig.Cells(destRow, cc).Value = wsCat.Cells(catRow, colMatch(cc)).Value
-                        wsConfig.Cells(destRow, cc).NumberFormat = configFormats(cc)
-                        wsConfig.Cells(destRow, cc).HorizontalAlignment = configHAlign(cc)
-                        wsConfig.Cells(destRow, cc).VerticalAlignment = configVAlign(cc)
-                    End If
-                Next cc
-            End If
-        End If
-    Next catRow
-
+Public Sub RunMergeExample()
+    Call MergeExportIntoConfig("C:\Files\Config.xlsx", "C:\Files\Export.xlsx")
 End Sub
