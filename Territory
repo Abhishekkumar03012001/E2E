@@ -1,3 +1,5 @@
+Option Explicit
+
 Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
 
     Dim wbConfig As Workbook, wbCat As Workbook
@@ -32,19 +34,31 @@ Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
     Application.DisplayAlerts = False
     Application.EnableEvents = False
     Application.AskToUpdateLinks = False
+    Application.Calculation = xlCalculationManual
 
-    ' ---- Close these files first if they are already open anywhere ----
-    CloseIfOpen configPath
-    CloseIfOpen catPath
+    ' ---- Close if open in THIS Excel session ----
+    CloseIfAlreadyOpen configPath
+    CloseIfAlreadyOpen catPath
 
-    Set wbConfig = Workbooks.Open(configPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
-    Set wbCat = Workbooks.Open(catPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
+    ' ---- Real OS-level lock check + stale lock-file cleanup for Config ----
+    If IsFileLocked(configPath) Then
+        MsgBox "Config file is genuinely open/locked by another user or process and cannot be edited right now:" & vbCrLf & configPath, vbExclamation
+        GoTo CleanExit
+    End If
+    RemoveStaleLockFile configPath
 
-    ' ---- Force files to not be read-only ----
+    If IsFileLocked(catPath) Then
+        MsgBox "Cat file is genuinely open/locked by another user or process:" & vbCrLf & catPath, vbExclamation
+        GoTo CleanExit
+    End If
+    RemoveStaleLockFile catPath
+
+    ' ---- Open workbooks fresh ----
+    Set wbConfig = Workbooks.Open(FileName:=configPath, UpdateLinks:=0, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
+    Set wbCat = Workbooks.Open(FileName:=catPath, UpdateLinks:=0, ReadOnly:=True, IgnoreReadOnlyRecommended:=True)
+
     If wbConfig.ReadOnly Then
-        MsgBox "Config file is opened as Read-Only (it may be locked by another user). Please close it elsewhere and try again.", vbExclamation
-        wbCat.Close SaveChanges:=False
-        wbConfig.Close SaveChanges:=False
+        MsgBox "Config file opened as READ-ONLY even after lock checks. It may be locked by another process/user on the network share: " & configPath, vbExclamation
         GoTo CleanExit
     End If
 
@@ -54,14 +68,12 @@ Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
     ' ---- Config sheet: first sheet ----
     Set wsConfig = wbConfig.Worksheets(1)
 
-    ' ---- Find Territory column in both sheets (Territory / ratingTerritory) ----
+    ' ---- Find Territory column in both sheets ----
     catTerrCol = FindColumn(wsCat, Array("Territory", "ratingTerritory"))
     configTerrCol = FindColumn(wsConfig, Array("Territory", "ratingTerritory"))
 
     If catTerrCol = 0 Or configTerrCol = 0 Then
         MsgBox "Territory column not found in one of the files.", vbExclamation
-        wbCat.Close SaveChanges:=False
-        wbConfig.Close SaveChanges:=False
         GoTo CleanExit
     End If
 
@@ -93,13 +105,10 @@ Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
             isNewCol = False
 
             If configCol = 0 Then
-                ' Column doesn't exist in config -> create it at the end
                 isNewCol = True
                 configCol = wsConfig.Cells(1, wsConfig.Columns.Count).End(xlToLeft).Column + 1
                 wsConfig.Cells(1, configCol).Value = colName
-                wsConfig.Cells(1, configTerrCol).Copy
-                wsConfig.Cells(1, configCol).PasteSpecial xlPasteFormats
-                Application.CutCopyMode = False
+                Call ApplyFormatFromTemplate(wsConfig.Cells(1, configTerrCol), wsConfig.Cells(1, configCol))
             End If
 
             For r = 2 To lastRowConfig
@@ -113,12 +122,9 @@ Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
                             ' do nothing - leave config cell as is
                         Else
                             If isNewCol Then
-                                wsConfig.Cells(r, configCol).Value = wsCat.Cells(catRow, catCol).Value
-                                wsConfig.Cells(r, configCol).NumberFormat = wsCat.Cells(catRow, catCol).NumberFormat
-                                wsConfig.Cells(r, configCol).HorizontalAlignment = wsCat.Cells(catRow, catCol).HorizontalAlignment
-                            Else
-                                wsConfig.Cells(r, configCol).Value = wsCat.Cells(catRow, catCol).Value
+                                Call ApplyFormatFromTemplate(wsCat.Cells(catRow, catCol), wsConfig.Cells(r, configCol))
                             End If
+                            wsConfig.Cells(r, configCol).Value2 = wsCat.Cells(catRow, catCol).Value2
                         End If
 
                     End If
@@ -128,19 +134,14 @@ Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
 
     Next colName
 
-    ' ---- Save safely: try normal Save, fall back to SaveAs same path ----
-    On Error Resume Next
-    wbConfig.Save
-    If Err.Number <> 0 Then
-        Err.Clear
-        wbConfig.SaveAs Filename:=configPath, FileFormat:=wbConfig.FileFormat, CreateBackup:=False
-    End If
-    On Error GoTo ErrHandler
+    ' ---- Save safely (with retries + verification) ----
+    Call SafeSaveWorkbook(wbConfig, configPath)
 
     wbCat.Close SaveChanges:=False
     wbConfig.Close SaveChanges:=False
 
 CleanExit:
+    Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     Application.EnableEvents = True
@@ -160,30 +161,140 @@ ErrHandler:
 End Sub
 
 '========================================================
-' Closes a workbook (in any open Excel instance's memory
-' this app knows about) if it matches the given path,
-' without saving changes, so a fresh copy can be opened.
+' Closes a workbook if it's already open in THIS Excel
+' session, so we can get a clean copy.
 '========================================================
-Sub CloseIfOpen(ByVal fullPath As String)
+Private Sub CloseIfAlreadyOpen(ByVal FullPath As String)
     Dim wb As Workbook
-    Dim targetName As String
-    targetName = Mid(fullPath, InStrRev(fullPath, "\") + 1)
+    Dim fName As String
+    fName = Mid$(FullPath, InStrRev(FullPath, "\") + 1)
 
-    For Each wb In Application.Workbooks
-        If LCase(wb.Name) = LCase(targetName) Then
-            Application.DisplayAlerts = False
-            wb.Close SaveChanges:=False
-            Application.DisplayAlerts = True
-            Exit For
+    On Error Resume Next
+    Set wb = Workbooks(fName)
+    On Error GoTo 0
+
+    If Not wb Is Nothing Then
+        Application.DisplayAlerts = False
+        wb.Close SaveChanges:=False
+        Set wb = Nothing
+    End If
+End Sub
+
+'========================================================
+' TRUE OS-level lock test. Tries to open the file for
+' exclusive Read/Write access at the file-system level.
+' This catches locks held by OTHER Excel processes/users
+' that Application.Workbooks can't see.
+'========================================================
+Private Function IsFileLocked(ByVal FullPath As String) As Boolean
+    Dim fnum As Integer
+    IsFileLocked = False
+    fnum = FreeFile
+    On Error Resume Next
+    Open FullPath For Binary Access Read Write Lock Read Write As #fnum
+    If Err.Number <> 0 Then
+        IsFileLocked = True
+        Err.Clear
+    Else
+        Close #fnum
+    End If
+    On Error GoTo 0
+End Function
+
+'========================================================
+' Removes a stale Excel lock/owner file (~$FileName.xlsx)
+' if it exists but the real file is NOT actually locked
+' (i.e. leftover from a crashed session). Safe because
+' IsFileLocked already confirmed nobody really has it open.
+'========================================================
+Private Sub RemoveStaleLockFile(ByVal FullPath As String)
+    Dim folderPath As String, fName As String, lockPath As String
+    Dim slashPos As Long
+
+    slashPos = InStrRev(FullPath, "\")
+    folderPath = Left$(FullPath, slashPos)
+    fName = Mid$(FullPath, slashPos + 1)
+    lockPath = folderPath & "~$" & fName
+
+    On Error Resume Next
+    If Dir(lockPath, vbHidden + vbSystem) <> "" Then
+        SetAttr lockPath, vbNormal
+        Kill lockPath
+    End If
+    On Error GoTo 0
+End Sub
+
+'========================================================
+' Copies formatting from a template cell to a range,
+' without using the clipboard (safe for automation).
+'========================================================
+Private Sub ApplyFormatFromTemplate(ByVal templateCell As Range, ByVal targetRange As Range)
+    With targetRange
+        .NumberFormat = templateCell.NumberFormat
+        .HorizontalAlignment = templateCell.HorizontalAlignment
+        .VerticalAlignment = templateCell.VerticalAlignment
+        .WrapText = templateCell.WrapText
+        .IndentLevel = templateCell.IndentLevel
+        .Font.Name = templateCell.Font.Name
+        .Font.Size = templateCell.Font.Size
+        .Font.Bold = templateCell.Font.Bold
+        .Font.Italic = templateCell.Font.Italic
+        .Font.Color = templateCell.Font.Color
+        .Interior.Color = templateCell.Interior.Color
+        .Interior.Pattern = templateCell.Interior.Pattern
+    End With
+End Sub
+
+'========================================================
+' Saves via SaveAs (more reliable than .Save on network
+' shares), retries, and verifies the file's timestamp
+' actually changed.
+'========================================================
+Private Sub SafeSaveWorkbook(ByVal wb As Workbook, ByVal FullPath As String)
+    Dim attempt As Long
+    Dim fileFormat As Long
+    Dim ext As String
+    Dim beforeTime As Date
+
+    ext = LCase$(Mid$(FullPath, InStrRev(FullPath, ".") + 1))
+    Select Case ext
+        Case "xlsm": fileFormat = xlOpenXMLWorkbookMacroEnabled
+        Case "xlsb": fileFormat = xlExcel12
+        Case "xls":  fileFormat = xlExcel8
+        Case Else:   fileFormat = xlOpenXMLWorkbook
+    End Select
+
+    If Dir(FullPath) <> "" Then
+        beforeTime = FileDateTime(FullPath)
+    Else
+        beforeTime = 0
+    End If
+
+    On Error Resume Next
+    For attempt = 1 To 3
+        Err.Clear
+        wb.SaveAs FileName:=FullPath, FileFormat:=fileFormat, CreateBackup:=False
+        DoEvents
+        If Err.Number = 0 And wb.Saved Then
+            If Dir(FullPath) <> "" Then
+                If FileDateTime(FullPath) > beforeTime Or beforeTime = 0 Then
+                    On Error GoTo 0
+                    Exit Sub
+                End If
+            End If
         End If
-    Next wb
+        Application.Wait Now + TimeValue("0:00:02")
+    Next attempt
+    On Error GoTo 0
+
+    Err.Raise vbObjectError + 10, , "Save did not take effect after 3 attempts on: " & FullPath
 End Sub
 
 '========================================================
 ' Finds a worksheet by trying names in priority order.
 ' Falls back to the first sheet if none match.
 '========================================================
-Function FindSheetByName(wb As Workbook, ByVal names As Variant) As Worksheet
+Private Function FindSheetByName(wb As Workbook, ByVal names As Variant) As Worksheet
     Dim ws As Worksheet
     Dim n As Variant
 
@@ -203,7 +314,7 @@ End Function
 ' Finds a column by header name (row 1), case-insensitive.
 ' Returns 0 if not found.
 '========================================================
-Function FindColumn(ws As Worksheet, ByVal names As Variant) As Long
+Private Function FindColumn(ws As Worksheet, ByVal names As Variant) As Long
     Dim lastCol As Long, c As Long
     Dim n As Variant
     Dim headerVal As String
