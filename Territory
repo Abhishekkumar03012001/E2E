@@ -1,178 +1,281 @@
-Sub CopyCatToConfig(ByVal configPath As String, ByVal catPath As String)
+Option Explicit
 
-    Dim wbConfig As Workbook, wbCat As Workbook
-    Dim wsCat As Worksheet, wsConfig As Worksheet
-    Dim catTerrCol As Long, configTerrCol As Long
-    Dim lastRowCat As Long, lastRowConfig As Long
-    Dim dictTerr As Object
-    Dim colNames As Variant
-    Dim colName As Variant
-    Dim catCol As Long, configCol As Long
-    Dim i As Long, r As Long
-    Dim key As String, terrVal As String, catRow As Long
-    Dim isNewCol As Boolean
+'=========================================================
+' PUBLIC ENTRY POINT — call this from anywhere
+'   Call MapConfigExportData "\\PDC-SAS\Share\Config.xlsx", "\\PDC-SAS\Share\Export.xlsx"
+'=========================================================
+Public Sub MapConfigExportData(ByVal ConfigPath As String, ByVal ExportPath As String)
+
+    Dim wbConfig As Workbook, wbExport As Workbook
+    Dim wsConfig As Worksheet, wsExport As Worksheet
+    Dim aliasMap As Object, configHeaders As Object
+    Dim c As Long, lastColConfig As Long, lastColExport As Long
+    Dim exportHeader As String, key As String, wantedConfigHeader As String
+    Dim matchedConfigCol As Long
+    Dim exportLastRow As Long, oldConfigLastRow As Long, newLastRow As Long
+    Dim matchCount As Long
+
+    Const HEADER_ROW As Long = 1
+    Const DATA_START_ROW As Long = 2
 
     On Error GoTo ErrHandler
 
-    ' ---- Basic validation ----
-    If configPath = "" Or catPath = "" Then
-        MsgBox "Please select both Config and Cat file paths.", vbExclamation
-        Exit Sub
-    End If
-    If Dir(configPath) = "" Then
-        MsgBox "Config file not found: " & configPath, vbExclamation
-        Exit Sub
-    End If
-    If Dir(catPath) = "" Then
-        MsgBox "Cat file not found: " & catPath, vbExclamation
-        Exit Sub
-    End If
-
+    '--- Silence everything ---
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.EnableEvents = False
     Application.AskToUpdateLinks = False
+    Application.Calculation = xlCalculationManual
 
-    Set wbConfig = Workbooks.Open(configPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
-    Set wbCat = Workbooks.Open(catPath, UpdateLinks:=0, ReadOnly:=False, Notify:=False)
+    '--- Validate files exist ---
+    If Dir(ConfigPath) = "" Then Err.Raise vbObjectError + 1, , "Config file not found: " & ConfigPath
+    If Dir(ExportPath) = "" Then Err.Raise vbObjectError + 2, , "Export file not found: " & ExportPath
 
-    ' ---- Find cat sheet: R_L_Territory -> ratingTerritory -> first sheet ----
-    Set wsCat = FindSheetByName(wbCat, Array("R_L_Territory", "ratingTerritory"))
+    '--- Close any already-open copies first so we get a clean, fresh, writable instance ---
+    Call CloseIfAlreadyOpen(ConfigPath)
+    Call CloseIfAlreadyOpen(ExportPath)
 
-    ' ---- Config sheet: first sheet ----
-    Set wsConfig = wbConfig.Worksheets(1)
+    '--- Open workbooks fresh ---
+    Set wbConfig = Workbooks.Open(FileName:=ConfigPath, UpdateLinks:=0, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
+    Set wbExport = Workbooks.Open(FileName:=ExportPath, UpdateLinks:=0, ReadOnly:=True, IgnoreReadOnlyRecommended:=True)
 
-    ' ---- Find Territory column in both sheets (Territory / ratingTerritory) ----
-    catTerrCol = FindColumn(wsCat, Array("Territory", "ratingTerritory"))
-    configTerrCol = FindColumn(wsConfig, Array("Territory", "ratingTerritory"))
-
-    If catTerrCol = 0 Or configTerrCol = 0 Then
-        MsgBox "Territory column not found in one of the files.", vbExclamation
-        GoTo CleanExit
+    '--- Hard check: did Config actually open writable? ---
+    If wbConfig.ReadOnly Then
+        Err.Raise vbObjectError + 3, , "Config file opened as READ-ONLY. It is likely locked/open by another user or process on the network share: " & ConfigPath
     End If
 
-    ' ---- Build lookup: territory value -> row number in cat sheet ----
-    Set dictTerr = CreateObject("Scripting.Dictionary")
-    dictTerr.CompareMode = vbTextCompare
+    Set wsConfig = wbConfig.Sheets("R_L_Territory")
+    Set wsExport = wbExport.Sheets(1) ' first & only sheet
 
-    lastRowCat = wsCat.Cells(wsCat.Rows.Count, catTerrCol).End(xlUp).Row
-    For i = 2 To lastRowCat
-        key = Trim(LCase(CStr(wsCat.Cells(i, catTerrCol).Value)))
+    '--- Alias map: ExportHeader(lowercase) -> ConfigHeader(lowercase) ---
+    Set aliasMap = CreateObject("Scripting.Dictionary")
+    aliasMap.CompareMode = vbTextCompare
+    aliasMap.Add "rating territory", "territory"
+    aliasMap.Add "winterwater", "waterwinter"
+    aliasMap.Add "nwwtr", "waternonwinter"
+    aliasMap.Add "summerwind", "windsummer"
+    aliasMap.Add "winterwind", "windwinter"
+    aliasMap.Add "liab", "liabilitypollution"
+    aliasMap.Add "theft", "theftvandalism"
+
+    '--- Build Config header lookup: header(lowercase, trimmed) -> column index ---
+    Set configHeaders = CreateObject("Scripting.Dictionary")
+    configHeaders.CompareMode = vbTextCompare
+    lastColConfig = wsConfig.Cells(HEADER_ROW, wsConfig.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastColConfig
+        key = LCase$(Trim$(CStr(wsConfig.Cells(HEADER_ROW, c).Value)))
         If key <> "" Then
-            If Not dictTerr.Exists(key) Then dictTerr.Add key, i
+            If Not configHeaders.Exists(key) Then configHeaders.Add key, c
         End If
-    Next i
+    Next c
 
-    lastRowConfig = wsConfig.Cells(wsConfig.Rows.Count, configTerrCol).End(xlUp).Row
+    '--- Loop through EXPORT columns in order, find matching Config column, copy data ---
+    lastColExport = wsExport.Cells(HEADER_ROW, wsExport.Columns.Count).End(xlToLeft).Column
+    matchCount = 0
 
-    ' ---- Columns to copy ----
-    colNames = Array("Hurricane", "Reinsurance", "Capital", "WildFire", "Fixed")
+    For c = 1 To lastColExport
+        exportHeader = Trim$(CStr(wsExport.Cells(HEADER_ROW, c).Value))
+        If exportHeader <> "" Then
 
-    For Each colName In colNames
+            key = LCase$(exportHeader)
+            matchedConfigCol = 0
 
-        catCol = FindColumn(wsCat, Array(CStr(colName)))
-
-        If catCol = 0 Then
-            ' Column missing in cat file -> skip entirely
-        Else
-            configCol = FindColumn(wsConfig, Array(CStr(colName)))
-            isNewCol = False
-
-            If configCol = 0 Then
-                ' Column doesn't exist in config -> create it at the end
-                isNewCol = True
-                configCol = wsConfig.Cells(1, wsConfig.Columns.Count).End(xlToLeft).Column + 1
-                wsConfig.Cells(1, configCol).Value = colName
-                wsConfig.Cells(1, configTerrCol).Copy
-                wsConfig.Cells(1, configCol).PasteSpecial xlPasteFormats
-                Application.CutCopyMode = False
+            ' 1) Try alias mapping first (export header -> config header)
+            If aliasMap.Exists(key) Then
+                wantedConfigHeader = LCase$(aliasMap(key))
+                If configHeaders.Exists(wantedConfigHeader) Then
+                    matchedConfigCol = configHeaders(wantedConfigHeader)
+                End If
             End If
 
-            For r = 2 To lastRowConfig
-                terrVal = Trim(LCase(CStr(wsConfig.Cells(r, configTerrCol).Value)))
-                If terrVal <> "" Then
-                    If dictTerr.Exists(terrVal) Then
-                        catRow = dictTerr(terrVal)
+            ' 2) Fall back to direct case-insensitive name match
+            If matchedConfigCol = 0 Then
+                If configHeaders.Exists(key) Then
+                    matchedConfigCol = configHeaders(key)
+                End If
+            End If
 
-                        ' Skip copying if this is the Fixed column and source value is empty
-                        If LCase(CStr(colName)) = "fixed" And Trim(CStr(wsCat.Cells(catRow, catCol).Value)) = "" Then
-                            ' do nothing - leave config cell as is
-                        Else
-                            If isNewCol Then
-                                wsConfig.Cells(r, configCol).Value = wsCat.Cells(catRow, catCol).Value
-                                wsConfig.Cells(r, configCol).NumberFormat = wsCat.Cells(catRow, catCol).NumberFormat
-                                wsConfig.Cells(r, configCol).HorizontalAlignment = wsCat.Cells(catRow, catCol).HorizontalAlignment
-                            Else
-                                wsConfig.Cells(r, configCol).Value = wsCat.Cells(catRow, catCol).Value
-                            End If
-                        End If
+            ' 3) If matched, replace Config's values with Export's values
+            If matchedConfigCol > 0 Then
 
+                exportLastRow = wsExport.Cells(wsExport.Rows.Count, c).End(xlUp).Row
+
+                ' Always clear ALL existing values in this config column first
+                oldConfigLastRow = wsConfig.Cells(wsConfig.Rows.Count, matchedConfigCol).End(xlUp).Row
+                If oldConfigLastRow >= DATA_START_ROW Then
+                    wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                   wsConfig.Cells(oldConfigLastRow, matchedConfigCol)).ClearContents
+                End If
+
+                If exportLastRow >= DATA_START_ROW Then
+                    newLastRow = DATA_START_ROW + (exportLastRow - DATA_START_ROW)
+
+                    ' Apply Config's own row-2 formatting down the needed range (NO clipboard used)
+                    Call ApplyFormatFromTemplate(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                                  wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                                                 wsConfig.Cells(newLastRow, matchedConfigCol)))
+
+                    ' Write Export values in
+                    If exportLastRow = DATA_START_ROW Then
+                        wsConfig.Cells(DATA_START_ROW, matchedConfigCol).Value2 = _
+                            wsExport.Cells(DATA_START_ROW, c).Value2
+                    Else
+                        wsConfig.Range(wsConfig.Cells(DATA_START_ROW, matchedConfigCol), _
+                                       wsConfig.Cells(newLastRow, matchedConfigCol)).Value2 = _
+                            wsExport.Range(wsExport.Cells(DATA_START_ROW, c), _
+                                           wsExport.Cells(exportLastRow, c)).Value2
                     End If
                 End If
-            Next r
+
+                matchCount = matchCount + 1
+            End If
         End If
+    Next c
 
-    Next colName
+    If matchCount = 0 Then
+        Err.Raise vbObjectError + 4, , "No columns matched between Config and Export. Nothing was changed or saved."
+    End If
 
-    wbConfig.Save
-    wbCat.Close SaveChanges:=False
+    '--- Save Config safely back to the SAME network path, and verify it actually saved ---
+    Call SafeSaveWorkbook(wbConfig, ConfigPath)
+
+    '--- Close everything ---
+    wbExport.Close SaveChanges:=False
     wbConfig.Close SaveChanges:=False
 
-CleanExit:
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
+    '--- Restore app state ---
+    Application.Calculation = xlCalculationAutomatic
     Application.EnableEvents = True
-    Application.AskToUpdateLinks = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
 
-    If Err.Number = 0 Then MsgBox "Done"
+    MsgBox "Done. " & matchCount & " column(s) updated.", vbInformation, "Config/Export Mapping"
     Exit Sub
 
 ErrHandler:
-    MsgBox "Error: " & Err.Description, vbCritical
-    Resume CleanExit
-
+    On Error Resume Next
+    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
+    If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    MsgBox "Failed: " & Err.Description, vbCritical, "Config/Export Mapping"
 End Sub
 
-'========================================================
-' Finds a worksheet by trying names in priority order.
-' Falls back to the first sheet if none match.
-'========================================================
-Function FindSheetByName(wb As Workbook, ByVal names As Variant) As Worksheet
-    Dim ws As Worksheet
-    Dim n As Variant
 
-    For Each n In names
-        For Each ws In wb.Worksheets
-            If Trim(LCase(ws.Name)) = Trim(LCase(CStr(n))) Then
-                Set FindSheetByName = ws
-                Exit Function
+'=========================================================
+' Closes a workbook first if it's already open under this
+' Excel instance, so we always get a clean, writable copy.
+'=========================================================
+Private Sub CloseIfAlreadyOpen(ByVal FullPath As String)
+    Dim wb As Workbook
+    Dim fName As String
+    fName = Mid$(FullPath, InStrRev(FullPath, "\") + 1)
+
+    On Error Resume Next
+    Set wb = Workbooks(fName)
+    On Error GoTo 0
+
+    If Not wb Is Nothing Then
+        Application.DisplayAlerts = False
+        wb.Close SaveChanges:=False
+        Application.DisplayAlerts = False
+        Set wb = Nothing
+    End If
+End Sub
+
+
+'=========================================================
+' Copies formatting (number format, font, alignment, fill,
+' borders, wrap, indent) from one template cell to a whole
+' range — WITHOUT using the clipboard, so it's reliable for
+' unattended/automation runs and network files.
+'=========================================================
+Private Sub ApplyFormatFromTemplate(ByVal templateCell As Range, ByVal targetRange As Range)
+    With targetRange
+        .NumberFormat = templateCell.NumberFormat
+        .HorizontalAlignment = templateCell.HorizontalAlignment
+        .VerticalAlignment = templateCell.VerticalAlignment
+        .WrapText = templateCell.WrapText
+        .IndentLevel = templateCell.IndentLevel
+        .Orientation = templateCell.Orientation
+        .Font.Name = templateCell.Font.Name
+        .Font.Size = templateCell.Font.Size
+        .Font.Bold = templateCell.Font.Bold
+        .Font.Italic = templateCell.Font.Italic
+        .Font.Underline = templateCell.Font.Underline
+        .Font.Color = templateCell.Font.Color
+        .Interior.Color = templateCell.Interior.Color
+        .Interior.Pattern = templateCell.Interior.Pattern
+        .Borders(xlEdgeLeft).LineStyle = templateCell.Borders(xlEdgeLeft).LineStyle
+        .Borders(xlEdgeRight).LineStyle = templateCell.Borders(xlEdgeRight).LineStyle
+        .Borders(xlEdgeTop).LineStyle = templateCell.Borders(xlEdgeTop).LineStyle
+        .Borders(xlEdgeBottom).LineStyle = templateCell.Borders(xlEdgeBottom).LineStyle
+    End With
+End Sub
+
+
+'=========================================================
+' Saves Config back to its original path via SaveAs (forces
+' a full rewrite — more reliable than .Save over network
+' shares), with retries, then VERIFIES the save worked by
+' checking wb.Saved and the file's modified timestamp.
+'=========================================================
+Private Sub SafeSaveWorkbook(ByVal wb As Workbook, ByVal FullPath As String)
+    Dim attempt As Long
+    Dim fileFormat As Long
+    Dim ext As String
+    Dim beforeTime As Date
+
+    ext = LCase$(Mid$(FullPath, InStrRev(FullPath, ".") + 1))
+    Select Case ext
+        Case "xlsm": fileFormat = xlOpenXMLWorkbookMacroEnabled
+        Case "xlsb": fileFormat = xlExcel12
+        Case "xls":  fileFormat = xlExcel8
+        Case Else:   fileFormat = xlOpenXMLWorkbook ' xlsx (default)
+    End Select
+
+    If Dir(FullPath) <> "" Then
+        beforeTime = FileDateTime(FullPath)
+    Else
+        beforeTime = 0
+    End If
+
+    On Error Resume Next
+    For attempt = 1 To 3
+        Err.Clear
+        wb.SaveAs FileName:=FullPath, FileFormat:=fileFormat, CreateBackup:=False
+        DoEvents
+        If Err.Number = 0 And wb.Saved Then
+            ' Verify the file's modified timestamp actually changed
+            If Dir(FullPath) <> "" Then
+                If FileDateTime(FullPath) > beforeTime Or beforeTime = 0 Then
+                    On Error GoTo 0
+                    Exit Sub
+                End If
             End If
-        Next ws
-    Next n
+        End If
+        Application.Wait Now + TimeValue("0:00:02")
+    Next attempt
+    On Error GoTo 0
 
-    Set FindSheetByName = wb.Worksheets(1)
-End Function
+    Err.Raise vbObjectError + 5, , "Save did not take effect after 3 attempts. The file may be locked, read-only, or you lack write permission on: " & FullPath
+End Sub
 
-'========================================================
-' Finds a column by header name (row 1), case-insensitive.
-' Returns 0 if not found.
-'========================================================
-Function FindColumn(ws As Worksheet, ByVal names As Variant) As Long
-    Dim lastCol As Long, c As Long
-    Dim n As Variant
-    Dim headerVal As String
 
-    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+'=========================================================
+' STANDALONE LAUNCHER — run this directly (Alt+F8) if you
+' just want to pick the two files manually.
+'=========================================================
+Public Sub RunConfigExportMapping()
+    Dim configPath As Variant, exportPath As Variant
 
-    For c = 1 To lastCol
-        headerVal = Trim(LCase(CStr(ws.Cells(1, c).Value)))
-        For Each n In names
-            If headerVal = Trim(LCase(CStr(n))) Then
-                FindColumn = c
-                Exit Function
-            End If
-        Next n
-    Next c
+    configPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select the CONFIG file")
+    If configPath = False Then Exit Sub
 
-    FindColumn = 0
-End Function
+    exportPath = Application.GetOpenFilename("Excel Files (*.xlsx; *.xlsm; *.xls),*.xlsx;*.xlsm;*.xls", , "Select the EXPORT file")
+    If exportPath = False Then Exit Sub
+
+    MapConfigExportData CStr(configPath), CStr(exportPath)
+End Sub
