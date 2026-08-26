@@ -87,6 +87,26 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
 14. NEW: In the Summary of Results sheet, the Roof Limit tab's export
    label is shown as the short fixed name "Roof_Sublimit_Factors"
    instead of the full export file name.
+15. NEW: Single unmatched-column-pair fallback. For ANY Config/Export
+   tab pair -- if the Config tab and export tab have the SAME total
+   number of columns AND the SAME number of rows, and after normal
+   column matching (exact name, then any tab-specific mapping/synonym
+   list) there is EXACTLY ONE unmatched column left over on the Config
+   side and EXACTLY ONE unmatched column left over on the Export side,
+   those two leftover columns are assumed to be the same field (just
+   named differently, with no existing mapping/synonym entry for them)
+   and are force-matched together "by elimination" -- there's no other
+   candidate left on either side anyway. Row comparison is then run
+   using this completed column set. If every row then lines up (no
+   unmatched rows on either side), the tab is treated as fully
+   "Validated - All Rows Match": it is NOT highlighted/flagged in the
+   Summary of Results sheet, and NO detail/comparison sheet is created
+   for it -- exactly as if all columns had matched normally to begin
+   with. If, after the forced mapping, rows still don't fully line up,
+   normal "Manual validation required" handling applies (including the
+   red unmatched-column header, since the mapping was inferred rather
+   than confirmed). See apply_single_column_fallback_mapping() below.
+-------------------------------------------------------------------------
 
 Run:
     Edit INPUT_FILE_PATH below, then: python compare_tool.py
@@ -683,6 +703,39 @@ def match_columns(config_cols, export_cols, synonym_groups=None):
     return matched, unmatched
 
 
+def apply_single_column_fallback_mapping(config_df, export_df, matched_cols,
+                                          unmatched_config_cols, unmatched_export_cols):
+    """
+    NEW (see module docstring point 15): "matched by elimination" fallback.
+
+    If:
+      - config_df and export_df have the SAME total number of columns, AND
+      - config_df and export_df have the SAME number of rows, AND
+      - after normal column matching there is EXACTLY ONE unmatched column
+        left on the Config side and EXACTLY ONE unmatched column left on
+        the Export side,
+
+    then there is, by definition, no other candidate left for either of
+    those two leftover columns to pair with -- so they're assumed to be the
+    same field (just spelled differently, with no existing mapping/synonym
+    entry covering the pair) and are force-matched together.
+
+    Returns a NEW (matched_cols, unmatched_config_cols, unmatched_export_cols)
+    tuple. When the conditions above aren't met, the inputs are returned
+    unchanged (no-op).
+    """
+    if (
+        len(config_df.columns) == len(export_df.columns)
+        and len(config_df) == len(export_df)
+        and len(unmatched_config_cols) == 1
+        and len(unmatched_export_cols) == 1
+    ):
+        matched_cols = matched_cols + [(unmatched_config_cols[0], unmatched_export_cols[0])]
+        unmatched_config_cols = []
+        unmatched_export_cols = []
+    return matched_cols, unmatched_config_cols, unmatched_export_cols
+
+
 def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_synonym_cols=None,
                   config_value_scale_cols=None):
     """
@@ -808,6 +861,19 @@ def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=No
     )
     matched_export_set = {e for _, e in matched_cols}
     unmatched_export_cols = [c for c in list(export_df.columns) if c not in matched_export_set]
+
+    # NEW (module docstring point 15): if config/export have the same
+    # number of columns AND the same number of rows, and normal matching
+    # left exactly ONE unmatched column on each side, force-map that
+    # single leftover pair together "by elimination" before doing the row
+    # comparison. If everything then lines up row-for-row, this tab comes
+    # back fully Validated below (no red column, no detail sheet) -- if it
+    # doesn't fully line up, it falls through to normal manual-validation
+    # handling (including the red unmatched-column flags), since the
+    # forced pairing was only ever a best-effort guess.
+    matched_cols, unmatched_config_cols, unmatched_export_cols = apply_single_column_fallback_mapping(
+        config_df, export_df, matched_cols, unmatched_config_cols, unmatched_export_cols
+    )
 
     # Row-level diff computed using only the columns we COULD match -- used for
     # the Summary sheet counts (best-effort indicator even when some columns
