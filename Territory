@@ -7,18 +7,18 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
 
     Dim wbConfig As Workbook, wbExport As Workbook
     Dim wsConfig As Worksheet, wsExport As Worksheet
-    Dim mapDict As Object, colPairs As Object, rowLookup As Object
+    Dim mapDict As Object, colPairs As Object, configData As Object
     Dim configHeaders As Object, exportHeaders As Object
     Dim configLastRow As Long, configLastCol As Long
     Dim exportLastRow As Long, exportLastCol As Long
     Dim configKeyCol As Long, exportKeyCol As Long
-    Dim r As Long
+    Dim r As Long, c As Long
+    Dim colFormat() As String, colAlign() As Long
     Dim origCalc As XlCalculation
     Dim origScreenUpdating As Boolean, origEvents As Boolean, origAlerts As Boolean
     Dim success As Boolean
 
     success = False
-
     origCalc = Application.Calculation
     origScreenUpdating = Application.ScreenUpdating
     origEvents = Application.EnableEvents
@@ -84,6 +84,21 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
         GoTo CleanExit
     End If
 
+    ' ---- Capture existing layout (number format + alignment) per column BEFORE touching data ----
+    ReDim colFormat(1 To configLastCol)
+    ReDim colAlign(1 To configLastCol)
+    Dim templateRow As Long
+    templateRow = IIf(configLastRow >= 2, 2, 0)
+    For c = 1 To configLastCol
+        If templateRow > 0 Then
+            colFormat(c) = wsConfig.Cells(templateRow, c).NumberFormat
+            colAlign(c) = wsConfig.Cells(templateRow, c).HorizontalAlignment
+        Else
+            colFormat(c) = "General"
+            colAlign(c) = xlGeneral
+        End If
+    Next c
+
     ' ---- Build Config-Col -> Export-Col map (direct name match, else mapping table) ----
     Set colPairs = CreateObject("Scripting.Dictionary")
     Dim cKey As Variant, cColIdx As Long, eColIdx As Long, cName As String
@@ -99,60 +114,95 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
         End If
     Next cKey
 
-    ' ---- Build Territory -> Config row lookup ----
-    Set rowLookup = CreateObject("Scripting.Dictionary")
-    Dim kVal As String
+    ' ---- STEP 1: Load ALL existing Config rows into memory (nothing is lost) ----
+    Set configData = CreateObject("Scripting.Dictionary")
+    Dim kVal As String, arr() As Variant
+
     For r = 2 To configLastRow
         kVal = NormalizeKey(wsConfig.Cells(r, configKeyCol).Value)
-        If Len(kVal) > 0 Then
-            If Not rowLookup.Exists(kVal) Then rowLookup.Add kVal, r
+        If Len(kVal) = 0 Then kVal = "~BLANK~" & r   ' preserve blank-key rows too
+
+        If Not configData.Exists(kVal) Then
+            ReDim arr(1 To configLastCol)
+            For c = 1 To configLastCol
+                arr(c) = wsConfig.Cells(r, c).Value
+            Next c
+            configData.Add kVal, arr
         End If
     Next r
 
-    ' ---- Process each Export row ----
-    Dim exportTerritoryVal As Variant, keyStr As String, targetRow As Long
+    ' ---- STEP 2: Merge in Export data (update existing / add new) ----
+    Dim exportTerritoryVal As Variant, keyStr As String
     Dim cPairKey As Variant, srcVal As Variant
-    Dim dk As Variant, tempDict As Object
 
     For r = 2 To exportLastRow
-
         exportTerritoryVal = wsExport.Cells(r, exportKeyCol).Value
         If Len(Trim$(CStr(exportTerritoryVal))) > 0 Then
 
             keyStr = NormalizeKey(exportTerritoryVal)
 
-            If rowLookup.Exists(keyStr) Then
-                targetRow = rowLookup(keyStr)
+            If configData.Exists(keyStr) Then
+                arr = configData(keyStr)
             Else
-                ' Insert new row in ascending Territory order
-                targetRow = FindInsertPosition(wsConfig, configKeyCol, configLastRow, exportTerritoryVal)
-                InsertConfigRow wsConfig, targetRow, configLastRow
-                wsConfig.Cells(targetRow, configKeyCol).Value = exportTerritoryVal
-
-                ' Shift stored row numbers that moved down
-                Set tempDict = CreateObject("Scripting.Dictionary")
-                For Each dk In rowLookup.Keys
-                    If rowLookup(dk) >= targetRow Then
-                        tempDict.Add dk, rowLookup(dk) + 1
-                    Else
-                        tempDict.Add dk, rowLookup(dk)
-                    End If
-                Next dk
-                Set rowLookup = tempDict
-                rowLookup.Add keyStr, targetRow
-                configLastRow = configLastRow + 1
+                ReDim arr(1 To configLastCol)
+                arr(configKeyCol) = exportTerritoryVal
             End If
 
-            ' Copy mapped column values, skipping blanks
             For Each cPairKey In colPairs.Keys
                 srcVal = wsExport.Cells(r, colPairs(cPairKey)).Value
                 If Len(Trim$(CStr(srcVal))) > 0 Then
-                    wsConfig.Cells(targetRow, CLng(cPairKey)).Value = srcVal
+                    arr(CLng(cPairKey)) = srcVal
                 End If
             Next cPairKey
 
+            configData(keyStr) = arr   ' add or update
         End If
     Next r
+
+    ' ---- STEP 3: Sort all keys by Territory value (ascending) ----
+    Dim allKeys() As Variant
+    allKeys = configData.Keys
+
+    If UBound(allKeys) >= LBound(allKeys) Then
+        QuickSortKeys allKeys, LBound(allKeys), UBound(allKeys), configData, configKeyCol
+    End If
+
+    ' ---- STEP 4: Resize the sheet to fit the merged/sorted data ----
+    Dim finalCount As Long, requiredLastRow As Long
+    finalCount = UBound(allKeys) - LBound(allKeys) + 1
+    requiredLastRow = finalCount + 1
+
+    If requiredLastRow > configLastRow Then
+        ' extend row formatting down for the extra new rows
+        If templateRow > 0 Then
+            wsConfig.Rows(templateRow).Copy
+            wsConfig.Range(wsConfig.Rows(configLastRow + 1), wsConfig.Rows(requiredLastRow)).PasteSpecial Paste:=xlPasteFormats
+            Application.CutCopyMode = False
+        End If
+    ElseIf requiredLastRow < configLastRow Then
+        wsConfig.Range(wsConfig.Rows(requiredLastRow + 1), wsConfig.Rows(configLastRow)).Delete Shift:=xlUp
+    End If
+
+    ' ---- STEP 5: Clear old values, then write sorted data back ----
+    wsConfig.Range(wsConfig.Cells(2, 1), wsConfig.Cells(requiredLastRow, configLastCol)).ClearContents
+
+    Dim outRow As Long, k As Variant
+    outRow = 2
+    For Each k In allKeys
+        arr = configData(k)
+        For c = 1 To configLastCol
+            If Not IsEmpty(arr(c)) Then wsConfig.Cells(outRow, c).Value = arr(c)
+        Next c
+        outRow = outRow + 1
+    Next k
+
+    ' ---- STEP 6: Reapply layout (number format + alignment) per column ----
+    For c = 1 To configLastCol
+        With wsConfig.Range(wsConfig.Cells(2, c), wsConfig.Cells(requiredLastRow, c))
+            .NumberFormat = colFormat(c)
+            .HorizontalAlignment = colAlign(c)
+        End With
+    Next c
 
     ' ---- Save & close ----
     wbConfig.Close SaveChanges:=True
@@ -245,7 +295,7 @@ Private Function NormalizeKey(ByVal v As Variant) As String
 End Function
 
 Private Function CompareTerritory(a As Variant, b As Variant) As Long
-    If IsNumeric(a) And IsNumeric(b) Then
+    If IsNumeric(a) And IsNumeric(b) And Len(Trim$(CStr(a))) > 0 And Len(Trim$(CStr(b))) > 0 Then
         If CDbl(a) < CDbl(b) Then
             CompareTerritory = -1
         ElseIf CDbl(a) > CDbl(b) Then
@@ -258,25 +308,37 @@ Private Function CompareTerritory(a As Variant, b As Variant) As Long
     End If
 End Function
 
-Private Function FindInsertPosition(ws As Worksheet, keyCol As Long, lastRow As Long, newVal As Variant) As Long
-    Dim r As Long
-    For r = 2 To lastRow
-        If CompareTerritory(ws.Cells(r, keyCol).Value, newVal) > 0 Then
-            FindInsertPosition = r
-            Exit Function
-        End If
-    Next r
-    FindInsertPosition = lastRow + 1
-End Function
+' QuickSort an array of dictionary keys, comparing by the Territory value
+' stored inside each key's data array (position keyColIdx)
+Private Sub QuickSortKeys(ByRef keysArr() As Variant, ByVal lowIdx As Long, ByVal highIdx As Long, _
+                           ByRef dataDict As Object, ByVal keyColIdx As Long)
+    Dim i As Long, j As Long
+    Dim pivotVal As Variant, tempKey As Variant
+    Dim pivotArr As Variant
 
-Private Sub InsertConfigRow(ws As Worksheet, insertAt As Long, lastRow As Long)
-    If insertAt <= lastRow Then
-        ws.Rows(insertAt).EntireRow.Copy
-        ws.Rows(insertAt).Insert Shift:=xlDown
-        ws.Rows(insertAt).ClearContents      ' keeps formatting, wipes values
-    Else
-        ws.Rows(lastRow).EntireRow.Copy
-        ws.Rows(insertAt).EntireRow.PasteSpecial Paste:=xlPasteFormats
-    End If
-    Application.CutCopyMode = False
+    If lowIdx >= highIdx Then Exit Sub
+
+    i = lowIdx
+    j = highIdx
+    pivotArr = dataDict(keysArr((lowIdx + highIdx) \ 2))
+    pivotVal = pivotArr(keyColIdx)
+
+    Do While i <= j
+        Do While CompareTerritory(dataDict(keysArr(i))(keyColIdx), pivotVal) < 0
+            i = i + 1
+        Loop
+        Do While CompareTerritory(dataDict(keysArr(j))(keyColIdx), pivotVal) > 0
+            j = j - 1
+        Loop
+        If i <= j Then
+            tempKey = keysArr(i)
+            keysArr(i) = keysArr(j)
+            keysArr(j) = tempKey
+            i = i + 1
+            j = j - 1
+        End If
+    Loop
+
+    If lowIdx < j Then QuickSortKeys keysArr, lowIdx, j, dataDict, keyColIdx
+    If i < highIdx Then QuickSortKeys keysArr, i, highIdx, dataDict, keyColIdx
 End Sub
