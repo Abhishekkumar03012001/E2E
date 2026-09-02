@@ -1,40 +1,145 @@
 """
-Territory Buffer Build + Compare (standalone)
-==============================================
+Config vs Export Files Comparison Tool
+========================================
 
-What this script does, step by step:
+Reads a single "Input" Excel file (Inputs tab + Rate_Variables tab +
+Column Match_Tr tab), compares a Config file's tabs against export files
+(Radar, EQ, Territory [+ a supplemental CAT file], Roof Limit),
+and produces a single output report workbook.
 
-1. Reads the Config file's "R_L_Territory" tab.
-2. Reads the main Territory export file (Inputs!D57).
-3. Reads the supplemental CAT file (Inputs!D56).
-4. Builds a NEW in-memory "buffer" sheet:
-     - starts as an EXACT COPY of the Territory file's own columns + values
-       (all of them, nothing dropped)
-     - for each of "Hurricane", "Reinsurance", "Capital", "WildFire", "Fixed"
-       that is NOT already present in the Territory file, pulls that
-       column's values from the CAT file and adds them to the buffer,
-       matched row-by-row on the "Territory" column (join key)
-     - if a column IS already present in the Territory file, it is left
-       completely untouched -- the CAT file's version is ignored
-5. Writes that buffer as an actual new sheet in an output workbook (so you
-   can open it and visually confirm it's correct).
-6. Compares Config's "R_L_Territory" tab against the buffer sheet using
-   the SAME column-matching logic as the main tool:
-     - exact column name match first
-     - then the "Column Match_Tr" mapping sheet from the Input file
-   and reports matched/unmatched columns + row-level differences.
+-------------------------------------------------------------------------
+KEY BEHAVIOURS (please confirm / correct once real files are tested):
+-------------------------------------------------------------------------
+1. ALL sheet-name and tab-name matching (Config tabs vs export tabs,
+   "Inputs"/"Rate_Variables"/"Column Match_Tr" sheet lookups) is
+   case-insensitive and ignores spaces/punctuation.
+2. Header row for Radar, Territory, Roof Limit export tabs AND all Config
+   tabs is assumed to be ROW 1. Only the EQ export file has the row
+   1/2/3 header-offset behaviour (A1 empty -> row 2, A1 & A2 empty ->
+   row 3).
+3. EQ column matching no longer reads a "Column Match_EQ" sheet. It uses
+   the hardcoded synonym list in EQ_COLUMN_SYNONYM_PAIRS below. Entries
+   are grouped transitively -- e.g. "EQ Construction Type", "Earthquake
+   Construction Type", "Construction Type", and "Construction" are all
+   treated as the same field, because the pairs given chain them
+   together. Same for "Rate" / "Rate per $1000" / "Factor" / "Expense
+   Load". Edit EQ_COLUMN_SYNONYM_PAIRS directly to adjust.
+3b. NEW: An EQ export sheet can contain MULTIPLE tables laid out side by
+   side (a second table's headers starting up somewhere to the right of
+   the first table, with no data in between). Only the FIRST table is
+   read/compared -- reading stops at the first blank/empty header cell
+   encountered after the detected header row, and every column from
+   that point on (i.e. the next table) is discarded. This is handled by
+   read_df_first_table() below, used only for the EQ file.
+4. Radar column matching uses the hardcoded synonym list in
+   RADAR_COLUMN_SYNONYM_PAIRS below (in addition to exact-name matches).
+5. Territory: reads the main Territory file (Inputs!D57) and a
+   supplemental "CAT" file (Inputs!D56), and builds a single in-memory
+   "buffer" export sheet from them before comparing against Config's
+   "R_L_Territory" tab via the "Column Match_Tr" mapping sheet, as
+   follows:
+     - Sheet selection within BOTH the Territory file (D57) and the CAT
+       file (D56) follows the same priority order -- first look for a
+       sheet named "R_L_Territory"; if that's not present, look for a
+       sheet named "ratingTerritory"; if neither is present, fall back
+       to that workbook's first sheet. See TERRITORY_SHEET_PRIORITY and
+       resolve_territory_sheet() below.
+     - The buffer sheet STARTS as an exact copy of the Territory file's
+       own columns and values (all of them, not restricted).
+     - Then, for each column in TERRITORY_CAT_SUPPLEMENT_COLUMNS
+       ("Hurricane", "Reinsurance", "Capital", "WildFire") that is NOT
+       already present in the Territory file (case/space/punctuation-
+       insensitive check), that column's values are pulled from the CAT
+       file and added to the buffer sheet, mapped by matching each row's
+       "Territory" value (Territory values are assumed unique on both
+       sides, so this is a simple left-join). If a column IS already
+       present in the Territory file, it is left completely untouched --
+       the CAT file's version of that same-named column is ignored.
+     - The "Territory"/"ratingTerritory" key used for this join is
+       resolved the same way as before -- "Territory" tried first, then
+       "ratingTerritory" as a fallback alias -- see
+       TERRITORY_MERGE_COLUMN_ALIASES below. See
+       build_territory_buffer_df() below for the full logic.
+     - Config's "R_L_Territory" tab is then column-matched against this
+       buffer sheet exactly as before (exact name match, then the
+       "Column Match_Tr" mapping). If every Config column can be
+       matched, the tab is fully row-compared and validated as usual.
+       If any Config column can't be matched, the tab falls back to the
+       existing "Manual validation required" handling -- full table
+       dump, unmatched column header(s) highlighted red. Because the
+       buffer sheet is what's passed through as the "export" dataframe,
+       it's automatically what appears on the export side of that
+       side-by-side detail sheet.
+6. Roof Limit: column matching is by exact column name only (no
+   mapping), unchanged.
+   NEW: for the "Limit" column specifically, the value "No Limit" (as it
+   may appear in Config) and "No Sub-limit" (as it may appear in the
+   Roof Limit export file) are treated as equal values when comparing
+   rows. See LIMIT_VALUE_SYNONYM_PAIRS below to add more equivalent
+   value pairs if needed -- this only applies to columns that resolve
+   to "Limit", not other columns.
+7. Row matching = exact full-row equality across matched/mapped columns.
+   Numeric values are rounded to the decimal places given in Inputs!C8
+   before comparing (blank C8 = no rounding).
+8. Whenever ANY column (on either side) can't be matched -- by exact
+   name or via mapping/synonyms -- the detail sheet shows the FULL
+   table (all rows, both sides) rather than a partial diff, with the
+   unmatched column's header colored red. When all columns match, only
+   the genuinely mismatched rows are shown.
+9. Output file name: "<State>_Config_Builder_QC_<timestamp>.xlsx" saved
+   to the output folder path given in the Inputs tab (C58).
+10. The "Summary of Results" sheet is written LAST in the sheet order
+   (i.e. it appears as the final tab), but is still set as the ACTIVE
+   sheet, so it's the first thing the user sees when the workbook is
+   opened.
+11. NEW: For the Config tab "R_C_AOIRel_AOPDedAOI", the "WaterNonWinter"
+   column is dropped entirely -- from BOTH the Config tab and whichever
+   export sheet it's compared against -- if EVERY value in that column
+   on the Config side is "1". It is never matched, never flagged red,
+   never shown. See CONDITIONAL_COLUMN_DROPS below to add similar rules
+   for other tabs/columns.
+12. NEW: For the "R_O_EQDed" Config tab, the "EQ Deductible Percent"
+   column is validated against export's "Earthquake Deduct Percentage"
+   two ways -- an EXACT match (no scaling) OR a scaled match (Config's
+   value / 100). A row is considered matched if EITHER comparison lines
+   up. See EQ_PER_TAB_VALUE_SCALE_COLUMNS below.
+13. NEW: In the Summary of Results sheet, the Territory tab's export
+   label is shown as the short fixed name "Territory_factors +CAT
+   perils" instead of the full export file name(s).
+14. NEW: In the Summary of Results sheet, the Roof Limit tab's export
+   label is shown as the short fixed name "Roof_Sublimit_Factors"
+   instead of the full export file name.
+15. NEW: Single unmatched-column-pair fallback. For ANY Config/Export
+   tab pair -- if the Config tab and export tab have the SAME total
+   number of columns AND the SAME number of rows, and after normal
+   column matching (exact name, then any tab-specific mapping/synonym
+   list) there is EXACTLY ONE unmatched column left over on the Config
+   side and EXACTLY ONE unmatched column left over on the Export side,
+   those two leftover columns are assumed to be the same field (just
+   named differently, with no existing mapping/synonym entry for them)
+   and are force-matched together "by elimination" -- there's no other
+   candidate left on either side anyway. Row comparison is then run
+   using this completed column set. If every row then lines up (no
+   unmatched rows on either side), the tab is treated as fully
+   "Validated - All Rows Match": it is NOT highlighted/flagged in the
+   Summary of Results sheet, and NO detail/comparison sheet is created
+   for it -- exactly as if all columns had matched normally to begin
+   with. If, after the forced mapping, rows still don't fully line up,
+   normal "Manual validation required" handling applies (including the
+   red unmatched-column header, since the mapping was inferred rather
+   than confirmed). See apply_single_column_fallback_mapping() below.
+-------------------------------------------------------------------------
 
 Run:
-    Edit the file paths in the CONFIG SECTION below, then:
-    python territory_buffer_compare.py
+    Edit INPUT_FILE_PATH below, then: python compare_tool.py
 -------------------------------------------------------------------------
 """
 
 import os
 import re
-import sys
-import traceback
+import itertools
 from collections import Counter
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 import pandas as pd
@@ -42,25 +147,71 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ------------------------------------------------------------------
+# >>> SET YOUR INPUT FILE PATH HERE <<<
+# IMPORTANT: Keep the "r" right before the quote (r"...") -- this makes
+# it a "raw string" so backslashes in Windows paths are not misread as
+# escape codes.
+# ------------------------------------------------------------------
+INPUT_FILE_PATH = r"C:\Users\YourName\Documents\Input_File.xlsx"
 
-# ==================================================================
-# >>> CONFIG SECTION -- EDIT THESE PATHS <<<
-# ==================================================================
-CONFIG_FILE_PATH    = r"C:\path\to\Config_File.xlsx"
-TERRITORY_FILE_PATH = r"C:\path\to\Territory_Export.xlsx"   # Inputs!D57
-CAT_FILE_PATH       = r"C:\path\to\CAT_Export.xlsx"          # Inputs!D56 (set to "" or None if you don't have one)
-INPUT_FILE_PATH     = r"C:\path\to\Input_File.xlsx"          # only used to read "Column Match_Tr"
-OUTPUT_FILE_PATH    = r"C:\path\to\Territory_Buffer_Output.xlsx"
+# ------------------------------------------------------------------
+# Config constants (edit here if actual header names differ)
+# ------------------------------------------------------------------
+INPUTS_SHEET = "Inputs"
+RATE_VAR_SHEET = "Rate_Variables"
+COL_MATCH_TR_SHEET = "Column Match_Tr"
+
+RATE_VAR_FILE_COL = "Input Files Tab Name"
+RATE_VAR_CONFIG_COL = "Config Tab Name"
+MAPPING_FILE_COL = "File"
+MAPPING_CONFIG_COL = "Config"
 
 TERRITORY_CONFIG_TAB = "R_L_Territory"
-COL_MATCH_TR_SHEET   = "Column Match_Tr"
-MAPPING_FILE_COL      = "File"     # header name for export-side column in Column Match_Tr sheet
-MAPPING_CONFIG_COL    = "Config"   # header name for config-side column in Column Match_Tr sheet
+ROOF_CONFIG_TAB = "R_O_RoofLimit"
 
+# Tab names (config OR export) that should be completely ignored -- never
+# compared, never added to the Summary sheet, never flagged as missing.
+# Matched case/space/punctuation-insensitively, same as all other tab-name
+# matching in this tool.
+EXCLUDED_TAB_NAMES = [
+    "ROC for Home",
+    "ChangeLog",
+    "Index_Summary",
+    "ROC",
+    "CONTROL",
+    "SQL",
+    "Factor Definitions",
+    "All_Pricing_Variables",
+    "Rating_Index",
+    "Tier_Index",
+    "County",
+    "Expense Load LL",
+]
+
+
+# Column that the main Territory export file and the D56 supplemental
+# (CAT) file are combined on.
 TERRITORY_MERGE_COLUMN = "Territory"
+
+# When resolving the Territory merge column on either file, these names
+# are tried IN ORDER (case/space/punctuation-insensitive) -- "Territory"
+# first, then "ratingTerritory" as a fallback alias if "Territory" isn't
+# present on that particular file.
 TERRITORY_MERGE_COLUMN_ALIASES = ["Territory", "ratingTerritory"]
+
+# Sheet-name priority used for BOTH the main Territory file (D57) and the
+# supplemental CAT file (D56) -- tries "R_L_Territory" first, then
+# "ratingTerritory", falling back to that workbook's first sheet if
+# neither is found. Matched case/space/punctuation-insensitively, same as
+# all other sheet-name lookups.
 TERRITORY_SHEET_PRIORITY = [TERRITORY_CONFIG_TAB, "ratingTerritory"]
 
+# Columns pulled from the CAT file (D56) into the Territory buffer sheet
+# -- but ONLY for a given column if the Territory file (D57) doesn't
+# already have it. Matched case/space/punctuation-insensitively. If the
+# Territory file already has one of these columns, that column is left
+# alone and the CAT file's version of it is ignored entirely.
 TERRITORY_CAT_SUPPLEMENT_COLUMNS = [
     "Hurricane",
     "Reinsurance",
@@ -69,47 +220,259 @@ TERRITORY_CAT_SUPPLEMENT_COLUMNS = [
     "Fixed",
 ]
 
-DECIMAL_PLACES = None  # set an int here if you want numeric rounding before comparing, else None
-# ==================================================================
+# Column in the Roof Limit tab whose values get synonym-normalized.
+ROOF_LIMIT_VALUE_COLUMN = "Limit"
+
+# Short, fixed labels used ONLY in the Summary of Results sheet (and the
+# matching detail-sheet source labels) instead of the actual export file
+# name(s), for readability.
+TERRITORY_SUMMARY_LABEL = "Territory_factors +CAT perils"
+ROOF_SUMMARY_LABEL = "Roof_Sublimit_Factors"
+
+VALIDATED = "Validated - All Rows Match"
+MANUAL_VALIDATION = "Manual validation required"
+MISSING_IN_CONFIG = "Factor Tab not found in Config"
+MISSING_IN_EXPORT = "Factor Tab not Found in export"
+
+# ------------------------------------------------------------------
+# Hardcoded column synonym pairs (each pair means: treat these two
+# column names as referring to the same field). Pairs sharing a name
+# are chained together transitively -- see module docstring point 3.
+# ------------------------------------------------------------------
+EQ_COLUMN_SYNONYM_PAIRS = [
+    ("EQ Construction Type", "Earthquake Construction Type"),
+    ("Rate", "Rate per $1000"),
+    ("EQ Deductible Percent", "Earthquake Deduct Percentage"),
+    ("Rate", "Factor"),
+    ("Year Built (Upper Bound)", "Year Built"),
+    ("County Code", "County"),
+    ("EQ Construction Type", "Construction Type"),
+    ("Rate", "Expense Load"),
+    ("Earthquake Construction Type", "Construction"),
+]
+
+RADAR_COLUMN_SYNONYM_PAIRS = [
+    ("Coverage Amount (Dollar)", "Coverage Amount (Dollar or Percent)"),
+    ("Rate", "MinimumSchedProperty"),
+    ("NumSqft", "NumSqft (Upper Bound)"),
+]
+
+# ------------------------------------------------------------------
+# Water Backup tabs: optionally skip rows whose coverage amount is low.
+# Set SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS to False to turn this off
+# entirely and compare every row as normal.
+# ------------------------------------------------------------------
+SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS = True
+
+WATER_BACKUP_TABS = [
+    "R_O_WaterBackup_Contents",
+    "R_O_WaterBackup_Listed",
+]
+WATER_BACKUP_COVERAGE_COLUMN = "Coverage Amount (Dollar or Percent)"
+# Rows where the coverage column's value is <= this threshold are skipped
+# (not compared, not counted as unmatched) for the tabs above.
+WATER_BACKUP_COVERAGE_THRESHOLD = 100
+
+# ------------------------------------------------------------------
+# NEW: Conditional column drops. For the listed Config tab, IF the named
+# column exists on the Config side AND every one of its values equals
+# `all_values_equal` (compared as trimmed strings), the column is dropped
+# entirely -- from BOTH the Config tab and whichever export sheet it's
+# being compared against -- before any column matching/comparison runs.
+# It is never matched, never counted as an unmatched/red column, and
+# never shown in the detail sheet. Lookup of the column name (on both the
+# Config and export side) is case/space/punctuation-insensitive.
+#
+# If the column isn't present on the Config side, or its values aren't
+# ALL equal to `all_values_equal`, nothing is dropped and the column is
+# matched/compared normally.
+#
+# R_C_AOIRel_AOPDedAOI: "WaterNonWinter" is dropped (ignored entirely,
+# both sides) whenever every Config value in that column is "1".
+# ------------------------------------------------------------------
+CONDITIONAL_COLUMN_DROPS = {
+    "R_C_AOIRel_AOPDedAOI": {
+        "column": "WaterNonWinter",
+        "all_values_equal": "1",
+    },
+}
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB "post read" adjustments. These are applied directly
+# to the dataframe right after it's read from Excel -- BEFORE any column
+# matching/synonym logic runs -- so the fix is a simple, self-contained
+# drop/rename rather than a change to the core matching engine.
+#
+#   "drop":   column names to remove entirely from BOTH the config tab
+#             and the export sheet for that tab (never matched, never
+#             shown, never flagged red).
+#   "rename": export/config column names to rename so they read EXACTLY
+#             like the other side's name -- once renamed, a normal exact
+#             -name match succeeds, no synonym list needed for these.
+#
+# Two spellings of the Loss Assessment tab are listed as a safety net,
+# in case the actual Config tab is spelled either way.
+# ------------------------------------------------------------------
+EQ_TAB_POST_READ_ADJUSTMENTS = {
+    "R_O_EQExpense": {
+        "drop": ["State"],
+    },
+    "R_O_LossAsessmentEQ": {
+        "drop": ["State"],
+    },
+    "R_O_LossAssessmentEQ": {
+        "drop": ["State"],
+    },
+    "R_O_EQYearBuilt": {
+        "rename": {
+            "County.1": "County Code",
+            "Construction Type": "EQ Construction Type",
+            # Export file has a spelling error ("Contruction" missing the
+            # "s") -- mapped here too so the rename still fires.
+            "Contruction Type": "EQ Construction Type",
+        },
+    },
+}
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB, per-COLUMN value synonym pairs -- same idea as
+# LIMIT_VALUE_SYNONYM_PAIRS below, but scoped to a specific column within
+# a specific EQ config tab. Matching is case/space/punctuation-insensitive
+# (via clean_col), so "Yes"/"yes"/"YES" and "Y"/"y" etc. all normalize the
+# same regardless of case.
+#
+# R_O_EQYearBuilt, "Retrofit" column: some files use Yes/No, others use
+# Y/N for the same field -- these pairs mean Yes==Y and No==N.
+# ------------------------------------------------------------------
+RETROFIT_VALUE_SYNONYM_PAIRS = [
+    ("Yes", "Y"),
+    ("No", "N"),
+]
+
+EQ_PER_TAB_VALUE_SYNONYM_COLUMNS = {
+    "R_O_EQYearBuilt": {
+        "Retrofit": RETROFIT_VALUE_SYNONYM_PAIRS,
+    },
+}
+
+# ------------------------------------------------------------------
+# EQ per-CONFIG-TAB, per-COLUMN numeric scale factors used ONLY during
+# row-comparison (never applied to the actual displayed data). The
+# column name given here is the CONFIG side's column name.
+#
+# The value for a column may be:
+#   - a single number, e.g. 0.01           -> ALWAYS scale by that factor
+#     before comparing (original behaviour, unchanged for other tabs).
+#   - a LIST of numbers, e.g. [1, 0.01]    -> NEW: try EACH factor in the
+#     list; a Config row is treated as matched if the export lines up
+#     under ANY of them. Use factor 1 to mean "also accept an exact,
+#     unscaled match".
+#
+# Either way, if a row still ends up unmatched, the ORIGINAL (unscaled)
+# Config value is what's shown in the output detail sheet -- scaling is
+# only ever used for the in-memory comparison, never applied to the data.
+#
+# R_O_EQDed: Config's "EQ Deductible Percent" usually holds a whole
+# percentage (5, 10, 30) while its mapped export column "Earthquake
+# Deduct Percentage" (matched via EQ_COLUMN_SYNONYM_PAIRS) usually holds
+# the same thing as a decimal fraction (0.05, 0.1, 0.3) -- factor 0.01
+# lines those up. NEW: factor 1 is also tried, so a row where BOTH sides
+# already hold the exact same value (no scaling needed) is still
+# recognized as a match.
+# ------------------------------------------------------------------
+EQ_PER_TAB_VALUE_SCALE_COLUMNS = {
+    "R_O_EQDed": {
+        "EQ Deductible Percent": [1, 0.01],
+    },
+}
+
 
 
 # ------------------------------------------------------------------
-# Styling (for the output workbook)
+# Hardcoded VALUE synonym pairs (not column-name synonyms -- these are
+# synonyms for the actual cell VALUES within a specific column). Used
+# for the Roof Limit "Limit" column: "No Limit" (Config) and
+# "No Sub-limit" (Roof Limit export file) are treated as equal.
+# Grouped transitively the same way column synonyms are, via
+# build_synonym_groups(). Add more pairs here if other equivalent
+# phrasings turn up.
+# ------------------------------------------------------------------
+LIMIT_VALUE_SYNONYM_PAIRS = [
+    ("No Limit", "No Sub-limit"),
+]
+
+# ------------------------------------------------------------------
+# Styling constants
 # ------------------------------------------------------------------
 HEADER_FILL = PatternFill(start_color="00005A", end_color="00005A", fill_type="solid")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
-HEADER_ALIGN = Alignment(horizontal="left", vertical="center")
+HEADER_ALIGN = Alignment(horizontal="left", vertical="center", wrap_text=False, indent=0)
+
 RED_HEADER_FILL = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
 RED_HEADER_FONT = Font(color="FFFFFF", bold=True, size=11, name="Calibri")
+
+SOURCE_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+SOURCE_FONT = Font(bold=True, italic=True, size=10, name="Calibri", color="1F4E78")
+
+RESULT_COLORS = {
+    # Validated rows are WHITE by default. The "Manual validation" and
+    # "Factor Tab not found" colors are SWAPPED from before: missing-tab
+    # rows now get the (former) manual-validation yellow, and manual
+    # validation rows now get the (former) missing-tab red/pink.
+    VALIDATED: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
+    MANUAL_VALIDATION: PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+    MISSING_IN_CONFIG: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+    MISSING_IN_EXPORT: PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+}
+# NOTE: font is plain black, not bold -- only the cell BACKGROUND fill
+# communicates the result now (see RESULT_COLORS above).
+RESULT_FONT_COLORS = {
+    VALIDATED: Font(color="000000", bold=False, name="Calibri"),
+    MANUAL_VALIDATION: Font(color="000000", bold=False, name="Calibri"),
+    MISSING_IN_CONFIG: Font(color="000000", bold=False, name="Calibri"),
+    MISSING_IN_EXPORT: Font(color="000000", bold=False, name="Calibri"),
+}
+
 THIN_SIDE = Side(style="thin", color="B7B7B7")
 THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
 
 
-def style_header_cell(cell, red=False):
-    cell.fill = RED_HEADER_FILL if red else HEADER_FILL
-    cell.font = RED_HEADER_FONT if red else HEADER_FONT
+def style_header_cell(cell):
+    cell.fill = HEADER_FILL
+    cell.font = HEADER_FONT
     cell.alignment = HEADER_ALIGN
+    cell.border = THIN_BORDER
+
+
+def style_unmatched_header_cell(cell):
+    cell.fill = RED_HEADER_FILL
+    cell.font = RED_HEADER_FONT
+    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False, indent=0)
     cell.border = THIN_BORDER
 
 
 def style_data_cell(cell):
     cell.border = THIN_BORDER
     cell.font = Font(name="Calibri", size=10)
+    cell.alignment = Alignment(vertical="center")
 
 
 def autofit_columns(ws, min_width=10, max_width=45):
     widths = {}
     for row in ws.iter_rows():
         for c in row:
-            if c.value is None:
+            val = c.value
+            if val is None:
                 continue
-            widths[c.column] = max(widths.get(c.column, 0), len(str(c.value)))
+            col_idx = c.column  # works for both Cell and MergedCell
+            widths[col_idx] = max(widths.get(col_idx, 0), len(str(val)))
     for col_idx, max_len in widths.items():
-        ws.column_dimensions[get_column_letter(col_idx)].width = max(min_width, min(max_len + 3, max_width))
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = max(min_width, min(max_len + 3, max_width))
 
 
 # ------------------------------------------------------------------
-# Helpers (same logic as the main tool)
+# Helpers
 # ------------------------------------------------------------------
 def clean_col(name):
     if name is None:
@@ -118,8 +481,8 @@ def clean_col(name):
 
 
 def resolve_name(target, names):
-    """Case/whitespace/punctuation-insensitive lookup. Returns the actual
-    raw name from `names` if found, else None."""
+    """Case/whitespace/punctuation-insensitive lookup of `target` within `names`.
+    Returns the actual (raw) name from `names` if found, else None."""
     if target is None:
         return None
     tc = clean_col(target)
@@ -130,7 +493,10 @@ def resolve_name(target, names):
 
 
 def resolve_first_name(candidates, names):
-    """Tries each candidate name in order, returns first that resolves."""
+    """Like resolve_name, but tries each name in `candidates` IN ORDER and
+    returns the first one that resolves against `names`. Used for the
+    Territory merge column, which may be called "Territory" on one file
+    and "ratingTerritory" on another."""
     for candidate in candidates:
         resolved = resolve_name(candidate, names)
         if resolved:
@@ -138,21 +504,31 @@ def resolve_first_name(candidates, names):
     return None
 
 
-def find_sheet_name(wb, target):
-    return resolve_name(target, wb.sheetnames)
+def sanitize_sheet_name(name, existing):
+    name = re.sub(r"[:\\/?*\[\]]", "_", str(name)).strip()[:31]
+    if not name:
+        name = "Sheet"
+    base, i = name, 1
+    while name in existing:
+        suffix = f"_{i}"
+        name = base[: 31 - len(suffix)] + suffix
+        i += 1
+    return name
 
 
-def find_header_index(headers, target):
-    target_clean = clean_col(target)
-    for i, h in enumerate(headers):
-        if clean_col(h) == target_clean:
-            return i
-    return None
+def detect_eq_header_row(ws):
+    a1 = ws.cell(row=1, column=1).value
+    a2 = ws.cell(row=2, column=1).value
+    if a1 not in (None, ""):
+        return 1
+    if a2 not in (None, ""):
+        return 2
+    return 3
 
 
 def read_df(file_path, sheet_name, header_row=1):
-    """Standard reader: header at given row, drops blank/Unnamed columns,
-    drops fully-blank rows, everything read as string."""
+    """Standard reader -- drops any 'Unnamed' (blank-header) columns wherever
+    they occur. Used for Config tabs, Radar, Territory, Roof Limit."""
     df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row - 1, dtype=str)
     df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
     df.columns = [str(c).strip() for c in df.columns]
@@ -160,20 +536,114 @@ def read_df(file_path, sheet_name, header_row=1):
     return df
 
 
-def resolve_territory_sheet(wb):
-    """Sheet-name priority: 'R_L_Territory' first, then 'ratingTerritory',
-    else that workbook's first sheet. Fuzzy-matched, same as everywhere
-    else in this tool."""
-    for candidate in TERRITORY_SHEET_PRIORITY:
-        resolved = find_sheet_name(wb, candidate)
-        if resolved:
-            return resolved
-    return wb.sheetnames[0]
+def read_df_first_table(file_path, sheet_name, header_row=1):
+    """EQ-only reader. An EQ sheet may contain multiple tables laid out side
+    by side on the same header row (e.g. a second table's headers starting
+    a few columns after the first table ends, with a blank column acting as
+    a separator). This reads starting at the detected header row, then
+    truncates at the FIRST blank/empty header cell -- everything from that
+    column onward (the next table) is discarded, and only the first table's
+    columns/data are kept."""
+    df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row - 1, dtype=str)
+
+    boundary = len(df.columns)
+    for i, c in enumerate(df.columns):
+        c_str = "" if c is None else str(c).strip()
+        if c_str == "" or c_str.lower().startswith("unnamed"):
+            boundary = i
+            break
+
+    df = df.iloc[:, :boundary]
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").reset_index(drop=True)
+    return df
 
 
+DEFAULT_COMPARISON_DECIMAL_PLACES = 4
+
+
+def round_half_up(value, decimals):
+    """Rounds `value` to `decimals` decimal places using ROUND HALF UP
+    (traditional rounding: 0.5 always rounds away from zero), unlike
+    Python's built-in round() which uses banker's rounding (half-to-even).
+    Uses Decimal internally for precision. Returns a float."""
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return value
+    quant = Decimal("1").scaleb(-decimals) if decimals > 0 else Decimal("1")
+    return float(d.quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def normalize_value(v, decimal_places=None, value_synonym_groups=None):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    s = str(v).strip()
+
+    if value_synonym_groups:
+        cs = clean_col(s)
+        if cs in value_synonym_groups:
+            # Return the shared group id so both synonymous values normalize
+            # to the exact same string.
+            return f"__SYN__{value_synonym_groups[cs]}"
+
+    # Numeric comparisons always round -- using ROUND HALF UP -- to
+    # `decimal_places` if given (from Inputs!C8), otherwise to a default
+    # of DEFAULT_COMPARISON_DECIMAL_PLACES (4) places.
+    dp = decimal_places if decimal_places is not None else DEFAULT_COMPARISON_DECIMAL_PLACES
+    try:
+        f = float(s)
+        f = round_half_up(f, dp)
+        if f == int(f):
+            return str(int(f))
+        return f"{f:.{dp}f}".rstrip("0").rstrip(".")
+    except ValueError:
+        return s.lower()
+
+
+def find_header_index(headers, target):
+    """Case/whitespace-insensitive header lookup. Returns index or None."""
+    target_clean = clean_col(target)
+    for i, h in enumerate(headers):
+        if clean_col(h) == target_clean:
+            return i
+    return None
+
+
+def find_sheet_name(wb, target):
+    return resolve_name(target, wb.sheetnames)
+
+
+_EXCLUDED_TAB_NAMES_CLEAN = {clean_col(n) for n in EXCLUDED_TAB_NAMES}
+
+
+def is_excluded_tab(name):
+    """True if `name` matches one of EXCLUDED_TAB_NAMES (case/space/
+    punctuation-insensitive). Such tabs are fully skipped -- not compared,
+    not added to the Summary sheet, not flagged as missing."""
+    return clean_col(name) in _EXCLUDED_TAB_NAMES_CLEAN
+
+
+def na_if_blank(v):
+    """Used for the Summary sheet's tab-name columns -- these should never
+    be left empty; blank/None becomes 'NA'."""
+    if v is None:
+        return "NA"
+    s = str(v).strip()
+    return s if s != "" else "NA"
+
+
+
+# ------------------------------------------------------------------
+# Synonym-group based mapping (used for BOTH column names and values)
+# ------------------------------------------------------------------
 def build_synonym_groups(pairs):
-    """pairs: list of (a, b) tuples meaning 'same field'. Chained
-    transitively via union-find. Returns {clean_col(name): group_id}."""
+    """
+    pairs: list of (name_a, name_b) tuples meaning "these refer to the same
+    field/value". Entries that share a name are chained together
+    transitively (union-find).
+    Returns dict: {clean_col(name): group_id}
+    """
     parent = {}
 
     def find(x):
@@ -200,21 +670,19 @@ def build_synonym_groups(pairs):
 
 
 def load_mapping_pairs_from_sheet(wb, sheet_name, file_col_header, config_col_header):
-    """Reads the 'Column Match_Tr' 2-column mapping sheet, returns list of
-    (config_val, file_val) tuples. Returns [] (with a warning) if the sheet
-    or headers can't be found -- this is a soft failure, not a crash."""
+    """Reads a 2-column mapping sheet and returns list of (config_val, file_val) tuples."""
     resolved_name = find_sheet_name(wb, sheet_name)
     if resolved_name is None:
-        print(f"WARNING: Sheet '{sheet_name}' not found in Input file "
-              f"(available sheets: {wb.sheetnames}). Column mapping will be empty.")
+        print(f"WARNING: Sheet '{sheet_name}' not found (available sheets: {wb.sheetnames}). "
+              f"Skipping this mapping.")
         return []
     ws = wb[resolved_name]
     headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     file_idx = find_header_index(headers, file_col_header)
     config_idx = find_header_index(headers, config_col_header)
     if file_idx is None or config_idx is None:
-        print(f"WARNING: Could not find '{file_col_header}'/'{config_col_header}' headers "
-              f"in '{sheet_name}' (found headers: {headers}). Column mapping will be empty.")
+        print(f"WARNING: Could not find '{file_col_header}'/'{config_col_header}' "
+              f"headers in '{sheet_name}' (found headers: {headers}). Skipping this mapping.")
         return []
     pairs = []
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -224,96 +692,40 @@ def load_mapping_pairs_from_sheet(wb, sheet_name, file_col_header, config_col_he
     return pairs
 
 
-DEFAULT_DECIMAL_PLACES = 4
-
-
-def round_half_up(value, decimals):
-    try:
-        d = Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
-        return value
-    quant = Decimal("1").scaleb(-decimals) if decimals > 0 else Decimal("1")
-    return float(d.quantize(quant, rounding=ROUND_HALF_UP))
-
-
-def normalize_value(v, decimal_places=None):
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return ""
-    s = str(v).strip()
-    dp = decimal_places if decimal_places is not None else DEFAULT_DECIMAL_PLACES
-    try:
-        f = round_half_up(float(s), dp)
-        if f == int(f):
-            return str(int(f))
-        return f"{f:.{dp}f}".rstrip("0").rstrip(".")
-    except ValueError:
-        return s.lower()
+def load_tab_name_mapping(wb, sheet_name, file_col_header, config_col_header):
+    """Returns dict: {clean_col(export_tab_name): raw_config_tab_name}"""
+    resolved_name = find_sheet_name(wb, sheet_name)
+    if resolved_name is None:
+        print(f"WARNING: Sheet '{sheet_name}' not found (available sheets: {wb.sheetnames}). "
+              f"Skipping this mapping.")
+        return {}
+    ws = wb[resolved_name]
+    headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    file_idx = find_header_index(headers, file_col_header)
+    config_idx = find_header_index(headers, config_col_header)
+    if file_idx is None or config_idx is None:
+        print(f"WARNING: Could not find '{file_col_header}'/'{config_col_header}' "
+              f"headers in '{sheet_name}' (found headers: {headers}). Skipping this mapping.")
+        return {}
+    mapping = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        f, c = row[file_idx], row[config_idx]
+        if f and c:
+            mapping[clean_col(f)] = str(c).strip()
+    return mapping
 
 
 # ------------------------------------------------------------------
-# STEP 4: Build the buffer sheet
-# ------------------------------------------------------------------
-def build_territory_buffer_df(territory_df, cat_df,
-                               supplement_columns=TERRITORY_CAT_SUPPLEMENT_COLUMNS,
-                               merge_column=TERRITORY_MERGE_COLUMN):
-    """
-    Buffer sheet = exact copy of territory_df's columns/values, PLUS any of
-    `supplement_columns` that are missing from territory_df, pulled from
-    cat_df and joined on the Territory key (left join, so every Territory
-    row is kept regardless of whether a CAT match exists).
-    """
-    buffer_df = territory_df.copy()
-
-    # Which supplement columns does the Territory file NOT already have?
-    missing_cols = [c for c in supplement_columns if resolve_name(c, buffer_df.columns) is None]
-    if not missing_cols:
-        print("Territory file already has all supplement columns -- CAT file not needed.")
-        return buffer_df
-
-    if cat_df is None:
-        print(f"WARNING: No CAT file provided/readable -- buffer sheet will be MISSING "
-              f"these columns: {missing_cols}")
-        return buffer_df
-
-    key_candidates = TERRITORY_MERGE_COLUMN_ALIASES if clean_col(merge_column) == clean_col(TERRITORY_MERGE_COLUMN) else [merge_column]
-
-    terr_key = resolve_first_name(key_candidates, buffer_df.columns)
-    cat_key = resolve_first_name(key_candidates, cat_df.columns)
-    if not terr_key or not cat_key:
-        tried = "/".join(key_candidates)
-        print(f"WARNING: Could not find a '{tried}' column in BOTH the Territory file and "
-              f"the CAT file -- buffer sheet will be MISSING these columns: {missing_cols}")
-        print(f"  Territory file columns found: {list(buffer_df.columns)}")
-        print(f"  CAT file columns found:       {list(cat_df.columns)}")
-        return buffer_df
-
-    # Which of the missing columns actually exist in the CAT file?
-    cat_col_map = {c: resolve_name(c, cat_df.columns) for c in missing_cols}
-    found_cols = {canon: resolved for canon, resolved in cat_col_map.items() if resolved}
-    not_found = [canon for canon, resolved in cat_col_map.items() if not resolved]
-    if not_found:
-        print(f"WARNING: CAT file does not contain these expected column(s): {not_found}. "
-              f"They will be MISSING from the buffer sheet.")
-
-    if not found_cols:
-        return buffer_df
-
-    lookup_df = cat_df[[cat_key] + list(found_cols.values())].copy()
-    rename_map = {resolved: canon for canon, resolved in found_cols.items()}
-    rename_map[cat_key] = terr_key  # align key column name to Territory file's key name
-    lookup_df = lookup_df.rename(columns=rename_map)
-
-    print(f"Merging these columns from CAT file into buffer: {list(found_cols.keys())}")
-    buffer_df = pd.merge(buffer_df, lookup_df, on=terr_key, how="left")
-    return buffer_df
-
-
-# ------------------------------------------------------------------
-# STEP 6: Column matching + row comparison
+# Column & row comparison
 # ------------------------------------------------------------------
 def match_columns(config_cols, export_cols, synonym_groups=None):
+    """
+    synonym_groups: dict {clean_col(name): group_id}, e.g. from build_synonym_groups().
+    Returns (matched_pairs, unmatched_config_cols)
+    """
     export_clean_map = {clean_col(c): c for c in export_cols}
     matched, unmatched = [], []
+
     for c in config_cols:
         cc = clean_col(c)
         if cc in export_clean_map:
@@ -321,8 +733,11 @@ def match_columns(config_cols, export_cols, synonym_groups=None):
             continue
         if synonym_groups and cc in synonym_groups:
             group_id = synonym_groups[cc]
-            found = next((ec_raw for ec_clean, ec_raw in export_clean_map.items()
-                          if synonym_groups.get(ec_clean) == group_id), None)
+            found = None
+            for ec_clean, ec_raw in export_clean_map.items():
+                if synonym_groups.get(ec_clean) == group_id:
+                    found = ec_raw
+                    break
             if found:
                 matched.append((c, found))
                 continue
@@ -330,183 +745,945 @@ def match_columns(config_cols, export_cols, synonym_groups=None):
     return matched, unmatched
 
 
-def compare_rows(config_df, export_df, matched_cols, decimal_places=None):
+def apply_single_column_fallback_mapping(config_df, export_df, matched_cols,
+                                          unmatched_config_cols, unmatched_export_cols):
+    """
+    NEW (see module docstring point 15): "matched by elimination" fallback.
+
+    If:
+      - config_df and export_df have the SAME total number of columns, AND
+      - config_df and export_df have the SAME number of rows, AND
+      - after normal column matching there is EXACTLY ONE unmatched column
+        left on the Config side and EXACTLY ONE unmatched column left on
+        the Export side,
+
+    then there is, by definition, no other candidate left for either of
+    those two leftover columns to pair with -- so they're assumed to be the
+    same field (just spelled differently, with no existing mapping/synonym
+    entry covering the pair) and are force-matched together.
+
+    Returns a NEW (matched_cols, unmatched_config_cols, unmatched_export_cols)
+    tuple. When the conditions above aren't met, the inputs are returned
+    unchanged (no-op).
+    """
+    if (
+        len(config_df.columns) == len(export_df.columns)
+        and len(config_df) == len(export_df)
+        and len(unmatched_config_cols) == 1
+        and len(unmatched_export_cols) == 1
+    ):
+        matched_cols = matched_cols + [(unmatched_config_cols[0], unmatched_export_cols[0])]
+        unmatched_config_cols = []
+        unmatched_export_cols = []
+    return matched_cols, unmatched_config_cols, unmatched_export_cols
+
+
+def compare_rows(config_df, export_df, matched_cols, decimal_places=None, value_synonym_cols=None,
+                  config_value_scale_cols=None):
+    """
+    value_synonym_cols: optional dict {clean_col(config_column_name): synonym_groups}
+    applying value-level synonyms (e.g. "No Limit" == "No Sub-limit") only to
+    specific matched columns.
+
+    config_value_scale_cols: optional dict {clean_col(config_column_name): factor}
+    -- multiplies the CONFIG side's value by `factor` ONLY for the purpose of
+    this comparison (e.g. Config's raw percent x0.01 to compare against an
+    export column already expressed as a decimal fraction). The dataframe
+    itself is never modified, so if a row ends up flagged as unmatched, the
+    ORIGINAL (unscaled) Config value is still what gets returned/displayed --
+    only the in-memory comparison uses the scaled number. Non-numeric values
+    are left as-is (the scale is simply skipped for that cell) rather than
+    raising, so string vs. number typing never breaks the comparison.
+
+    `factor` may also be a LIST of numbers (e.g. [1, 0.01]) instead of a
+    single number -- in that case EACH factor is tried for that column, and
+    a Config row is considered matched if the export lines up under ANY of
+    them (e.g. [1, 0.01] means "accept an exact match OR a match after
+    dividing Config's value by 100"). Columns not listed here (or with a
+    single-number factor) behave exactly as before.
+    """
+    value_synonym_cols = value_synonym_cols or {}
+    config_value_scale_cols = config_value_scale_cols or {}
     config_cols = [m[0] for m in matched_cols]
     export_cols = [m[1] for m in matched_cols]
 
-    export_tuples = [tuple(normalize_value(v, decimal_places) for v in row)
-                      for row in export_df[export_cols].itertuples(index=False)]
-    config_tuples = [tuple(normalize_value(v, decimal_places) for v in row)
-                      for row in config_df[config_cols].itertuples(index=False)]
+    # Per matched-column position, figure out which value-synonym group (if
+    # any) applies -- keyed off the CONFIG side column name.
+    per_col_synonyms = [value_synonym_cols.get(clean_col(c)) for c in config_cols]
 
-    export_counter = Counter(export_tuples)
-    unmatched_config_idx = []
-    for i, t in enumerate(config_tuples):
-        if export_counter.get(t, 0) > 0:
-            export_counter[t] -= 1
+    # Per matched-column position, the list of scale factors to try on the
+    # CONFIG side. A column with no configured scale gets [None] (compare
+    # as-is). A column with a single number gets a single-item list (scale
+    # ALWAYS applied, same as the original behaviour). A column with a list
+    # gets that list verbatim (try each factor, accept any match).
+    per_col_factor_options = []
+    for c in config_cols:
+        entry = config_value_scale_cols.get(clean_col(c))
+        if entry is None:
+            per_col_factor_options.append([None])
+        elif isinstance(entry, (list, tuple)):
+            per_col_factor_options.append(list(entry))
         else:
+            per_col_factor_options.append([entry])
+
+    def build_row_tuple(values, factors):
+        vals = []
+        for idx, v in enumerate(values):
+            val = v
+            factor = factors[idx]
+            if factor is not None:
+                # Ignore data type (string vs number) -- just try to parse
+                # it; if it isn't numeric, leave it unscaled and let
+                # normalize_value handle it as-is.
+                try:
+                    val = float(v) * factor
+                except (TypeError, ValueError):
+                    val = v
+            vals.append(normalize_value(val, decimal_places, per_col_synonyms[idx]))
+        return tuple(vals)
+
+    # Export side is never scaled -- one tuple per export row.
+    export_row_values = list(export_df[export_cols].itertuples(index=False))
+    no_scale_factors = [None] * len(export_cols)
+    export_tuples = [build_row_tuple(row, no_scale_factors) for row in export_row_values]
+    export_counter = Counter(export_tuples)
+
+    # Config side: for columns with multiple factor options, build every
+    # distinct candidate tuple for that row (cartesian product across
+    # columns that have more than one option -- in practice this is
+    # usually just one column, e.g. R_O_EQDed's "EQ Deductible Percent").
+    config_row_values = list(config_df[config_cols].itertuples(index=False))
+    candidates_per_config_row = []
+    for row in config_row_values:
+        seen = []
+        for factors in itertools.product(*per_col_factor_options):
+            t = build_row_tuple(row, factors)
+            if t not in seen:
+                seen.append(t)
+        candidates_per_config_row.append(seen)
+
+    # Greedily match each Config row against the first available candidate
+    # tuple (in the order the factors were listed) still present in the
+    # export multiset.
+    remaining_export = export_counter.copy()
+    unmatched_config_idx = []
+    for i, candidates in enumerate(candidates_per_config_row):
+        matched = False
+        for t in candidates:
+            if remaining_export.get(t, 0) > 0:
+                remaining_export[t] -= 1
+                matched = True
+                break
+        if not matched:
             unmatched_config_idx.append(i)
 
+    # Whatever's left over in `remaining_export` once every Config row has
+    # tried to claim a match is, by definition, unmatched on the export
+    # side -- map those leftover counts back to specific row indices. (For
+    # columns with only a single factor option per row -- i.e. the original
+    # behaviour -- this is exactly equivalent to a plain multiset
+    # difference between the two sides.)
+    leftover = remaining_export
     unmatched_export_idx = []
-    leftover = export_counter
     for i, t in enumerate(export_tuples):
         if leftover.get(t, 0) > 0:
             unmatched_export_idx.append(i)
             leftover[t] -= 1
 
-    return config_df.iloc[unmatched_config_idx].copy(), export_df.iloc[unmatched_export_idx].copy()
+    return (
+        config_df.iloc[unmatched_config_idx].copy(),
+        export_df.iloc[unmatched_export_idx].copy(),
+    )
 
 
-def compare_config_to_buffer(config_df, buffer_df, synonym_groups, decimal_places=None):
+def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=None,
+                  decimal_places=None, value_synonym_cols=None, config_value_scale_cols=None):
     matched_cols, unmatched_config_cols = match_columns(
-        list(config_df.columns), list(buffer_df.columns), synonym_groups
+        list(config_df.columns), list(export_df.columns), synonym_groups
     )
     matched_export_set = {e for _, e in matched_cols}
-    unmatched_export_cols = [c for c in buffer_df.columns if c not in matched_export_set]
+    unmatched_export_cols = [c for c in list(export_df.columns) if c not in matched_export_set]
 
-    print("\n--- COLUMN MATCH RESULTS ---")
-    for c_col, e_col in matched_cols:
-        tag = " (via mapping)" if clean_col(c_col) != clean_col(e_col) else ""
-        print(f"  MATCHED: Config '{c_col}'  <->  Buffer '{e_col}'{tag}")
-    if unmatched_config_cols:
-        print(f"  UNMATCHED (Config side): {unmatched_config_cols}")
-    if unmatched_export_cols:
-        print(f"  UNMATCHED (Buffer side): {unmatched_export_cols}")
+    # NEW (module docstring point 15): if config/export have the same
+    # number of columns AND the same number of rows, and normal matching
+    # left exactly ONE unmatched column on each side, force-map that
+    # single leftover pair together "by elimination" before doing the row
+    # comparison. If everything then lines up row-for-row, this tab comes
+    # back fully Validated below (no red column, no detail sheet) -- if it
+    # doesn't fully line up, it falls through to normal manual-validation
+    # handling (including the red unmatched-column flags), since the
+    # forced pairing was only ever a best-effort guess.
+    matched_cols, unmatched_config_cols, unmatched_export_cols = apply_single_column_fallback_mapping(
+        config_df, export_df, matched_cols, unmatched_config_cols, unmatched_export_cols
+    )
 
-    if unmatched_config_cols or unmatched_export_cols:
-        print("\nRESULT: Manual validation required (column mismatch) -- full tables will be output.")
-        return {
-            "result": "Manual validation required",
-            "matched_cols": matched_cols,
-            "unmatched_config_cols": unmatched_config_cols,
-            "unmatched_export_cols": unmatched_export_cols,
-            "detail_config_df": config_df,
-            "detail_export_df": buffer_df,
-        }
-
-    diff_config, diff_export = compare_rows(config_df, buffer_df, matched_cols, decimal_places)
-    if len(diff_config) == 0 and len(diff_export) == 0:
-        result = "Validated - All Rows Match"
+    # Row-level diff computed using only the columns we COULD match -- used for
+    # the Summary sheet counts (best-effort indicator even when some columns
+    # couldn't be aligned).
+    if matched_cols:
+        diff_config_rows, diff_export_rows = compare_rows(
+            config_df, export_df, matched_cols, decimal_places, value_synonym_cols, config_value_scale_cols
+        )
     else:
-        result = "Manual validation required"
-    print(f"\nRESULT: {result}")
-    print(f"  Config unmatched rows: {len(diff_config)}")
-    print(f"  Buffer unmatched rows: {len(diff_export)}")
+        diff_config_rows, diff_export_rows = config_df.copy(), export_df.copy()
+
+    total_col_mismatch = len(unmatched_config_cols) + len(unmatched_export_cols)
+
+    if total_col_mismatch > 0:
+        # Columns don't fully align -> dump the FULL tables (all rows, both sides)
+        # for manual review, with unmatched column headers flagged red, instead
+        # of a partial diff that can misleadingly come back empty.
+        detail_config_df = config_df.copy()
+        detail_export_df = export_df.copy()
+    else:
+        detail_config_df = diff_config_rows
+        detail_export_df = diff_export_rows
+
+    if len(diff_config_rows) == 0 and len(diff_export_rows) == 0 and total_col_mismatch == 0:
+        result = VALIDATED
+    else:
+        result = MANUAL_VALIDATION
 
     return {
+        "config_tab": config_tab,
+        "export_tab": export_tab,
         "result": result,
-        "matched_cols": matched_cols,
-        "unmatched_config_cols": [],
-        "unmatched_export_cols": [],
-        "detail_config_df": diff_config,
-        "detail_export_df": diff_export,
+        "config_unmatched_rows": len(diff_config_rows),
+        "export_unmatched_rows": len(diff_export_rows),
+        "col_mismatch": total_col_mismatch if total_col_mismatch > 0 else "NA",
+        "unmatched_config_df": detail_config_df,
+        "unmatched_export_df": detail_export_df,
+        "red_config_cols": set(unmatched_config_cols),
+        "red_export_cols": set(unmatched_export_cols),
     }
 
 
+def missing_row(config_tab="NA", export_tab="NA", result=""):
+    return {
+        "config_tab": config_tab,
+        "export_tab": export_tab,
+        "result": result,
+        "config_unmatched_rows": "NA",
+        "export_unmatched_rows": "NA",
+        "col_mismatch": "NA",
+    }
+
+
+def filter_low_coverage_rows(df, column_name=WATER_BACKUP_COVERAGE_COLUMN, threshold=WATER_BACKUP_COVERAGE_THRESHOLD):
+    """For Water Backup tabs: drops rows where `column_name`'s value is
+    <= `threshold`. Looks the column up case/space/punctuation-
+    insensitively (and also tries the Radar synonym name "Coverage Amount
+    (Dollar)", since Config and export may use either spelling). Rows
+    with a non-numeric/blank value in that column are kept as-is (only
+    rows that clearly parse as a low number are dropped). A no-op if the
+    column can't be found at all."""
+    if df is None or df.empty:
+        return df
+
+    resolved_col = resolve_name(column_name, df.columns)
+    if not resolved_col:
+        resolved_col = resolve_name("Coverage Amount (Dollar)", df.columns)
+    if not resolved_col:
+        return df
+
+    def keep_row(value):
+        try:
+            return float(value) > threshold
+        except (TypeError, ValueError):
+            return True  # non-numeric/blank -- keep, don't guess
+
+    mask = df[resolved_col].apply(keep_row)
+    return df[mask].reset_index(drop=True)
+
+
+def apply_conditional_column_drops(config_df, export_df, config_tab_name):
+    """For tabs configured in CONDITIONAL_COLUMN_DROPS: if the named column
+    exists in the Config tab and EVERY value in it equals `all_values_equal`
+    (compared as trimmed strings, e.g. "1"), drop that column entirely from
+    BOTH the config and export dataframes -- it's simply ignored, never
+    matched, never flagged red, never shown. Column lookup is case/space/
+    punctuation-insensitive on both sides.
+
+    If the column isn't present in Config, or its values aren't uniformly
+    the target value, nothing is dropped and the column is matched/compared
+    normally. A no-op for any tab not listed in CONDITIONAL_COLUMN_DROPS.
+
+    Returns the (possibly modified) (config_df, export_df) pair.
+    """
+    for tab_name, rule in CONDITIONAL_COLUMN_DROPS.items():
+        if clean_col(tab_name) != clean_col(config_tab_name):
+            continue
+
+        col_name = rule["column"]
+        target_value = str(rule["all_values_equal"]).strip()
+
+        resolved_cfg_col = resolve_name(col_name, config_df.columns) if config_df is not None else None
+        if not resolved_cfg_col:
+            continue
+
+        values = config_df[resolved_cfg_col].dropna().astype(str).str.strip()
+        if len(values) == 0 or not (values == target_value).all():
+            continue
+
+        config_df = config_df.drop(columns=[resolved_cfg_col])
+
+        if export_df is not None:
+            resolved_exp_col = resolve_name(col_name, export_df.columns)
+            if resolved_exp_col:
+                export_df = export_df.drop(columns=[resolved_exp_col])
+
+    return config_df, export_df
+
+
+def apply_eq_post_read_adjustments(df, config_tab_name, side):
+    """Applies EQ_TAB_POST_READ_ADJUSTMENTS to `df` (whichever EQ config
+    tab is currently being processed) -- dropping any configured columns,
+    renaming any configured columns, and numerically scaling any
+    configured columns -- right after the dataframe is read from Excel
+    and before any matching/comparison logic runs. A no-op if the tab has
+    no entry, or if a configured column isn't actually present in this
+    particular dataframe.
+
+    `side` must be "config" or "export" -- "drop"/"rename" apply
+    regardless of side (harmless no-ops on whichever side doesn't have
+    that column), but "scale_config"/"scale_export" only apply to the
+    matching side, since a numeric scale (e.g. x100) should only ever be
+    applied to ONE side of a comparison.
+    """
+    for tab_name, adjustments in EQ_TAB_POST_READ_ADJUSTMENTS.items():
+        if clean_col(tab_name) != clean_col(config_tab_name):
+            continue
+
+        drop_cols = adjustments.get("drop")
+        if drop_cols:
+            df = drop_columns_if_present(df, drop_cols)
+
+        rename_map = adjustments.get("rename")
+        if rename_map:
+            actual_rename = {}
+            for old_name, new_name in rename_map.items():
+                resolved_old = resolve_name(old_name, df.columns)
+                if resolved_old:
+                    actual_rename[resolved_old] = new_name
+            if actual_rename:
+                df = df.rename(columns=actual_rename)
+
+        scale_map = adjustments.get(f"scale_{side}")
+        if scale_map:
+            for col_name, factor in scale_map.items():
+                resolved_col = resolve_name(col_name, df.columns)
+                if resolved_col:
+                    df[resolved_col] = df[resolved_col].apply(
+                        lambda v, f=factor: _scale_value(v, f)
+                    )
+
+    return df
+
+
+def _scale_value(v, factor):
+    """Multiplies a (string) numeric value by `factor`, returned as a
+    string so it stays consistent with the rest of the string-typed
+    dataframe. Non-numeric/blank values are returned unchanged."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return v
+    try:
+        return str(float(v) * factor)
+    except (TypeError, ValueError):
+        return v
+
+
+def get_eq_value_synonym_cols_for_tab(config_tab_name):
+    """Returns a {clean_col(column_name): synonym_groups} dict for EQ
+    per-tab VALUE synonyms (e.g. R_O_EQYearBuilt's Retrofit Yes/Y, No/N),
+    or None if the tab has none configured."""
+    for tab_name, col_map in EQ_PER_TAB_VALUE_SYNONYM_COLUMNS.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return {clean_col(col_name): build_synonym_groups(pairs) for col_name, pairs in col_map.items()}
+    return None
+
+
+def get_eq_value_scale_cols_for_tab(config_tab_name):
+    """Returns a {clean_col(config_column_name): factor} dict for EQ
+    per-tab comparison-only numeric scaling (e.g. R_O_EQDed's "EQ
+    Deductible Percent" -> [1, 0.01]), or None if the tab has none
+    configured. `factor` may be a single number or a list of numbers --
+    see compare_rows()'s docstring for how a list is handled."""
+    for tab_name, col_map in EQ_PER_TAB_VALUE_SCALE_COLUMNS.items():
+        if clean_col(tab_name) == clean_col(config_tab_name):
+            return {clean_col(col_name): factor for col_name, factor in col_map.items()}
+    return None
+
+
+def drop_columns_if_present(df, columns_to_drop):
+    """Drops `columns_to_drop` from `df` (matched case/space/punctuation-
+    insensitively) if present. Columns not found are silently ignored."""
+    if df is None or not columns_to_drop:
+        return df
+    resolved = [resolve_name(c, df.columns) for c in columns_to_drop]
+    resolved = [c for c in resolved if c is not None]
+    if resolved:
+        df = df.drop(columns=resolved)
+    return df
+
+
+def resolve_territory_sheet(wb):
+    """Sheet selection used for BOTH the main Territory file (D57) and the
+    supplemental CAT file (D56). Tries each name in
+    TERRITORY_SHEET_PRIORITY IN ORDER (case/space/punctuation-insensitive,
+    same as all other sheet-name matching in this tool) -- i.e.
+    "R_L_Territory" first, then "ratingTerritory" -- and falls back to
+    that workbook's first sheet if neither is found."""
+    for candidate in TERRITORY_SHEET_PRIORITY:
+        resolved = find_sheet_name(wb, candidate)
+        if resolved:
+            return resolved
+    return wb.sheetnames[0]
+
+
+def build_territory_buffer_df(territory_df, cat_df,
+                               supplement_columns=TERRITORY_CAT_SUPPLEMENT_COLUMNS,
+                               merge_column=TERRITORY_MERGE_COLUMN):
+    """Builds the in-memory "buffer" export sheet used for the Territory
+    comparison:
+      - Starts as an exact copy of the main Territory file's own columns
+        and values (all of them -- nothing is dropped).
+      - For each column name in `supplement_columns` that is NOT already
+        present in the Territory file (case/space/punctuation-insensitive
+        check), that column is pulled from the CAT file and added to the
+        buffer, joined by matching each row's Territory value (resolved
+        via TERRITORY_MERGE_COLUMN_ALIASES on each file independently, so
+        one file may use "Territory" and the other "ratingTerritory").
+        Territory values are assumed unique on both sides, so this is a
+        simple left-join -- no row duplication.
+      - A column that's already present in the Territory file is left
+        completely untouched; the CAT file's version of that same-named
+        column (if any) is ignored.
+
+    If the Territory merge key can't be resolved on either file, or the
+    CAT file doesn't actually contain a needed column, a warning is
+    printed and that particular column is simply left out of the buffer
+    (the rest of the buffer is still built normally).
+
+    Returns the buffer dataframe. Never mutates `territory_df`/`cat_df`.
+    """
+    buffer_df = territory_df.copy()
+
+    if clean_col(merge_column) == clean_col(TERRITORY_MERGE_COLUMN):
+        key_candidates = TERRITORY_MERGE_COLUMN_ALIASES
+    else:
+        key_candidates = [merge_column]
+
+    missing_cols = [c for c in supplement_columns if resolve_name(c, buffer_df.columns) is None]
+    if not missing_cols:
+        return buffer_df  # Territory file already has everything -- nothing to add.
+
+    if cat_df is None:
+        print("WARNING: CAT file (Inputs!D56) could not be read -- Territory buffer sheet "
+              f"is missing the following columns: {missing_cols}.")
+        return buffer_df
+
+    terr_key = resolve_first_name(key_candidates, buffer_df.columns)
+    cat_key = resolve_first_name(key_candidates, cat_df.columns)
+    if not terr_key or not cat_key:
+        tried = "/".join(key_candidates)
+        print(f"WARNING: Could not find a '{tried}' column in both the Territory file "
+              f"(D57) and the CAT file (D56) -- cannot map the following supplemental "
+              f"columns, so they will be missing from the Territory buffer sheet: {missing_cols}.")
+        return buffer_df
+
+    # Resolve which of the missing columns actually exist in the CAT file.
+    cat_col_map = {c: resolve_name(c, cat_df.columns) for c in missing_cols}
+    found_cols = {canon: resolved for canon, resolved in cat_col_map.items() if resolved}
+    not_found_cols = [canon for canon, resolved in cat_col_map.items() if not resolved]
+    if not_found_cols:
+        print(f"WARNING: CAT file (Inputs!D56) does not contain the following expected "
+              f"column(s): {not_found_cols}. They will be missing from the Territory "
+              f"buffer sheet.")
+
+    if not found_cols:
+        return buffer_df
+
+    lookup_df = cat_df[[cat_key] + list(found_cols.values())].copy()
+    # Rename the CAT key to match the Territory file's key name, and rename
+    # each CAT column to its canonical name (e.g. whatever case/spacing the
+    # CAT file actually used gets normalized to the name in
+    # TERRITORY_CAT_SUPPLEMENT_COLUMNS), so the buffer sheet's headers are
+    # clean and consistent regardless of exact CAT file spelling.
+    rename_map = {resolved: canon for canon, resolved in found_cols.items()}
+    rename_map[cat_key] = terr_key
+    lookup_df = lookup_df.rename(columns=rename_map)
+
+    buffer_df = pd.merge(buffer_df, lookup_df, on=terr_key, how="left")
+    return buffer_df
+
+
 # ------------------------------------------------------------------
-# Output workbook writer
+# Input file loading
 # ------------------------------------------------------------------
-def write_output(buffer_df, comparison, out_path):
+def load_input_paths(input_file):
+    wb = load_workbook(input_file, data_only=True)
+    resolved_name = find_sheet_name(wb, INPUTS_SHEET)
+    if resolved_name is None:
+        raise ValueError(f"Could not find '{INPUTS_SHEET}' sheet in input file (available sheets: {wb.sheetnames}).")
+    ws = wb[resolved_name]
+    paths = {
+        "state_name": ws["C3"].value,
+        "decimal_places": ws["C8"].value,
+        "config_file": ws["C49"].value,
+        "radar_file": ws["C50"].value,
+        "eq_file": ws["C54"].value,
+        "roof_file": ws["C55"].value,
+        # Supplemental CAT file (D56) and main Territory file (D57).
+        "territory_file2": ws["D56"].value,
+        "territory_file": ws["D57"].value,
+        "output_folder": ws["C58"].value,
+    }
+    return paths, wb
+
+
+# ------------------------------------------------------------------
+# Report writer
+# ------------------------------------------------------------------
+def write_summary_sheet(ws, summary_rows):
+    """Populates the given (already-created) worksheet with the Summary
+    of Results content. Kept as a separate function from sheet creation so
+    the caller controls WHERE in the workbook this sheet ends up."""
+    headers = [
+        "Config Tab Name",
+        "Ratabase Tab Name",
+        "Result",
+        "Config Unmatched Rows",
+        "Ratabase Unmatched Rows",
+        "Column Mismatched",
+        "Analyst Comment",
+    ]
+    ws.append(headers)
+    for col in range(1, len(headers) + 1):
+        style_header_cell(ws.cell(row=1, column=col))
+
+    for r in summary_rows:
+        row_values = [
+            na_if_blank(r.get("config_tab", "")),
+            na_if_blank(r.get("export_tab", "")),
+            r.get("result", ""),
+            r.get("config_unmatched_rows", "NA"),
+            r.get("export_unmatched_rows", "NA"),
+            r.get("col_mismatch", "NA"),
+            "",  # Analyst Comment -- left blank for manual entry
+        ]
+        ws.append(row_values)
+        result_row = ws.max_row
+        result_value = r.get("result", "")
+        for col in range(1, len(headers) + 1):
+            cell = ws.cell(row=result_row, column=col)
+            style_data_cell(cell)
+        result_cell = ws.cell(row=result_row, column=3)
+        if result_value in RESULT_COLORS:
+            result_cell.fill = RESULT_COLORS[result_value]
+            result_cell.font = RESULT_FONT_COLORS[result_value]
+
+    last_col_letter = get_column_letter(len(headers))
+    ws.auto_filter.ref = f"A1:{last_col_letter}{ws.max_row}"
+    ws.freeze_panes = "A2"
+
+    autofit_columns(ws)
+
+
+def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, existing_names,
+                        red_config_cols=None, red_export_cols=None, row_label="Unmatched Rows"):
+    red_config_cols = red_config_cols or set()
+    red_export_cols = red_export_cols or set()
+
+    tab_name = sanitize_sheet_name(sheet_name, existing_names)
+    existing_names.add(tab_name)
+    dsheet = wb.create_sheet(tab_name)
+
+    cfg_cols = list(cfg_df.columns) if cfg_df is not None else []
+    exp_cols = list(exp_df.columns) if exp_df is not None else []
+
+    left_width = max(len(cfg_cols), 1)
+    gap = 2
+    start_col_right = left_width + gap + 1
+
+    # ---- Left table: Config source ----
+    label_left = f"Source: Config Tab '{config_tab}' - {row_label}"
+    dsheet.cell(row=1, column=1, value=label_left)
+    dsheet.cell(row=1, column=1).font = SOURCE_FONT
+    dsheet.cell(row=1, column=1).fill = SOURCE_FILL
+    if left_width > 1:
+        dsheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=left_width)
+        for c in range(1, left_width + 1):
+            dsheet.cell(row=1, column=c).fill = SOURCE_FILL
+
+    for j, col in enumerate(cfg_cols, start=1):
+        cell = dsheet.cell(row=2, column=j, value=col)
+        if col in red_config_cols:
+            style_unmatched_header_cell(cell)
+        else:
+            style_header_cell(cell)
+    if cfg_df is not None and not cfg_df.empty:
+        for i, row in enumerate(cfg_df.itertuples(index=False), start=3):
+            for j, val in enumerate(row, start=1):
+                cell = dsheet.cell(row=i, column=j, value=val)
+                style_data_cell(cell)
+
+    # ---- Right table: Export source ----
+    label_right = f"Source: Export Tab '{export_tab}' - {row_label}"
+    dsheet.cell(row=1, column=start_col_right, value=label_right)
+    dsheet.cell(row=1, column=start_col_right).font = SOURCE_FONT
+    dsheet.cell(row=1, column=start_col_right).fill = SOURCE_FILL
+    right_width = max(len(exp_cols), 1)
+    if right_width > 1:
+        dsheet.merge_cells(
+            start_row=1, start_column=start_col_right,
+            end_row=1, end_column=start_col_right + right_width - 1
+        )
+        for c in range(start_col_right, start_col_right + right_width):
+            dsheet.cell(row=1, column=c).fill = SOURCE_FILL
+
+    for j, col in enumerate(exp_cols, start=start_col_right):
+        cell = dsheet.cell(row=2, column=j, value=col)
+        if col in red_export_cols:
+            style_unmatched_header_cell(cell)
+        else:
+            style_header_cell(cell)
+    if exp_df is not None and not exp_df.empty:
+        for i, row in enumerate(exp_df.itertuples(index=False), start=3):
+            for j, val in enumerate(row, start=start_col_right):
+                cell = dsheet.cell(row=i, column=j, value=val)
+                style_data_cell(cell)
+
+    dsheet.freeze_panes = "A3"
+    dsheet.row_dimensions[1].height = 20
+    autofit_columns(dsheet)
+
+
+def write_report(summary_rows, detail_sheets, output_folder, state_name):
     wb = Workbook()
-    default_sheet = wb.active
+    default_sheet = wb.active  # the initial blank "Sheet" openpyxl creates
 
-    # Sheet 1: the buffer sheet itself, so you can eyeball it.
-    ws_buffer = wb.create_sheet("Territory_Buffer")
-    ws_buffer.append(list(buffer_df.columns))
-    for col in range(1, len(buffer_df.columns) + 1):
-        style_header_cell(ws_buffer.cell(row=1, column=col))
-    for row in buffer_df.itertuples(index=False):
-        ws_buffer.append(list(row))
-    for r in range(2, ws_buffer.max_row + 1):
-        for c in range(1, len(buffer_df.columns) + 1):
-            style_data_cell(ws_buffer.cell(row=r, column=c))
-    ws_buffer.freeze_panes = "A2"
-    autofit_columns(ws_buffer)
+    # Reserve the "Summary of Results" name up front so no detail sheet can
+    # collide with it, even though the Summary sheet itself is physically
+    # created LAST (see below) so it ends up as the final tab in the file.
+    existing_names = {"Summary of Results"}
 
-    # Sheet 2: comparison detail
-    ws_cmp = wb.create_sheet("Config_vs_Buffer")
-    cfg_df = comparison["detail_config_df"]
-    exp_df = comparison["detail_export_df"]
-    red_cfg = set(comparison["unmatched_config_cols"])
-    red_exp = set(comparison["unmatched_export_cols"])
+    for tab_key, res in detail_sheets.items():
+        has_col_mismatch = res.get("col_mismatch", "NA") != "NA"
+        row_label = "Full Table (column mismatch - manual review)" if has_col_mismatch else "Unmatched Rows"
+        write_detail_sheet(
+            wb,
+            tab_key,
+            res.get("config_tab", tab_key),
+            res.get("export_tab", ""),
+            res["unmatched_config_df"],
+            res["unmatched_export_df"],
+            existing_names,
+            red_config_cols=res.get("red_config_cols", set()),
+            red_export_cols=res.get("red_export_cols", set()),
+            row_label=row_label,
+        )
 
-    left_width = max(len(cfg_df.columns), 1)
-    start_col_right = left_width + 3
+    # Create the Summary sheet LAST so it's the final tab in the workbook...
+    summary_ws = wb.create_sheet("Summary of Results")
+    write_summary_sheet(summary_ws, summary_rows)
 
-    ws_cmp.cell(row=1, column=1, value=f"Config 'R_L_Territory' ({comparison['result']})")
-    for j, col in enumerate(cfg_df.columns, start=1):
-        style_header_cell(ws_cmp.cell(row=2, column=j, value=col), red=(col in red_cfg))
-    for i, row in enumerate(cfg_df.itertuples(index=False), start=3):
-        for j, val in enumerate(row, start=1):
-            style_data_cell(ws_cmp.cell(row=i, column=j, value=val))
-
-    ws_cmp.cell(row=1, column=start_col_right, value="Buffer (Territory + CAT)")
-    for j, col in enumerate(exp_df.columns, start=start_col_right):
-        style_header_cell(ws_cmp.cell(row=2, column=j, value=col), red=(col in red_exp))
-    for i, row in enumerate(exp_df.itertuples(index=False), start=3):
-        for j, val in enumerate(row, start=start_col_right):
-            style_data_cell(ws_cmp.cell(row=i, column=j, value=val))
-
-    ws_cmp.freeze_panes = "A3"
-    autofit_columns(ws_cmp)
-
+    # ...then drop the original blank default sheet...
     wb.remove(default_sheet)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    # ...and mark Summary as the ACTIVE sheet, so it's what the user sees
+    # first when they open the file, regardless of its tab position.
+    wb.active = wb.sheetnames.index("Summary of Results")
+
+    os.makedirs(output_folder, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    state_str = str(state_name).strip() if state_name else "UnknownState"
+    out_path = os.path.join(output_folder, f"{state_str}_Config_Builder_QC_{ts}.xlsx")
     wb.save(out_path)
-    print(f"\nOutput saved to: {out_path}")
+    return out_path
 
 
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
-def main():
+def main(input_file):
+    paths, input_wb = load_input_paths(input_file)
+
+    raw_decimal = paths.get("decimal_places")
     try:
-        print(f"Reading Config tab '{TERRITORY_CONFIG_TAB}' from: {CONFIG_FILE_PATH}")
-        config_wb = load_workbook(CONFIG_FILE_PATH, data_only=True)
-        resolved_cfg_tab = resolve_name(TERRITORY_CONFIG_TAB, config_wb.sheetnames)
-        if not resolved_cfg_tab:
-            raise ValueError(f"Could not find a tab matching '{TERRITORY_CONFIG_TAB}' in Config file. "
-                              f"Available tabs: {config_wb.sheetnames}")
-        config_df = read_df(CONFIG_FILE_PATH, resolved_cfg_tab, 1)
-        print(f"  Config columns: {list(config_df.columns)}  ({len(config_df)} rows)")
+        decimal_places = int(raw_decimal) if raw_decimal is not None and str(raw_decimal).strip() != "" else None
+    except (ValueError, TypeError):
+        print(f"WARNING: Could not parse decimal places from Inputs!C8 (value: {raw_decimal!r}). "
+              f"Proceeding without rounding.")
+        decimal_places = None
+    if decimal_places is not None:
+        print(f"Numeric values will be rounded to {decimal_places} decimal place(s) before comparison.")
 
-        print(f"\nReading Territory file: {TERRITORY_FILE_PATH}")
-        terr_wb = load_workbook(TERRITORY_FILE_PATH, data_only=True)
-        terr_sheet = resolve_territory_sheet(terr_wb)
-        territory_df = read_df(TERRITORY_FILE_PATH, terr_sheet, 1)
-        print(f"  Using sheet '{terr_sheet}'. Columns: {list(territory_df.columns)}  ({len(territory_df)} rows)")
+    eq_tab_map = load_tab_name_mapping(input_wb, RATE_VAR_SHEET, RATE_VAR_FILE_COL, RATE_VAR_CONFIG_COL)
 
-        cat_df = None
-        if CAT_FILE_PATH:
-            print(f"\nReading CAT file: {CAT_FILE_PATH}")
-            cat_wb = load_workbook(CAT_FILE_PATH, data_only=True)
-            cat_sheet = resolve_territory_sheet(cat_wb)
-            cat_df = read_df(CAT_FILE_PATH, cat_sheet, 1)
-            print(f"  Using sheet '{cat_sheet}'. Columns: {list(cat_df.columns)}  ({len(cat_df)} rows)")
-        else:
-            print("\nNo CAT file path given -- skipping CAT merge.")
+    tr_pairs = load_mapping_pairs_from_sheet(input_wb, COL_MATCH_TR_SHEET, MAPPING_FILE_COL, MAPPING_CONFIG_COL)
+    tr_synonyms = build_synonym_groups(tr_pairs)
+    eq_synonyms = build_synonym_groups(EQ_COLUMN_SYNONYM_PAIRS)
+    radar_synonyms = build_synonym_groups(RADAR_COLUMN_SYNONYM_PAIRS)
 
-        print("\nBuilding buffer sheet...")
-        buffer_df = build_territory_buffer_df(territory_df, cat_df)
-        print(f"  Final buffer columns: {list(buffer_df.columns)}  ({len(buffer_df)} rows)")
+    # Value-level synonym groups (not column-name synonyms) applied only to
+    # the Roof Limit tab's "Limit" column.
+    limit_value_synonyms = build_synonym_groups(LIMIT_VALUE_SYNONYM_PAIRS)
+    roof_value_synonym_cols = {clean_col(ROOF_LIMIT_VALUE_COLUMN): limit_value_synonyms}
 
-        print(f"\nLoading column mapping from '{COL_MATCH_TR_SHEET}' in Input file: {INPUT_FILE_PATH}")
-        input_wb = load_workbook(INPUT_FILE_PATH, data_only=True)
-        tr_pairs = load_mapping_pairs_from_sheet(input_wb, COL_MATCH_TR_SHEET, MAPPING_FILE_COL, MAPPING_CONFIG_COL)
-        tr_synonyms = build_synonym_groups(tr_pairs)
-        print(f"  Loaded {len(tr_pairs)} mapping pair(s).")
+    config_wb = load_workbook(paths["config_file"], data_only=True)
+    config_tabs = config_wb.sheetnames
 
-        comparison = compare_config_to_buffer(config_df, buffer_df, tr_synonyms, DECIMAL_PLACES)
+    summary_rows = []
+    detail_sheets = {}
+    matched_config_tabs = set()
 
-        write_output(buffer_df, comparison, OUTPUT_FILE_PATH)
+    # ---------------- Radar ----------------
+    try:
+        radar_wb = load_workbook(paths["radar_file"], data_only=True)
+        for sheet_name in radar_wb.sheetnames:
+            if is_excluded_tab(sheet_name):
+                continue
+            resolved_cfg = resolve_name(sheet_name, config_tabs)
+            if resolved_cfg and is_excluded_tab(resolved_cfg):
+                continue
+            # R_O_RoofLimit is handled exclusively by the dedicated Roof
+            # Limit export file/section below -- skip it here even if the
+            # Radar export file also happens to contain a same-named tab.
+            if resolved_cfg and clean_col(resolved_cfg) == clean_col(ROOF_CONFIG_TAB):
+                continue
+            if resolved_cfg:
+                config_df = read_df(paths["config_file"], resolved_cfg, 1)
+                export_df = read_df(paths["radar_file"], sheet_name, 1)
 
+                # NEW: conditional per-tab column drops (e.g.
+                # R_C_AOIRel_AOPDedAOI's "WaterNonWinter" column, dropped
+                # from both sides -- never matched/shown -- whenever every
+                # Config value in it is "1").
+                config_df, export_df = apply_conditional_column_drops(config_df, export_df, resolved_cfg)
+
+                # Water Backup tabs: optionally skip rows with a low
+                # coverage amount, on both sides, before comparing.
+                if SKIP_LOW_COVERAGE_WATER_BACKUP_ROWS and any(
+                    clean_col(t) == clean_col(resolved_cfg) for t in WATER_BACKUP_TABS
+                ):
+                    config_df = filter_low_coverage_rows(config_df)
+                    export_df = filter_low_coverage_rows(export_df)
+
+                res = process_pair(config_df, export_df, resolved_cfg, sheet_name, radar_synonyms, decimal_places)
+                matched_config_tabs.add(resolved_cfg)
+                summary_rows.append(res)
+                if res["result"] != VALIDATED:
+                    detail_sheets[resolved_cfg] = res
+            else:
+                summary_rows.append(missing_row(export_tab=sheet_name, result=MISSING_IN_CONFIG))
     except Exception as e:
-        print("\n" + "=" * 70)
-        print("ERROR -- processing failed. Full traceback below:")
-        print("=" * 70)
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"WARNING: Radar file processing failed: {e}")
+
+    # ---------------- EQ ----------------
+    try:
+        eq_wb = load_workbook(paths["eq_file"], data_only=True)
+        for sheet_name in eq_wb.sheetnames:
+            if is_excluded_tab(sheet_name):
+                continue
+            target_config_tab = resolve_name(sheet_name, config_tabs)
+            if not target_config_tab:
+                mapped_raw = eq_tab_map.get(clean_col(sheet_name))
+                if mapped_raw:
+                    target_config_tab = resolve_name(mapped_raw, config_tabs)
+
+            if target_config_tab and is_excluded_tab(target_config_tab):
+                continue
+
+            if target_config_tab:
+                header_row = detect_eq_header_row(eq_wb[sheet_name])
+                config_df = read_df(paths["config_file"], target_config_tab, 1)
+                # NOTE: uses read_df_first_table -- an EQ sheet may contain
+                # multiple tables side by side; only the first is kept
+                # (truncated at the first blank/empty header cell).
+                export_df = read_df_first_table(paths["eq_file"], sheet_name, header_row)
+
+                # NEW: conditional per-tab column drops (harmless no-op for
+                # EQ tabs not listed in CONDITIONAL_COLUMN_DROPS).
+                config_df, export_df = apply_conditional_column_drops(config_df, export_df, target_config_tab)
+
+                # Per-tab "post read" fixes -- applied directly to the
+                # dataframe right after reading, before any matching runs:
+                #   - drops "State" entirely (both sides) for
+                #     R_O_EQExpense / R_O_LossAsessmentEQ (or "R_O_LossAssessmentEQ"),
+                #   - renames R_O_EQYearBuilt's "County.1" -> "County Code"
+                #     and "Construction Type"/"Contruction Type" -> "EQ
+                #     Construction Type" so they match Config's names
+                #     exactly (no synonym lookup needed once renamed).
+                config_df = apply_eq_post_read_adjustments(config_df, target_config_tab, "config")
+                export_df = apply_eq_post_read_adjustments(export_df, target_config_tab, "export")
+
+                # Per-tab, per-column VALUE synonyms (e.g. R_O_EQYearBuilt's
+                # "Retrofit" column treating Yes/Y and No/N as equal).
+                current_eq_value_synonym_cols = get_eq_value_synonym_cols_for_tab(target_config_tab)
+
+                # Per-tab, per-column numeric scale applied ONLY during
+                # comparison (e.g. R_O_EQDed's "EQ Deductible Percent" tries
+                # BOTH factor 1 -- exact match -- and factor 0.01 -- so
+                # Config's 5/10/30 also lines up with the export's
+                # 0.05/0.1/0.3 -- name matching for that pair is already
+                # handled by EQ_COLUMN_SYNONYM_PAIRS). If the row still
+                # doesn't match under either factor, the ORIGINAL unscaled
+                # Config value is what shows in the output detail sheet,
+                # since the dataframe itself is never touched -- only the
+                # in-memory comparison uses the scaled number(s).
+                current_eq_value_scale_cols = get_eq_value_scale_cols_for_tab(target_config_tab)
+
+                res = process_pair(
+                    config_df, export_df, target_config_tab, sheet_name,
+                    eq_synonyms, decimal_places, current_eq_value_synonym_cols,
+                    current_eq_value_scale_cols,
+                )
+                matched_config_tabs.add(target_config_tab)
+                summary_rows.append(res)
+                if res["result"] != VALIDATED:
+                    detail_sheets[target_config_tab] = res
+            else:
+                summary_rows.append(missing_row(export_tab=sheet_name, result=MISSING_IN_CONFIG))
+    except Exception as e:
+        print(f"WARNING: EQ file processing failed: {e}")
+
+    # ---------------- Territory (+ supplemental D56 CAT file) ----------------
+    try:
+        resolved_terr_cfg = resolve_name(TERRITORY_CONFIG_TAB, config_tabs)
+        if resolved_terr_cfg and is_excluded_tab(resolved_terr_cfg):
+            pass  # excluded tab -- fully neglected, no summary row at all
+        elif resolved_terr_cfg:
+            config_df = read_df(paths["config_file"], resolved_terr_cfg, 1)
+
+            terr_wb1 = load_workbook(paths["territory_file"], data_only=True)
+            # Sheet selection priority for the Territory file (D57) --
+            # "R_L_Territory" first, then "ratingTerritory", then that
+            # workbook's first sheet.
+            sheet1_name = resolve_territory_sheet(terr_wb1)
+            territory_df = read_df(paths["territory_file"], sheet1_name, 1)
+
+            buffer_export_df = territory_df
+
+            territory_file2_path = paths.get("territory_file2")
+            if territory_file2_path:
+                try:
+                    terr_wb2 = load_workbook(territory_file2_path, data_only=True)
+                    # Same sheet selection priority for the CAT file (D56):
+                    # "R_L_Territory" first, then "ratingTerritory", then
+                    # that workbook's first sheet.
+                    sheet2_name = resolve_territory_sheet(terr_wb2)
+                    cat_df = read_df(territory_file2_path, sheet2_name, 1)
+                    # Builds the in-memory "buffer" sheet: starts with the
+                    # Territory file's own columns/values, then fills in
+                    # "Hurricane"/"Reinsurance"/"Capital"/"WildFire"/"Fixed"
+                    # from the CAT file ONLY for whichever of those columns
+                    # the Territory file doesn't already have, mapped by the
+                    # (unique) Territory value. Columns the Territory file
+                    # already has are left untouched.
+                    buffer_export_df = build_territory_buffer_df(territory_df, cat_df)
+                except Exception as cat_error:
+                    # If the CAT file is missing/unreadable, compare ONLY the
+                    # columns that are actually present in the Territory file.
+                    # Any Config columns not present in that Territory data
+                    # will be handled by process_pair() and highlighted red.
+                    print(
+                        f"WARNING: CAT file could not be read/processed: {cat_error}. "
+                        f"Continuing Territory comparison using only the Territory file."
+                    )
+                    buffer_export_df = territory_df
+            else:
+                # No CAT file supplied: compare only the Territory file columns.
+                print(
+                    "WARNING: CAT file (Inputs!D56) is missing/blank. "
+                    "Continuing Territory comparison using only the Territory file."
+                )
+                buffer_export_df = territory_df
+
+            # Short, fixed label for the Summary sheet (and detail sheet
+            # source label) instead of the full export file name(s).
+            export_tab_label = TERRITORY_SUMMARY_LABEL
+
+            # Column matching against buffer_export_df still goes through
+            # the normal process_pair flow below: if every Config column
+            # can be matched somewhere in the buffer sheet (exact name, or
+            # via the Column Match_Tr mapping/synonyms), the tab is fully
+            # row-compared and validated as usual. If any Config column
+            # can't be matched anywhere, process_pair already falls back
+            # to "Manual validation required" -- full table dump,
+            # unmatched column header(s) highlighted red. Since
+            # buffer_export_df IS the export_df passed in here, it's what
+            # automatically shows up on the export side of that side-by-
+            # side detail sheet.
+            res = process_pair(
+                config_df, buffer_export_df, resolved_terr_cfg, export_tab_label, tr_synonyms, decimal_places
+            )
+            matched_config_tabs.add(resolved_terr_cfg)
+            summary_rows.append(res)
+            if res["result"] != VALIDATED:
+                detail_sheets[resolved_terr_cfg] = res
+        else:
+            summary_rows.append(missing_row(export_tab="Sheet1", result=MISSING_IN_CONFIG))
+    except Exception as e:
+        print(f"WARNING: Territory file processing failed: {e}")
+
+    # ---------------- Roof Limit ----------------
+    try:
+        resolved_roof_cfg = resolve_name(ROOF_CONFIG_TAB, config_tabs)
+        if resolved_roof_cfg and is_excluded_tab(resolved_roof_cfg):
+            pass  # excluded tab -- fully neglected, no summary row at all
+        elif resolved_roof_cfg:
+            config_df = read_df(paths["config_file"], resolved_roof_cfg, 1)
+            roof_wb = load_workbook(paths["roof_file"], data_only=True)
+            roof_sheet_name = roof_wb.sheetnames[0]
+            export_df = read_df(paths["roof_file"], roof_sheet_name, 1)
+            # NEW: short, fixed label for the Summary sheet (and detail
+            # sheet source label) instead of the full export file name.
+            roof_file_label = ROOF_SUMMARY_LABEL
+            # NOTE: passes roof_value_synonym_cols so "No Limit" (Config) and
+            # "No Sub-limit" (export) are treated as equal in the "Limit" column.
+            res = process_pair(
+                config_df, export_df, resolved_roof_cfg, roof_file_label, None,
+                decimal_places, roof_value_synonym_cols
+            )
+            matched_config_tabs.add(resolved_roof_cfg)
+            summary_rows.append(res)
+            if res["result"] != VALIDATED:
+                detail_sheets[resolved_roof_cfg] = res
+        else:
+            summary_rows.append(missing_row(export_tab="Sheet1", result=MISSING_IN_CONFIG))
+    except Exception as e:
+        print(f"WARNING: Roof Limit file processing failed: {e}")
+
+    # ---------------- Config tabs never matched by any export ----------------
+    for tab in config_tabs:
+        if is_excluded_tab(tab):
+            continue
+        if tab not in matched_config_tabs:
+            summary_rows.append(missing_row(config_tab=tab, result=MISSING_IN_EXPORT))
+
+    # ---------------- Order the Summary rows by Config tab order ----------------
+    # Rows whose "config_tab" matches an actual Config workbook tab are sorted
+    # to follow that tab's position in the Config file. Any row that doesn't
+    # correspond to a Config tab (e.g. "Factor Tab not Found in export" rows,
+    # which only have an export_tab) is left where it was -- sorted() is
+    # stable, so all such rows simply keep their original relative order,
+    # placed after every row that DID match a Config tab.
+    config_tab_order = {clean_col(t): i for i, t in enumerate(config_tabs)}
+
+    def summary_sort_key(row):
+        tab = row.get("config_tab", "NA")
+        if tab and tab != "NA":
+            idx = config_tab_order.get(clean_col(tab))
+            if idx is not None:
+                return (0, idx)
+        return (1, 0)
+
+    summary_rows = sorted(summary_rows, key=summary_sort_key)
+
+    out_path = write_report(summary_rows, detail_sheets, paths["output_folder"], paths["state_name"])
+    print(f"Report saved to: {out_path}")
+    return out_path
 
 
 if __name__ == "__main__":
-    main()
+    main(INPUT_FILE_PATH)
