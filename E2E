@@ -4,7 +4,7 @@ Config vs Export Files Comparison Tool
 
 Reads a single "Input" Excel file (Inputs tab + Rate_Variables tab +
 Column Match_Tr tab), compares a Config file's tabs against export files
-(Radar, EQ, Territory [+ a supplemental Territory file], Roof Limit),
+(Radar, EQ, Territory [+ a supplemental CAT file], Roof Limit),
 and produces a single output report workbook.
 
 -------------------------------------------------------------------------
@@ -35,19 +35,42 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    RADAR_COLUMN_SYNONYM_PAIRS below (in addition to exact-name matches).
 5. Territory: the Territory export file (Inputs!C57) is matched to
    Config's "R_L_Territory" tab via the "Column Match_Tr" mapping sheet,
-   same as before. A NEW supplemental file (Inputs!C56, single sheet) is
-   also read; its columns are assumed to match Config columns by EXACT
-   name (no mapping needed) and are combined with the main Territory
-   file's columns before comparing against Config.
-   NEW: the two files are combined specifically by matching on their
-   "Territory" column (present in both the main Territory export file
-   and the C56 supplemental file, matched case/space/punctuation-
-   insensitively) -- NOT on any arbitrary shared column name. If a file
-   doesn't have a "Territory" column, "ratingTerritory" is tried as a
-   fallback alias (also case/space/punctuation-insensitive) before
-   giving up -- see TERRITORY_MERGE_COLUMN_ALIASES below. If either
-   file is missing BOTH names, columns are combined by row position
-   instead as a fallback (a warning is printed in that case).
+   same as before. A supplemental "CAT" file (Inputs!D56) is also read
+   and combined with the main Territory file's columns before comparing
+   against Config, as follows:
+     - The two files are combined specifically by matching on their
+       "Territory" column (present in both the main Territory export
+       file and the D56 CAT file, matched case/space/punctuation-
+       insensitively) -- NOT on any arbitrary shared column name. If a
+       file doesn't have a "Territory" column, "ratingTerritory" is
+       tried as a fallback alias (also case/space/punctuation-
+       insensitive) before giving up -- see
+       TERRITORY_MERGE_COLUMN_ALIASES below. If either file is missing
+       BOTH names, columns are combined by row position instead as a
+       fallback (a warning is printed in that case).
+     - NEW: Sheet selection within the CAT file (Inputs!D56) follows a
+       priority order -- it first looks for a sheet named
+       "R_L_Territory"; if that's not present, it looks for a sheet
+       named "ratingTerritory"; if neither is present, it falls back to
+       the CAT file's first sheet. See CAT_FILE_SHEET_PRIORITY and
+       resolve_cat_file_sheet() below.
+     - NEW: Only these specific columns are ever read/considered from
+       the CAT file's chosen sheet: "Territory", "Hurricane",
+       "Reinsurance", "Capital", "WildFire", "Fixed" (matched case/
+       space/punctuation-insensitively). Every other column present in
+       that CAT sheet is discarded before the file is combined with the
+       main Territory export file. See CAT_FILE_ALLOWED_COLUMNS and
+       restrict_columns_to_allowed() below.
+     - Once combined, Config's "R_L_Territory" tab is column-matched
+       against the combined file exactly as before (exact name match,
+       then the "Column Match_Tr" mapping). If every Config column can
+       be matched (whether against the main Territory file or against
+       one of the six allowed CAT columns), the tab is fully row-
+       compared and validated as usual. If any Config column can't be
+       matched anywhere, the tab falls back to the existing "Manual
+       validation required" handling -- full table dump, unmatched
+       column header(s) highlighted red -- exactly as it already did
+       before this change.
 6. Roof Limit: column matching is by exact column name only (no
    mapping), unchanged.
    NEW: for the "Limit" column specifically, the value "No Limit" (as it
@@ -168,8 +191,8 @@ EXCLUDED_TAB_NAMES = [
 ]
 
 
-# Column that the main Territory export file and the C56 supplemental
-# Territory file are combined on.
+# Column that the main Territory export file and the D56 supplemental
+# (CAT) file are combined on.
 TERRITORY_MERGE_COLUMN = "Territory"
 
 # When resolving the Territory merge column on either file, these names
@@ -177,6 +200,26 @@ TERRITORY_MERGE_COLUMN = "Territory"
 # first, then "ratingTerritory" as a fallback alias if "Territory" isn't
 # present on that particular file.
 TERRITORY_MERGE_COLUMN_ALIASES = ["Territory", "ratingTerritory"]
+
+# NEW: Sheet-name priority used ONLY for the D56 supplemental CAT file --
+# tries "R_L_Territory" first, then "ratingTerritory", falling back to
+# that workbook's first sheet if neither is found. Matched case/space/
+# punctuation-insensitively, same as all other sheet-name lookups.
+CAT_FILE_SHEET_PRIORITY = [TERRITORY_CONFIG_TAB, "ratingTerritory"]
+
+# NEW: Only these columns are ever read/considered from the D56
+# supplemental CAT file's chosen sheet -- every other column present
+# there is discarded before it's combined with the main Territory export
+# file. Matched case/space/punctuation-insensitively. "Territory" is
+# included here so the merge key itself is always preserved.
+CAT_FILE_ALLOWED_COLUMNS = [
+    "Territory",
+    "Hurricane",
+    "Reinsurance",
+    "Capital",
+    "WildFire",
+    "Fixed",
+]
 
 # Column in the Roof Limit tab whose values get synonym-normalized.
 ROOF_LIMIT_VALUE_COLUMN = "Limit"
@@ -1084,6 +1127,33 @@ def drop_columns_if_present(df, columns_to_drop):
     return df
 
 
+def resolve_cat_file_sheet(wb):
+    """NEW: Sheet selection for the D56 supplemental CAT file. Tries each
+    name in CAT_FILE_SHEET_PRIORITY IN ORDER (case/space/punctuation-
+    insensitive, same as all other sheet-name matching in this tool) --
+    i.e. "R_L_Territory" first, then "ratingTerritory" -- and falls back
+    to the workbook's first sheet if neither is found."""
+    for candidate in CAT_FILE_SHEET_PRIORITY:
+        resolved = find_sheet_name(wb, candidate)
+        if resolved:
+            return resolved
+    return wb.sheetnames[0]
+
+
+def restrict_columns_to_allowed(df, allowed_names):
+    """NEW: Keeps only the columns of `df` whose name matches one of
+    `allowed_names` (case/space/punctuation-insensitive) -- every other
+    column is dropped entirely. Column order follows `df`'s original
+    order. Used to restrict the D56 supplemental CAT file down to only
+    CAT_FILE_ALLOWED_COLUMNS before it's combined with the main Territory
+    export file."""
+    if df is None:
+        return df
+    allowed_clean = {clean_col(n) for n in allowed_names}
+    keep_cols = [c for c in df.columns if clean_col(c) in allowed_clean]
+    return df[keep_cols].copy()
+
+
 def merge_export_dataframes(df1, df2, merge_column=TERRITORY_MERGE_COLUMN):
     """Combine two export dataframes into one, for Territory's dual-file case.
     Specifically aligns on the Territory merge column (present in both
@@ -1112,8 +1182,8 @@ def merge_export_dataframes(df1, df2, merge_column=TERRITORY_MERGE_COLUMN):
 
     tried = "/".join(candidates)
     print(f"WARNING: Could not find a '{tried}' column in both the Territory export "
-          f"file and the supplemental file (Inputs!C56) -- combining columns by row position "
-          f"instead. Please verify row order matches between the two files.")
+          f"file and the supplemental CAT file (Inputs!D56) -- combining columns by row "
+          f"position instead. Please verify row order matches between the two files.")
     n = max(len(df1), len(df2))
     df1r = df1.reindex(range(n)).reset_index(drop=True)
     df2r = df2.reindex(range(n)).reset_index(drop=True)
@@ -1136,7 +1206,8 @@ def load_input_paths(input_file):
         "radar_file": ws["C50"].value,
         "eq_file": ws["C54"].value,
         "roof_file": ws["C55"].value,
-        "territory_file2": ws["C56"].value,
+        # NEW: the supplemental CAT file now lives in D56 (was C56).
+        "territory_file2": ws["D56"].value,
         "territory_file": ws["C57"].value,
         "output_folder": ws["C58"].value,
     }
@@ -1449,7 +1520,7 @@ def main(input_file):
     except Exception as e:
         print(f"WARNING: EQ file processing failed: {e}")
 
-    # ---------------- Territory (+ supplemental C56 file) ----------------
+    # ---------------- Territory (+ supplemental D56 CAT file) ----------------
     try:
         resolved_terr_cfg = resolve_name(TERRITORY_CONFIG_TAB, config_tabs)
         if resolved_terr_cfg and is_excluded_tab(resolved_terr_cfg):
@@ -1466,8 +1537,15 @@ def main(input_file):
             territory_file2_path = paths.get("territory_file2")
             if territory_file2_path:
                 terr_wb2 = load_workbook(territory_file2_path, data_only=True)
-                sheet2_name = terr_wb2.sheetnames[0]
-                export_df2 = read_df(territory_file2_path, sheet2_name, 1)
+                # NEW: sheet selection priority for the CAT file --
+                # "R_L_Territory" first, then "ratingTerritory", then that
+                # workbook's first sheet.
+                sheet2_name = resolve_cat_file_sheet(terr_wb2)
+                export_df2_full = read_df(territory_file2_path, sheet2_name, 1)
+                # NEW: only these columns are ever pulled from the CAT
+                # file -- everything else in that sheet is discarded
+                # before combining with the main Territory export file.
+                export_df2 = restrict_columns_to_allowed(export_df2_full, CAT_FILE_ALLOWED_COLUMNS)
                 # NOTE: merges on the "Territory" column present in both
                 # files (falling back to "ratingTerritory" on either file
                 # if "Territory" isn't found there) -- not just any shared
@@ -1480,6 +1558,16 @@ def main(input_file):
             # sheet source label) instead of the full export file name(s).
             export_tab_label = TERRITORY_SUMMARY_LABEL
 
+            # Column matching against combined_export_df (main Territory
+            # file columns + the six allowed CAT columns) still goes
+            # through the normal process_pair flow below: if every Config
+            # column can be matched somewhere in combined_export_df (exact
+            # name, or via the Column Match_Tr mapping/synonyms), the tab
+            # is fully row-compared and validated as usual. If any Config
+            # column can't be matched anywhere, process_pair already falls
+            # back to "Manual validation required" -- full table dump,
+            # unmatched column header(s) highlighted red -- exactly as
+            # before.
             res = process_pair(
                 config_df, combined_export_df, resolved_terr_cfg, export_tab_label, tr_synonyms, decimal_places
             )
