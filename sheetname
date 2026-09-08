@@ -1,19 +1,19 @@
-Hi Arushi,
+Hi Marissa,
 
-I ran the Factor Import Tool for the ID files shared by Marissa, and the tool is working fine.
+Thank you for sharing the files.
 
-The only issues I encountered were related to column and sheet mapping. Some of the files provided by Marissa have different column names and sheet names compared to the previously shared files.
+We ran the Factor Import Tool for the ID files, and the tool is working fine. The only issues we encountered were related to column and sheet mapping.
 
-For example:
+Some of the files have different column names and sheet names compared to the previously shared files. For example:
 
 The Territory file has a sheet named "Territory Factors", whereas it should either be "R_L_Territory" or the file should contain only one sheet.
 The Earthquake file has different column names compared to the previous files.
 The T_L_DistTOWF tab also has different column names.
 
-For now, I have mapped the required columns and sheets accordingly and ran the code. The tool copied everything as expected.
+For now, we have mapped the required columns and sheets accordingly and ran the code. Everything was copied as expected.
 
 All the relevant files and outputs can be found here: [link]
 
-Can we have a call to discuss this?
+Could we have a call to discuss these differences and confirm the expected column and sheet mappings?
 
 Thanks!
