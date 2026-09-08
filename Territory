@@ -1,19 +1,22 @@
 Option Explicit
 
 '====================================================================
-' MAIN ENTRY POINT - call this from anywhere
+' MAIN ENTRY POINT - copies ONLY Hurricane, Capital, Reinsurance, Fixed
+' Call this from anywhere, e.g.:
+'   Call UpdateSelectedColumns("C:\Files\Config.xlsx", "C:\Files\Export.xlsx")
 '====================================================================
-Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As String)
+Public Sub UpdateSelectedColumns(ByVal configPath As String, ByVal exportPath As String)
 
     Dim wbConfig As Workbook, wbExport As Workbook
     Dim wsConfig As Worksheet, wsExport As Worksheet
-    Dim mapDict As Object, colPairs As Object, configData As Object
     Dim configHeaders As Object, exportHeaders As Object
     Dim configLastRow As Long, configLastCol As Long
     Dim exportLastRow As Long, exportLastCol As Long
     Dim configKeyCol As Long, exportKeyCol As Long
-    Dim r As Long, c As Long
-    Dim colFormat() As String, colAlign() As Long
+    Dim targetCols As Variant, tName As Variant
+    Dim colPairs As Object          ' Config col index -> Export col index (only for the 4 target cols)
+    Dim rowLookup As Object         ' NormalizedKey -> Config row number
+    Dim r As Long
     Dim origCalc As XlCalculation
     Dim origScreenUpdating As Boolean, origEvents As Boolean, origAlerts As Boolean
     Dim success As Boolean
@@ -32,8 +35,8 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
     Application.Calculation = xlCalculationManual
 
     ' ---- Close files first if already open (no prompts) ----
-    CloseWorkbookIfOpen configPath
-    CloseWorkbookIfOpen exportPath
+    CloseWorkbookIfOpen2 configPath
+    CloseWorkbookIfOpen2 exportPath
 
     ' ---- Open both workbooks silently ----
     Set wbConfig = Workbooks.Open(configPath, UpdateLinks:=0, ReadOnly:=False, _
@@ -42,185 +45,95 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
                     IgnoreReadOnlyRecommended:=True, Notify:=False, AddToMru:=False)
 
     ' ---- Get required sheets (case-insensitive) ----
-    Set wsConfig = FindSheet(wbConfig, Array("R_L_Territory"))
+    Set wsConfig = FindSheet2(wbConfig, Array("R_L_Territory"))
     If wsConfig Is Nothing Then
         MsgBox "Sheet 'R_L_Territory' not found in Config file.", vbExclamation
         GoTo CleanExit
     End If
 
-    Set wsExport = FindSheet(wbExport, Array("R_L_Territory", "ratingTerritory"))
+    Set wsExport = FindSheet2(wbExport, Array("R_L_Territory", "ratingTerritory"))
     If wsExport Is Nothing Then
         Set wsExport = wbExport.Worksheets(1)   ' fallback: first/only sheet
     End If
 
-    ' ---- Column name mapping: Config Name -> Export Name (all UCase) ----
-    Set mapDict = CreateObject("Scripting.Dictionary")
-    mapDict.Add "TERRITORY", "RATINGTERRITORY"
-    mapDict.Add "WATERWINTER", "WINTERWATER"
-    mapDict.Add "WATERNONWINTER", "NWWTR"
-    mapDict.Add "WINDSUMMER", "SUMMERWIND"
-    mapDict.Add "WINDWINTER", "WINTERWIND"
-    mapDict.Add "LIABILITYPOLLUTION", "LIAB"
-    mapDict.Add "THEFTVANDALISM", "THEFT"
-
     ' ---- Read headers ----
-    Set configHeaders = GetHeaderMap(wsConfig, configLastCol)
-    Set exportHeaders = GetHeaderMap(wsExport, exportLastCol)
+    Set configHeaders = GetHeaderMap2(wsConfig, configLastCol)
+    Set exportHeaders = GetHeaderMap2(wsExport, exportLastCol)
 
-    configLastRow = GetLastDataRow(wsConfig)
-    exportLastRow = GetLastDataRow(wsExport)
+    configLastRow = GetLastDataRow2(wsConfig)
+    exportLastRow = GetLastDataRow2(wsExport)
 
-    ' ---- Locate key columns ----
-    configKeyCol = DictLookup(configHeaders, "TERRITORY")
+    ' ---- Locate key (Territory) columns ----
+    configKeyCol = DictLookup2(configHeaders, "TERRITORY")
+    If configKeyCol = 0 Then configKeyCol = DictLookup2(configHeaders, "RATINGTERRITORY")
     If configKeyCol = 0 Then
-        MsgBox "Column 'Territory' not found in Config sheet.", vbExclamation
+        MsgBox "Column 'Territory'/'ratingTerritory' not found in Config sheet.", vbExclamation
         GoTo CleanExit
     End If
 
-    exportKeyCol = DictLookup(exportHeaders, "TERRITORY")
-    If exportKeyCol = 0 Then exportKeyCol = DictLookup(exportHeaders, "RATINGTERRITORY")
+    exportKeyCol = DictLookup2(exportHeaders, "TERRITORY")
+    If exportKeyCol = 0 Then exportKeyCol = DictLookup2(exportHeaders, "RATINGTERRITORY")
     If exportKeyCol = 0 Then
         MsgBox "Column 'Territory'/'ratingTerritory' not found in Export sheet.", vbExclamation
         GoTo CleanExit
     End If
 
-    ' ---- Capture existing layout (number format + alignment) per column BEFORE touching data ----
-    ReDim colFormat(1 To configLastCol)
-    ReDim colAlign(1 To configLastCol)
-    Dim templateRow As Long
-    templateRow = IIf(configLastRow >= 2, 2, 0)
-    For c = 1 To configLastCol
-        If templateRow > 0 Then
-            colFormat(c) = wsConfig.Cells(templateRow, c).NumberFormat
-            colAlign(c) = wsConfig.Cells(templateRow, c).HorizontalAlignment
-        Else
-            colFormat(c) = "General"
-            colAlign(c) = xlGeneral
-        End If
-    Next c
+    ' ---- Only these 4 columns are ever touched ----
+    targetCols = Array("Hurricane", "Capital", "Reinsurance", "Fixed")
 
-    ' Force the key column to plain TEXT format so values like "0558409"
-    ' never get auto-converted to a number and lose the leading zero.
-    colFormat(configKeyCol) = "@"
-
-    ' ---- Build Config-Col -> Export-Col map (direct name match, else mapping table) ----
     Set colPairs = CreateObject("Scripting.Dictionary")
-    Dim cKey As Variant, cColIdx As Long, eColIdx As Long, cName As String
-    For Each cKey In configHeaders.Keys
-        cName = CStr(cKey)
-        cColIdx = configHeaders(cKey)
-        If cColIdx <> configKeyCol Then
-            eColIdx = DictLookup(exportHeaders, cName)                     ' 1) direct match
-            If eColIdx = 0 And mapDict.Exists(cName) Then                  ' 2) mapped match
-                eColIdx = DictLookup(exportHeaders, CStr(mapDict(cName)))
-            End If
-            If eColIdx > 0 Then colPairs.Add cColIdx, eColIdx
+    Dim cIdx As Long, eIdx As Long
+    For Each tName In targetCols
+        cIdx = DictLookup2(configHeaders, CStr(tName))
+        eIdx = DictLookup2(exportHeaders, CStr(tName))
+        If cIdx > 0 And eIdx > 0 Then
+            colPairs.Add cIdx, eIdx
         End If
-    Next cKey
+        ' if a target column is missing in either file, it's simply skipped (not an error)
+    Next tName
 
-    ' ---- STEP 1: Load ALL existing Config rows into memory (nothing is lost) ----
-    Set configData = CreateObject("Scripting.Dictionary")
-    Dim kVal As String, arr() As Variant, keyDisplay As Variant
+    If colPairs.Count = 0 Then
+        MsgBox "None of the target columns (Hurricane, Capital, Reinsurance, Fixed) " & _
+               "were found in both files.", vbExclamation
+        GoTo CleanExit
+    End If
 
+    ' ---- Build Territory -> Config row lookup (numeric-aware, case-insensitive) ----
+    Set rowLookup = CreateObject("Scripting.Dictionary")
+    Dim kVal As String, keyDisplay As Variant
     For r = 2 To configLastRow
-        keyDisplay = GetKeyValue(wsConfig.Cells(r, configKeyCol))
-        kVal = NormalizeKey(keyDisplay)
-        If Len(Trim$(CStr(keyDisplay))) = 0 Then kVal = "~BLANK~" & r   ' preserve blank-key rows too
-
-        If Not configData.Exists(kVal) Then
-            ReDim arr(1 To configLastCol)
-            For c = 1 To configLastCol
-                If c = configKeyCol Then
-                    arr(c) = keyDisplay
-                Else
-                    arr(c) = wsConfig.Cells(r, c).Value
-                End If
-            Next c
-            configData.Add kVal, arr
+        keyDisplay = GetKeyValue2(wsConfig.Cells(r, configKeyCol))
+        kVal = NormalizeKey2(keyDisplay)
+        If Len(Trim$(CStr(keyDisplay))) > 0 Then
+            If Not rowLookup.Exists(kVal) Then rowLookup.Add kVal, r
         End If
     Next r
 
-    ' ---- STEP 2: Merge in Export data (update existing / add new) ----
-    Dim exportTerritoryVal As Variant, keyStr As String
+    ' ---- Copy values ONLY for matching Territories, ONLY for the 4 target columns ----
+    Dim exportKeyVal As Variant, keyStr As String, targetRow As Long
     Dim cPairKey As Variant, srcVal As Variant
 
     For r = 2 To exportLastRow
-        exportTerritoryVal = GetKeyValue(wsExport.Cells(r, exportKeyCol))
+        exportKeyVal = GetKeyValue2(wsExport.Cells(r, exportKeyCol))
 
-        If Len(Trim$(CStr(exportTerritoryVal))) > 0 Then
+        If Len(Trim$(CStr(exportKeyVal))) > 0 Then
+            keyStr = NormalizeKey2(exportKeyVal)
 
-            keyStr = NormalizeKey(exportTerritoryVal)
+            If rowLookup.Exists(keyStr) Then
+                targetRow = rowLookup(keyStr)
 
-            If configData.Exists(keyStr) Then
-                arr = configData(keyStr)
-            Else
-                ReDim arr(1 To configLastCol)
-                arr(configKeyCol) = exportTerritoryVal
+                For Each cPairKey In colPairs.Keys
+                    srcVal = wsExport.Cells(r, colPairs(cPairKey)).Value
+                    If Len(Trim$(CStr(srcVal))) > 0 Then     ' skip empty - never paste blanks
+                        wsConfig.Cells(targetRow, CLng(cPairKey)).Value = srcVal
+                    End If
+                Next cPairKey
             End If
-
-            For Each cPairKey In colPairs.Keys
-                srcVal = wsExport.Cells(r, colPairs(cPairKey)).Value
-                If Len(Trim$(CStr(srcVal))) > 0 Then
-                    arr(CLng(cPairKey)) = srcVal
-                End If
-            Next cPairKey
-
-            configData(keyStr) = arr   ' add or update
+            ' Territories not already present in Config are ignored here -
+            ' this routine only updates existing rows, it never adds rows
+            ' or touches any column other than the 4 listed above.
         End If
     Next r
-
-    ' ---- STEP 3: Sort all keys by Territory value (ascending, numeric-aware) ----
-    Dim allKeys() As Variant
-    allKeys = configData.Keys
-
-    If UBound(allKeys) >= LBound(allKeys) Then
-        QuickSortKeys allKeys, LBound(allKeys), UBound(allKeys), configData, configKeyCol
-    End If
-
-    ' ---- STEP 4: Resize the sheet to fit the merged/sorted data ----
-    Dim finalCount As Long, requiredLastRow As Long
-    finalCount = UBound(allKeys) - LBound(allKeys) + 1
-    requiredLastRow = finalCount + 1
-
-    If requiredLastRow > configLastRow Then
-        If templateRow > 0 Then
-            wsConfig.Rows(templateRow).Copy
-            wsConfig.Range(wsConfig.Rows(configLastRow + 1), wsConfig.Rows(requiredLastRow)).PasteSpecial Paste:=xlPasteFormats
-            Application.CutCopyMode = False
-        End If
-    ElseIf requiredLastRow < configLastRow Then
-        wsConfig.Range(wsConfig.Rows(requiredLastRow + 1), wsConfig.Rows(configLastRow)).Delete Shift:=xlUp
-    End If
-
-    ' ---- STEP 5: Clear old values ----
-    wsConfig.Range(wsConfig.Cells(2, 1), wsConfig.Cells(requiredLastRow, configLastCol)).ClearContents
-
-    ' ---- STEP 6: Apply layout (number format + alignment) BEFORE writing values ----
-    ' (doing this first prevents Excel from auto-converting/stripping values on entry)
-    For c = 1 To configLastCol
-        With wsConfig.Range(wsConfig.Cells(2, c), wsConfig.Cells(requiredLastRow, c))
-            .NumberFormat = colFormat(c)
-            .HorizontalAlignment = colAlign(c)
-        End With
-    Next c
-
-    ' ---- STEP 7: Write sorted, merged data back ----
-    Dim outRow As Long, k As Variant
-    outRow = 2
-    For Each k In allKeys
-        arr = configData(k)
-        For c = 1 To configLastCol
-            If Not IsEmpty(arr(c)) Then
-                If c = configKeyCol Then
-                    ' write as text so leading zeros are preserved (cell is already "@" formatted)
-                    wsConfig.Cells(outRow, c).Value = "'" & CStr(arr(c))
-                Else
-                    wsConfig.Cells(outRow, c).Value = arr(c)
-                End If
-            End If
-        Next c
-        outRow = outRow + 1
-    Next k
 
     ' ---- Save & close ----
     wbConfig.Close SaveChanges:=True
@@ -248,10 +161,10 @@ ErrHandler:
 End Sub
 
 '====================================================================
-' HELPER FUNCTIONS
+' HELPER FUNCTIONS (suffixed "2" to avoid clashing with your other macro)
 '====================================================================
 
-Private Sub CloseWorkbookIfOpen(ByVal path As String)
+Private Sub CloseWorkbookIfOpen2(ByVal path As String)
     Dim wb As Workbook, fname As String
     fname = Mid$(path, InStrRev(path, Application.PathSeparator) + 1)
     On Error Resume Next
@@ -264,20 +177,20 @@ Private Sub CloseWorkbookIfOpen(ByVal path As String)
     End If
 End Sub
 
-Private Function FindSheet(wb As Workbook, names As Variant) As Worksheet
+Private Function FindSheet2(wb As Workbook, names As Variant) As Worksheet
     Dim ws As Worksheet, n As Variant
     For Each n In names
         For Each ws In wb.Worksheets
             If StrComp(ws.Name, CStr(n), vbTextCompare) = 0 Then
-                Set FindSheet = ws
+                Set FindSheet2 = ws
                 Exit Function
             End If
         Next ws
     Next n
-    Set FindSheet = Nothing
+    Set FindSheet2 = Nothing
 End Function
 
-Private Function GetHeaderMap(ws As Worksheet, ByRef lastCol As Long) As Object
+Private Function GetHeaderMap2(ws As Worksheet, ByRef lastCol As Long) As Object
     Dim dict As Object, c As Long, h As String
     Set dict = CreateObject("Scripting.Dictionary")
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
@@ -287,36 +200,35 @@ Private Function GetHeaderMap(ws As Worksheet, ByRef lastCol As Long) As Object
             If Not dict.Exists(UCase$(h)) Then dict.Add UCase$(h), c
         End If
     Next c
-    Set GetHeaderMap = dict
+    Set GetHeaderMap2 = dict
 End Function
 
-Private Function DictLookup(dict As Object, key As String) As Long
+Private Function DictLookup2(dict As Object, key As String) As Long
     If dict.Exists(UCase$(key)) Then
-        DictLookup = dict(UCase$(key))
+        DictLookup2 = dict(UCase$(key))
     Else
-        DictLookup = 0
+        DictLookup2 = 0
     End If
 End Function
 
-Private Function GetLastDataRow(ws As Worksheet) As Long
+Private Function GetLastDataRow2(ws As Worksheet) As Long
     Dim lr As Long
     On Error Resume Next
     lr = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
         SearchOrder:=xlByRows, SearchDirection:=xlPrevious).Row
     On Error GoTo 0
     If lr < 1 Then lr = 1
-    GetLastDataRow = lr
+    GetLastDataRow2 = lr
 End Function
 
-' Returns the value of a Territory/key cell, preferring the PADDED DISPLAY TEXT
-' when the cell is a number formatted with leading zeros (e.g. format "0000000"),
-' so a value like 558409 displayed as "0558409" is not silently truncated.
-Private Function GetKeyValue(cell As Range) As Variant
+' Returns the Territory key's true display value, preferring padded text
+' (e.g. "0558409") when the cell is a zero-padded number format.
+Private Function GetKeyValue2(cell As Range) As Variant
     Dim v As Variant, nf As String
     v = cell.Value
 
     If VarType(v) = vbString Then
-        GetKeyValue = v          ' already stored as text - leading zeros are safe
+        GetKeyValue2 = v
         Exit Function
     End If
 
@@ -324,76 +236,23 @@ Private Function GetKeyValue(cell As Range) As Variant
         nf = cell.NumberFormat
         If nf <> "General" And nf <> "@" And InStr(1, nf, "0") > 0 _
            And Len(Replace(Replace(nf, "0", ""), "#", "")) = 0 Then
-            GetKeyValue = cell.Text   ' zero-padding format -> use padded text
+            GetKeyValue2 = cell.Text
         Else
-            GetKeyValue = v
+            GetKeyValue2 = v
         End If
     Else
-        GetKeyValue = v
+        GetKeyValue2 = v
     End If
 End Function
 
-' Normalizes a key for MATCHING purposes: numeric values are compared by their
-' true numeric value (so "0558409" and "558409" are treated as the SAME territory),
-' text values are compared case-insensitively.
-Private Function NormalizeKey(ByVal v As Variant) As String
+' Numeric-aware, case-insensitive key normalization so "0558409" and "558409"
+' are treated as the same Territory.
+Private Function NormalizeKey2(ByVal v As Variant) As String
     Dim s As String
     s = Trim$(CStr(v))
     If Len(s) > 0 And IsNumeric(s) Then
-        NormalizeKey = "NUM:" & CStr(CDbl(s))
+        NormalizeKey2 = "NUM:" & CStr(CDbl(s))
     Else
-        NormalizeKey = "TXT:" & UCase$(s)
+        NormalizeKey2 = "TXT:" & UCase$(s)
     End If
 End Function
-
-Private Function CompareTerritory(a As Variant, b As Variant) As Long
-    Dim sa As String, sb As String
-    sa = Trim$(CStr(a))
-    sb = Trim$(CStr(b))
-    If IsNumeric(sa) And IsNumeric(sb) And Len(sa) > 0 And Len(sb) > 0 Then
-        If CDbl(sa) < CDbl(sb) Then
-            CompareTerritory = -1
-        ElseIf CDbl(sa) > CDbl(sb) Then
-            CompareTerritory = 1
-        Else
-            CompareTerritory = 0
-        End If
-    Else
-        CompareTerritory = StrComp(sa, sb, vbTextCompare)
-    End If
-End Function
-
-' QuickSort an array of dictionary keys, comparing by the Territory value
-' stored inside each key's data array (position keyColIdx)
-Private Sub QuickSortKeys(ByRef keysArr() As Variant, ByVal lowIdx As Long, ByVal highIdx As Long, _
-                           ByRef dataDict As Object, ByVal keyColIdx As Long)
-    Dim i As Long, j As Long
-    Dim pivotVal As Variant, tempKey As Variant
-    Dim pivotArr As Variant
-
-    If lowIdx >= highIdx Then Exit Sub
-
-    i = lowIdx
-    j = highIdx
-    pivotArr = dataDict(keysArr((lowIdx + highIdx) \ 2))
-    pivotVal = pivotArr(keyColIdx)
-
-    Do While i <= j
-        Do While CompareTerritory(dataDict(keysArr(i))(keyColIdx), pivotVal) < 0
-            i = i + 1
-        Loop
-        Do While CompareTerritory(dataDict(keysArr(j))(keyColIdx), pivotVal) > 0
-            j = j - 1
-        Loop
-        If i <= j Then
-            tempKey = keysArr(i)
-            keysArr(i) = keysArr(j)
-            keysArr(j) = tempKey
-            i = i + 1
-            j = j - 1
-        End If
-    Loop
-
-    If lowIdx < j Then QuickSortKeys keysArr, lowIdx, j, dataDict, keyColIdx
-    If i < highIdx Then QuickSortKeys keysArr, i, highIdx, dataDict, keyColIdx
-End Sub
