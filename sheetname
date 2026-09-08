@@ -1,34 +1,19 @@
 Hi Arushi,
 
-I have completed the required modifications in the **Factors Import Tool**. Please find the updates below:
+I ran the Factor Import Tool for the ID files shared by Marissa, and the tool is working fine.
 
-**1. Territory Factor Copy**
+The only issues I encountered were related to column and sheet mapping. Some of the files provided by Marissa have different column names and sheet names compared to the previously shared files.
 
-* The existing logic has been retained.
-* To import Territory Factors into the Config, you need to select the **CAT Perils** and the **Territory file**.
-* The **QC button** has been enabled for Territory Factor imports to verify that all factors have been copied correctly.
+For example:
 
-**2. EQ Tabs**
+The Territory file has a sheet named "Territory Factors", whereas it should either be "R_L_Territory" or the file should contain only one sheet.
+The Earthquake file has different column names compared to the previous files.
+The T_L_DistTOWF tab also has different column names.
 
-* We have made the required modifications to follow the **standard naming conventions**.
-* Instead of copying the entire tables, we are mapping the required columns with the Config and pasting the corresponding values into the appropriate locations.
-* The **County sheet** provides the County values.
-* QC for the EQ tabs is performed using the **In EQ Tabs** sheet.
+For now, I have mapped the required columns and sheets accordingly and ran the code. The tool copied everything as expected.
 
-**3. Factor Import from Export Sheets into Config**
+All the relevant files and outputs can be found here: [link]
 
-* Instead of copying the complete tabs, we are copying the required **matching columns** and mapping/pasting them into the appropriate locations in the Config.
-* This process is primarily for the **Radar Exports**.
-* QC for these imports is performed using the **Master List** sheet.
+Can we have a call to discuss this?
 
-**Points/Doubts to Discuss in Today's Meeting:**
-
-1. If a sheet is present in the Radar Exports but is missing from the Config, should we directly copy the entire sheet into the Config? For example, **R_Z_Cap_level**.
-
-2. In the Radar Exports, **R_O_WaterBackup** and **R_O_WaterBackup_Listed** have different column headers from the Config shared earlier. Should we map these columns according to the existing Config structure?
-
-3. **R_Z_PM_Reinvoke** has an additional column in the Export named **Term Counter Reset End Date**. Should this column also be added/mapped into the Config?
-
-4. In the **yearBuilt** sheet of the EQ Exports, the **County** column contains County Codes. For now, we have mapped these values accordingly. Please confirm if this is the expected approach.
-
-We can discuss and confirm these points during today's meeting.
+Thanks!
