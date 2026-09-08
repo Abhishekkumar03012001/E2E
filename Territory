@@ -99,6 +99,10 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
         End If
     Next c
 
+    ' Force the key column to plain TEXT format so values like "0558409"
+    ' never get auto-converted to a number and lose the leading zero.
+    colFormat(configKeyCol) = "@"
+
     ' ---- Build Config-Col -> Export-Col map (direct name match, else mapping table) ----
     Set colPairs = CreateObject("Scripting.Dictionary")
     Dim cKey As Variant, cColIdx As Long, eColIdx As Long, cName As String
@@ -116,16 +120,21 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
 
     ' ---- STEP 1: Load ALL existing Config rows into memory (nothing is lost) ----
     Set configData = CreateObject("Scripting.Dictionary")
-    Dim kVal As String, arr() As Variant
+    Dim kVal As String, arr() As Variant, keyDisplay As Variant
 
     For r = 2 To configLastRow
-        kVal = NormalizeKey(wsConfig.Cells(r, configKeyCol).Value)
-        If Len(kVal) = 0 Then kVal = "~BLANK~" & r   ' preserve blank-key rows too
+        keyDisplay = GetKeyValue(wsConfig.Cells(r, configKeyCol))
+        kVal = NormalizeKey(keyDisplay)
+        If Len(Trim$(CStr(keyDisplay))) = 0 Then kVal = "~BLANK~" & r   ' preserve blank-key rows too
 
         If Not configData.Exists(kVal) Then
             ReDim arr(1 To configLastCol)
             For c = 1 To configLastCol
-                arr(c) = wsConfig.Cells(r, c).Value
+                If c = configKeyCol Then
+                    arr(c) = keyDisplay
+                Else
+                    arr(c) = wsConfig.Cells(r, c).Value
+                End If
             Next c
             configData.Add kVal, arr
         End If
@@ -136,7 +145,8 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
     Dim cPairKey As Variant, srcVal As Variant
 
     For r = 2 To exportLastRow
-        exportTerritoryVal = wsExport.Cells(r, exportKeyCol).Value
+        exportTerritoryVal = GetKeyValue(wsExport.Cells(r, exportKeyCol))
+
         If Len(Trim$(CStr(exportTerritoryVal))) > 0 Then
 
             keyStr = NormalizeKey(exportTerritoryVal)
@@ -159,7 +169,7 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
         End If
     Next r
 
-    ' ---- STEP 3: Sort all keys by Territory value (ascending) ----
+    ' ---- STEP 3: Sort all keys by Territory value (ascending, numeric-aware) ----
     Dim allKeys() As Variant
     allKeys = configData.Keys
 
@@ -173,7 +183,6 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
     requiredLastRow = finalCount + 1
 
     If requiredLastRow > configLastRow Then
-        ' extend row formatting down for the extra new rows
         If templateRow > 0 Then
             wsConfig.Rows(templateRow).Copy
             wsConfig.Range(wsConfig.Rows(configLastRow + 1), wsConfig.Rows(requiredLastRow)).PasteSpecial Paste:=xlPasteFormats
@@ -183,26 +192,35 @@ Public Sub UpdateTerritoryData(ByVal configPath As String, ByVal exportPath As S
         wsConfig.Range(wsConfig.Rows(requiredLastRow + 1), wsConfig.Rows(configLastRow)).Delete Shift:=xlUp
     End If
 
-    ' ---- STEP 5: Clear old values, then write sorted data back ----
+    ' ---- STEP 5: Clear old values ----
     wsConfig.Range(wsConfig.Cells(2, 1), wsConfig.Cells(requiredLastRow, configLastCol)).ClearContents
 
-    Dim outRow As Long, k As Variant
-    outRow = 2
-    For Each k In allKeys
-        arr = configData(k)
-        For c = 1 To configLastCol
-            If Not IsEmpty(arr(c)) Then wsConfig.Cells(outRow, c).Value = arr(c)
-        Next c
-        outRow = outRow + 1
-    Next k
-
-    ' ---- STEP 6: Reapply layout (number format + alignment) per column ----
+    ' ---- STEP 6: Apply layout (number format + alignment) BEFORE writing values ----
+    ' (doing this first prevents Excel from auto-converting/stripping values on entry)
     For c = 1 To configLastCol
         With wsConfig.Range(wsConfig.Cells(2, c), wsConfig.Cells(requiredLastRow, c))
             .NumberFormat = colFormat(c)
             .HorizontalAlignment = colAlign(c)
         End With
     Next c
+
+    ' ---- STEP 7: Write sorted, merged data back ----
+    Dim outRow As Long, k As Variant
+    outRow = 2
+    For Each k In allKeys
+        arr = configData(k)
+        For c = 1 To configLastCol
+            If Not IsEmpty(arr(c)) Then
+                If c = configKeyCol Then
+                    ' write as text so leading zeros are preserved (cell is already "@" formatted)
+                    wsConfig.Cells(outRow, c).Value = "'" & CStr(arr(c))
+                Else
+                    wsConfig.Cells(outRow, c).Value = arr(c)
+                End If
+            End If
+        Next c
+        outRow = outRow + 1
+    Next k
 
     ' ---- Save & close ----
     wbConfig.Close SaveChanges:=True
@@ -290,21 +308,58 @@ Private Function GetLastDataRow(ws As Worksheet) As Long
     GetLastDataRow = lr
 End Function
 
+' Returns the value of a Territory/key cell, preferring the PADDED DISPLAY TEXT
+' when the cell is a number formatted with leading zeros (e.g. format "0000000"),
+' so a value like 558409 displayed as "0558409" is not silently truncated.
+Private Function GetKeyValue(cell As Range) As Variant
+    Dim v As Variant, nf As String
+    v = cell.Value
+
+    If VarType(v) = vbString Then
+        GetKeyValue = v          ' already stored as text - leading zeros are safe
+        Exit Function
+    End If
+
+    If IsNumeric(v) And Len(Trim$(CStr(v))) > 0 Then
+        nf = cell.NumberFormat
+        If nf <> "General" And nf <> "@" And InStr(1, nf, "0") > 0 _
+           And Len(Replace(Replace(nf, "0", ""), "#", "")) = 0 Then
+            GetKeyValue = cell.Text   ' zero-padding format -> use padded text
+        Else
+            GetKeyValue = v
+        End If
+    Else
+        GetKeyValue = v
+    End If
+End Function
+
+' Normalizes a key for MATCHING purposes: numeric values are compared by their
+' true numeric value (so "0558409" and "558409" are treated as the SAME territory),
+' text values are compared case-insensitively.
 Private Function NormalizeKey(ByVal v As Variant) As String
-    NormalizeKey = UCase$(Trim$(CStr(v)))
+    Dim s As String
+    s = Trim$(CStr(v))
+    If Len(s) > 0 And IsNumeric(s) Then
+        NormalizeKey = "NUM:" & CStr(CDbl(s))
+    Else
+        NormalizeKey = "TXT:" & UCase$(s)
+    End If
 End Function
 
 Private Function CompareTerritory(a As Variant, b As Variant) As Long
-    If IsNumeric(a) And IsNumeric(b) And Len(Trim$(CStr(a))) > 0 And Len(Trim$(CStr(b))) > 0 Then
-        If CDbl(a) < CDbl(b) Then
+    Dim sa As String, sb As String
+    sa = Trim$(CStr(a))
+    sb = Trim$(CStr(b))
+    If IsNumeric(sa) And IsNumeric(sb) And Len(sa) > 0 And Len(sb) > 0 Then
+        If CDbl(sa) < CDbl(sb) Then
             CompareTerritory = -1
-        ElseIf CDbl(a) > CDbl(b) Then
+        ElseIf CDbl(sa) > CDbl(sb) Then
             CompareTerritory = 1
         Else
             CompareTerritory = 0
         End If
     Else
-        CompareTerritory = StrComp(CStr(a), CStr(b), vbTextCompare)
+        CompareTerritory = StrComp(sa, sb, vbTextCompare)
     End If
 End Function
 
