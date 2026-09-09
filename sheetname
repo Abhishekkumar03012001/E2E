@@ -7,7 +7,7 @@ Sub DeleteSpecificSheets()
     Application.DisplayAlerts = False
     
     For i = LBound(sheetNames) To UBound(sheetNames)
-        If SheetExists(sheetNames(i)) Then
+        If SheetExists(CStr(sheetNames(i))) Then
             ThisWorkbook.Sheets(sheetNames(i)).Delete
         End If
     Next i
@@ -15,7 +15,7 @@ Sub DeleteSpecificSheets()
     Application.DisplayAlerts = True
 End Sub
 
-Function SheetExists(sheetName As String) As Boolean
+Function SheetExists(ByVal sheetName As String) As Boolean
     Dim ws As Worksheet
     On Error Resume Next
     Set ws = ThisWorkbook.Sheets(sheetName)
