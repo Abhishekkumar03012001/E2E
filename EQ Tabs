@@ -184,14 +184,13 @@ End Function
 '====================================================================
 ' Loads County -> County Code lookup from the "County" sheet in Export workbook
 ' Column A = County (name), Column B = "new code" / "County Code"
+' Sheet name lookup is explicitly case-insensitive (matches "County", "COUNTY", "county", etc.)
 '====================================================================
 Private Function LoadCountyLookup(wbExport As Workbook) As Object
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
     Dim wsCounty As Worksheet
 
-    On Error Resume Next
-    Set wsCounty = wbExport.Sheets("County")
-    On Error GoTo 0
+    Set wsCounty = FindSheetCaseInsensitive(wbExport, "County")
 
     If wsCounty Is Nothing Then
         Set LoadCountyLookup = dict
@@ -671,6 +670,25 @@ Private Sub FindCountyColumns(ws As Worksheet, headerRow As Long, ByRef nameCol 
         End If
     Next ci
 End Sub
+
+' Searches a workbook for a sheet matching sheetName, case-insensitively (and trimmed).
+' Returns Nothing if no match is found.
+Private Function FindSheetCaseInsensitive(wb As Workbook, sheetName As String) As Worksheet
+    Dim sh As Object  ' Object to allow both Worksheet and Chart sheets without type errors
+    Dim target As String
+    target = LCase(Trim(sheetName))
+
+    For Each sh In wb.Sheets
+        If LCase(Trim(sh.Name)) = target Then
+            If TypeOf sh Is Worksheet Then
+                Set FindSheetCaseInsensitive = sh
+            End If
+            Exit Function
+        End If
+    Next sh
+
+    Set FindSheetCaseInsensitive = Nothing
+End Function
 
 ' Strips spaces, punctuation, and non-breaking spaces; lowercases. Used ONLY for header comparison.
 Private Function NormalizeForCompare(s As String) As String
