@@ -12,7 +12,6 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
     Dim wsExport As Worksheet, wsConfig As Worksheet
     Dim success As Boolean, statusMsg As String
     Dim copiedRows As Long
-    Dim newConfigPath As String
     Dim matchedCase As Integer
     Dim countyDict As Object
 
@@ -27,11 +26,30 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
         If exportPath = "False" Then Exit Sub
     End If
 
+    '-- CHECK #1 (FIRST): make sure neither file is already open before we touch anything
+    If IsWorkbookOpenInThisInstance(configPath) Then
+        MsgBox "The CONFIG file is currently open in Excel. Please close it and run the macro again:" & vbCrLf & configPath, vbExclamation
+        Exit Sub
+    End If
+    If IsFileLocked(configPath) Then
+        MsgBox "The CONFIG file appears to be open (locked by another program or Excel instance). Please close it and run the macro again:" & vbCrLf & configPath, vbExclamation
+        Exit Sub
+    End If
+    If IsWorkbookOpenInThisInstance(exportPath) Then
+        MsgBox "The EXPORTS file is currently open in Excel. Please close it and run the macro again:" & vbCrLf & exportPath, vbExclamation
+        Exit Sub
+    End If
+    If IsFileLocked(exportPath) Then
+        MsgBox "The EXPORTS file appears to be open (locked by another program or Excel instance). Please close it and run the macro again:" & vbCrLf & exportPath, vbExclamation
+        Exit Sub
+    End If
+
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
     Application.DisplayAlerts = False
 
-    Set wbConfig = Workbooks.Open(Filename:=configPath, ReadOnly:=True, IgnoreReadOnlyRecommended:=True)
+    '-- Config needs to be writable since we now save it in place (no more Save As)
+    Set wbConfig = Workbooks.Open(Filename:=configPath, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
     Set wbExport = Workbooks.Open(Filename:=exportPath, ReadOnly:=True, IgnoreReadOnlyRecommended:=True)
     Set wsEQTabs = ThisWorkbook.Sheets("EQ Tabs")
 
@@ -106,17 +124,34 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
         r = r + 1
     Loop
 
-    newConfigPath = BuildSaveAsPath(configPath)
-    wbConfig.SaveAs Filename:=newConfigPath, FileFormat:=wbConfig.FileFormat
+    '-- Save the CONFIG file in place (no Save As, same file/path)
+    wbConfig.Save
     wbConfig.Close SaveChanges:=False
 
     wbExport.Close SaveChanges:=False
+
+    Set wbConfig = Nothing
+    Set wbExport = Nothing
 
     Application.DisplayAlerts = True
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
 
-    MsgBox "Processing complete." & vbCrLf & "Saved as: " & newConfigPath, vbInformation
+    '-- CHECK #2 (LAST): confirm both files actually closed before declaring success
+    Dim closeWarning As String
+    closeWarning = ""
+    If IsWorkbookOpenInThisInstance(configPath) Or IsFileLocked(configPath) Then
+        closeWarning = closeWarning & "- CONFIG file may not have closed properly: " & configPath & vbCrLf
+    End If
+    If IsWorkbookOpenInThisInstance(exportPath) Or IsFileLocked(exportPath) Then
+        closeWarning = closeWarning & "- EXPORTS file may not have closed properly: " & exportPath & vbCrLf
+    End If
+
+    If closeWarning <> "" Then
+        MsgBox "Processing complete, but the following file(s) may still be open/locked:" & vbCrLf & closeWarning, vbExclamation
+    Else
+        MsgBox "Processing complete." & vbCrLf & "Config file updated and saved: " & configPath, vbInformation
+    End If
     Exit Sub
 
 ErrHandler:
@@ -773,23 +808,41 @@ Private Sub WriteResult(ws As Worksheet, r As Long, statusMsg As String, colorTy
     End Select
 End Sub
 
-' Builds a new file path: same folder, filename + "_updated_EQ", same extension
-Private Function BuildSaveAsPath(originalPath As String) As String
-    Dim folderPath As String, fileName As String, fileExt As String, baseName As String
-    Dim dotPos As Long, slashPos As Long
+' Returns True if a workbook with this full path is already open in THIS Excel instance
+Private Function IsWorkbookOpenInThisInstance(fullPath As String) As Boolean
+    Dim wb As Workbook
+    On Error Resume Next
+    For Each wb In Application.Workbooks
+        If LCase(wb.FullName) = LCase(fullPath) Then
+            IsWorkbookOpenInThisInstance = True
+            Exit Function
+        End If
+    Next wb
+    On Error GoTo 0
+    IsWorkbookOpenInThisInstance = False
+End Function
 
-    slashPos = InStrRev(originalPath, "\")
-    folderPath = Left(originalPath, slashPos)
-    fileName = Mid(originalPath, slashPos + 1)
+' Returns True if the file at filePath cannot be opened exclusively -
+' meaning it's currently open/locked by this or another Excel instance/program.
+Private Function IsFileLocked(filePath As String) As Boolean
+    Dim fnum As Integer
 
-    dotPos = InStrRev(fileName, ".")
-    If dotPos > 0 Then
-        baseName = Left(fileName, dotPos - 1)
-        fileExt = Mid(fileName, dotPos)
-    Else
-        baseName = fileName
-        fileExt = ""
+    If Dir(filePath) = "" Then
+        '-- File doesn't exist on disk yet/at all - treat as not locked
+        IsFileLocked = False
+        Exit Function
     End If
 
-    BuildSaveAsPath = folderPath & baseName & "_updated_EQ" & fileExt
+    fnum = FreeFile
+    On Error Resume Next
+    Err.Clear
+    Open filePath For Binary Access Read Write Lock Read Write As #fnum
+    If Err.Number <> 0 Then
+        IsFileLocked = True
+        Err.Clear
+    Else
+        IsFileLocked = False
+        Close #fnum
+    End If
+    On Error GoTo 0
 End Function
