@@ -1,19 +1,25 @@
-Hi Marissa,
-
-Thank you for sharing the files.
-
-We ran the Factor Import Tool for the ID files, and the tool is working fine. The only issues we encountered were related to column and sheet mapping.
-
-Some of the files have different column names and sheet names compared to the previously shared files. For example:
-
-The Territory file has a sheet named "Territory Factors", whereas it should either be "R_L_Territory" or the file should contain only one sheet.
-The Earthquake file has different column names compared to the previous files.
-The T_L_DistTOWF tab also has different column names.
-
-For now, we have mapped the required columns and sheets accordingly and ran the code. Everything was copied as expected.
-
-All the relevant files and outputs can be found here: [link]
-
-Could we have a call to discuss these differences and confirm the expected column and sheet mappings?
-
-Thanks!
+Sub MarkEQFileNotFound()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim rng As Range
+    
+    Set ws = ThisWorkbook.Sheets("EQ Tabs")
+    
+    ' Find the last used row in the sheet (based on column A, adjust if needed)
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    ' If you want to base it on Column D itself instead, use this line:
+    ' lastRow = ws.Cells(ws.Rows.Count, "D").End(xlUp).Row
+    
+    If lastRow < 1 Then lastRow = 1
+    
+    Set rng = ws.Range("D1:D" & lastRow)
+    
+    With rng
+        .Value = "EQ file not found"
+        .Interior.Color = RGB(255, 199, 206) ' Light red
+        .Font.Color = RGB(156, 0, 6)         ' Optional: dark red text for readability
+    End With
+    
+    MsgBox "Column D updated with 'EQ file not found' and light red background.", vbInformation
+End Sub
