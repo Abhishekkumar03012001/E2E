@@ -1,5 +1,6 @@
 Option Explicit
-Option Compare Text  '-- case-insensitive text comparisons (=, Like, Select Case)
+Option Compare Binary  '-- case-SENSITIVE by default; specific lookups below are made
+                        '   explicitly case-insensitive via NormalizeForCompare / FindSheetCaseInsensitive
 
 '====================================================================
 ' MAIN ENTRY POINT
@@ -73,23 +74,22 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
             WriteResult wsEQTabs, r, "Invalide Sheet name config/export", "red", -1
 
         Else
-            '-- STEP 1: does this sheet exist in Config, and does its name match a valid EQ pattern?
-            Set wsConfig = Nothing
-            On Error Resume Next
-            Set wsConfig = wbConfig.Sheets(configSheetName)
-            On Error GoTo ErrHandler
+            '-- STEP 1: does this sheet exist in Config (case-insensitive search),
+            '   and does its ACTUAL name match a valid EQ pattern (case-sensitive)?
+            Set wsConfig = FindSheetCaseInsensitive(wbConfig, configSheetName)
 
-            matchedCase = GetCaseType(configSheetName)
+            If Not wsConfig Is Nothing Then
+                matchedCase = GetCaseType(wsConfig.Name)   '-- use the real sheet name, case-sensitive pattern check
+            Else
+                matchedCase = 0
+            End If
 
             If wsConfig Is Nothing Or matchedCase = 0 Then
                 WriteResult wsEQTabs, r, "Not a Valid EQ sheet in Config", "red", -1
 
             Else
-                '-- STEP 2: does this sheet exist in Export?
-                Set wsExport = Nothing
-                On Error Resume Next
-                Set wsExport = wbExport.Sheets(exportSheetName)
-                On Error GoTo ErrHandler
+                '-- STEP 2: does this sheet exist in Export? (case-insensitive search)
+                Set wsExport = FindSheetCaseInsensitive(wbExport, exportSheetName)
 
                 If wsExport Is Nothing Then
                     WriteResult wsEQTabs, r, "Sheet on found in Export", "red", -1
@@ -162,7 +162,9 @@ ErrHandler:
 End Sub
 
 '====================================================================
-' Returns which case (1-5) a config sheet name matches, or 0 if none
+' Returns which case (1-5) a config sheet name matches, or 0 if none.
+' CASE-SENSITIVE by design (Option Compare Binary) - a sheet is only recognized
+' as a valid EQ sheet to process if its name casing matches the expected pattern exactly.
 '====================================================================
 Private Function GetCaseType(configSheetName As String) As Integer
     Select Case True
@@ -183,8 +185,8 @@ End Function
 
 '====================================================================
 ' Loads County -> County Code lookup from the "County" sheet in Export workbook.
-' Searches that sheet for a "County" column (name) and a "County Code" column;
-' falls back to "new code" if "County Code" isn't found. Sheet lookup is case-insensitive.
+' Sheet name search is case-insensitive. Searches for a "County" column (name) and
+' a "County Code" column; falls back to "new code" if "County Code" isn't found.
 ' Used ONLY as a fallback when a mapped export data sheet has no "County" column of its own.
 '====================================================================
 Private Function LoadCountyLookup(wbExport As Workbook) As Object
@@ -242,7 +244,8 @@ End Function
 ' Config: County | County Code | EQ Construction Type | Rate
 ' County name: use Export's own "County" column if that mapped sheet has one;
 ' only if that column doesn't exist on the sheet, fall back to the County-sheet lookup.
-' Deletes old Config data rows, writes new rows in Export's order
+' All column-header matching is case-insensitive. Deletes old Config data rows,
+' writes new rows in Export's order.
 '====================================================================
 Private Function ProcessCase1(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -384,7 +387,8 @@ End Function
 '
 ' The Export sheet for this case can have TWO columns BOTH literally headered "County" -
 ' one holds the numeric County Code, the other holds County name text. FindCountyColumns
-' tells them apart by sampling the first data value (numeric = code, text = name).
+' tells them apart by sampling the first data value (numeric = code, text = name),
+' case-insensitively on the header text itself.
 ' County name: if the Export sheet has its own County name column (eCountyName > 0), use it
 ' directly. Only if that name column doesn't exist on the sheet, fall back to the
 ' County-sheet lookup by County Code.
@@ -604,7 +608,7 @@ End Function
 ' HELPER FUNCTIONS
 '====================================================================
 
-' Finds the best header row (1 to 4) using normalized matching
+' Finds the best header row (1 to 4) using normalized (case-insensitive) matching
 Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
     Dim r As Long, bestRow As Long, bestMatches As Long, matches As Long, i As Long
     bestMatches = -1
@@ -623,9 +627,10 @@ Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
 End Function
 
 ' Finds the FIRST column whose header matches targetName after normalization
-' (case-insensitive, ignores extra spaces/punctuation) but requires FULL match, not partial/substring.
+' (case-INSENSITIVE, ignores extra spaces/punctuation) but requires FULL match, not partial/substring.
 ' targetName can contain multiple acceptable alternatives separated by "|",
 ' e.g. "Retrofit Indicator|Retro Ind" - the first alternative that matches any column wins.
+' This is unaffected by Option Compare Binary since it manually normalizes both sides.
 Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As String) As Long
     Dim lastCol As Long, c As Long
     Dim normHeader As String
@@ -651,8 +656,9 @@ Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As St
 End Function
 
 ' SPECIAL CASE (R_O_EQYearBuilt export sheet only): finds TWO columns headered "County"
-' in a row. The one whose first data value is numeric is treated as the County Code column;
-' the one whose first data value is text is treated as the County name column.
+' (case-insensitive) in a row. The one whose first data value is numeric is treated as
+' the County Code column; the one whose first data value is text is treated as the
+' County name column.
 Private Sub FindCountyColumns(ws As Worksheet, headerRow As Long, ByRef nameCol As Long, ByRef codeCol As Long)
     Dim lastCol As Long, c As Long
     Dim candidates As Collection: Set candidates = New Collection
@@ -683,7 +689,8 @@ Private Sub FindCountyColumns(ws As Worksheet, headerRow As Long, ByRef nameCol 
     Next ci
 End Sub
 
-' Searches a workbook for a sheet matching sheetName, case-insensitively (and trimmed).
+' Searches a workbook for a sheet matching sheetName, CASE-INSENSITIVELY (and trimmed).
+' Used for all sheet-name mapping lookups (EQ Tabs config/export names, County sheet).
 ' Returns Nothing if no match is found.
 Private Function FindSheetCaseInsensitive(wb As Workbook, sheetName As String) As Worksheet
     Dim sh As Object  ' Object to allow both Worksheet and Chart sheets without type errors
