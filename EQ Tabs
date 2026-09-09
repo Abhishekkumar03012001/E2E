@@ -48,7 +48,7 @@ Public Sub ImportEQData(Optional configPath As String = "", Optional exportPath 
     Application.Calculation = xlCalculationManual
     Application.DisplayAlerts = False
 
-    '-- Config needs to be writable since we now save it in place (no more Save As)
+    '-- Config needs to be writable since we save it in place (no Save As)
     Set wbConfig = Workbooks.Open(Filename:=configPath, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
     Set wbExport = Workbooks.Open(Filename:=exportPath, ReadOnly:=True, IgnoreReadOnlyRecommended:=True)
     Set wsEQTabs = ThisWorkbook.Sheets("EQ Tabs")
@@ -182,9 +182,10 @@ Private Function GetCaseType(configSheetName As String) As Integer
 End Function
 
 '====================================================================
-' Loads County -> County Code lookup from the "County" sheet in Export workbook
-' Column A = County (name), Column B = "new code" / "County Code"
-' Sheet name lookup is explicitly case-insensitive (matches "County", "COUNTY", "county", etc.)
+' Loads County -> County Code lookup from the "County" sheet in Export workbook.
+' Searches that sheet for a "County" column (name) and a "County Code" column;
+' falls back to "new code" if "County Code" isn't found. Sheet lookup is case-insensitive.
+' Used ONLY as a fallback when a mapped export data sheet has no "County" column of its own.
 '====================================================================
 Private Function LoadCountyLookup(wbExport As Workbook) As Object
     Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
@@ -198,14 +199,14 @@ Private Function LoadCountyLookup(wbExport As Workbook) As Object
     End If
 
     Dim hdrNames(1 To 2) As String
-    hdrNames(1) = "County": hdrNames(2) = "new code"
+    hdrNames(1) = "County": hdrNames(2) = "County Code"
     Dim hdrRow As Long
     hdrRow = FindHeaderRow(wsCounty, hdrNames)
 
     Dim nameCol As Long, codeCol As Long
     nameCol = FindColumn(wsCounty, hdrRow, "County")
-    codeCol = FindColumn(wsCounty, hdrRow, "new code")
-    If codeCol = 0 Then codeCol = FindColumn(wsCounty, hdrRow, "County Code")
+    codeCol = FindColumn(wsCounty, hdrRow, "County Code")
+    If codeCol = 0 Then codeCol = FindColumn(wsCounty, hdrRow, "new code")
 
     If nameCol = 0 Or codeCol = 0 Then
         Set LoadCountyLookup = dict
@@ -239,6 +240,8 @@ End Function
 ' CASE 1: R_O_EQCovA/B/C/D , R_O_EQIncrCovA/B/C/D
 ' Export: County Code | Earthquake Construction Type | Rate per $1000  (optional: County)
 ' Config: County | County Code | EQ Construction Type | Rate
+' County name: use Export's own "County" column if that mapped sheet has one;
+' only if that column doesn't exist on the sheet, fall back to the County-sheet lookup.
 ' Deletes old Config data rows, writes new rows in Export's order
 '====================================================================
 Private Function ProcessCase1(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
@@ -313,7 +316,7 @@ End Function
 ' CASE 2: R_O_EQDed
 ' Export: Earthquake Deduct Percentage | Earthquake Construction Type | Factor
 ' Config: EQ Deductible Percent | EQ Construction Type | Rate
-' Deletes old Config data rows, writes new rows in Export's order
+' No county involved. Deletes old Config data rows, writes new rows in Export's order
 '====================================================================
 Private Function ProcessCase2(wsExport As Worksheet, wsConfig As Worksheet, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -375,10 +378,16 @@ EH:
 End Function
 
 '====================================================================
-' CASE 3: R_O_EQYearBuilt
-' Export: Year Built | Retrofit Indicator (or "Retro Ind") | County (x2, name+code) | Construction Type | Factor
+' CASE 3: R_O_EQYearBuilt  -- SPECIAL CASE
+' Export: Year Built | Retrofit Indicator (or "Retro Ind") | County (name+code) | Construction Type | Factor
 ' Config: Year Built (Upper Bound) | Retrofit | County | County Code | EQ Construction Type | Rate
-' Export has TWO columns headered "County" - the numeric one is County Code, the text one is County name
+'
+' The Export sheet for this case can have TWO columns BOTH literally headered "County" -
+' one holds the numeric County Code, the other holds County name text. FindCountyColumns
+' tells them apart by sampling the first data value (numeric = code, text = name).
+' County name: if the Export sheet has its own County name column (eCountyName > 0), use it
+' directly. Only if that name column doesn't exist on the sheet, fall back to the
+' County-sheet lookup by County Code.
 '====================================================================
 Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -399,6 +408,7 @@ Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, coun
     eRetro = FindColumn(wsExport, expHeaderRow, "Retrofit Indicator|Retro Ind")
     eCT = FindColumn(wsExport, expHeaderRow, "Construction Type")
     eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
+    '-- Special-case detection: distinguish the two "County" columns in Export (code vs name)
     FindCountyColumns wsExport, expHeaderRow, eCountyName, eCountyCode
 
     Dim cYB As Long, cRetro As Long, cCountyName As Long, cCountyCode As Long, cCT As Long, cRate As Long
@@ -461,6 +471,8 @@ End Function
 ' CASE 4: R_O_LossAssessmentEQ
 ' Export: County Code | Earthquake Construction Type (or "Construction") | Factor  (optional: County)
 ' Config: County Code | County | Earthquake Construction Type | Factor
+' County name: use Export's own "County" column if that mapped sheet has one;
+' only if that column doesn't exist on the sheet, fall back to the County-sheet lookup.
 '====================================================================
 Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -638,8 +650,8 @@ Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As St
     FindColumn = 0
 End Function
 
-' Finds TWO columns headered "County" in a row (used only for R_O_EQYearBuilt export sheet).
-' The one whose first data value is numeric is treated as the County Code column;
+' SPECIAL CASE (R_O_EQYearBuilt export sheet only): finds TWO columns headered "County"
+' in a row. The one whose first data value is numeric is treated as the County Code column;
 ' the one whose first data value is text is treated as the County name column.
 Private Sub FindCountyColumns(ws As Worksheet, headerRow As Long, ByRef nameCol As Long, ByRef codeCol As Long)
     Dim lastCol As Long, c As Long
