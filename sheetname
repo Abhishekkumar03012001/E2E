@@ -1,24 +1,12 @@
-Sub DeleteSpecificSheets()
-    Dim sheetNames As Variant
-    Dim i As Integer
-    
-    sheetNames = Array("QC C vs T", "QC C vs CAT", "Summary C vs CAT", "Summary C vs T")
-    
-    Application.DisplayAlerts = False
-    
-    For i = LBound(sheetNames) To UBound(sheetNames)
-        If SheetExists(CStr(sheetNames(i))) Then
-            ThisWorkbook.Sheets(sheetNames(i)).Delete
-        End If
-    Next i
-    
-    Application.DisplayAlerts = True
-End Sub
+Hi Marissa,
+Good morning!
 
-Function SheetExists(ByVal sheetName As String) As Boolean
-    Dim ws As Worksheet
-    On Error Resume Next
-    Set ws = ThisWorkbook.Sheets(sheetName)
-    On Error GoTo 0
-    SheetExists = Not ws Is Nothing
-End Function
+Thank you for sharing your observations.
+
+Regarding the wildfire factors not being updated in the config, this was due to the case-sensitive mapping of the columns. We have now made the column mapping case-insensitive to ensure the tool works as intended.
+
+The suggested tool updates have also been included. Please find the updated tool and the relevant files here.
+
+We would be happy to discuss this further if needed.
+
+Thank you!
