@@ -342,7 +342,7 @@ End Function
 
 '====================================================================
 ' CASE 3: R_O_EQYearBuilt
-' Export: Year Built | Retrofit Indicator | County (x2, name+code) | Construction Type | Factor
+' Export: Year Built | Retrofit Indicator (or "Retro Ind") | County (x2, name+code) | Construction Type | Factor
 ' Config: Year Built (Upper Bound) | Retrofit | County | County Code | EQ Construction Type | Rate
 ' Export has TWO columns headered "County" - the numeric one is County Code, the text one is County name
 '====================================================================
@@ -351,7 +351,7 @@ Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, coun
     On Error GoTo EH
 
     Dim expNames(1 To 4) As String, cfgNames(1 To 6) As String
-    expNames(1) = "Year Built": expNames(2) = "Retrofit Indicator": expNames(3) = "Construction Type": expNames(4) = "Factor"
+    expNames(1) = "Year Built": expNames(2) = "Retrofit Indicator|Retro Ind": expNames(3) = "Construction Type": expNames(4) = "Factor"
     cfgNames(1) = "Year Built (Upper Bound)": cfgNames(2) = "Retrofit": cfgNames(3) = "County"
     cfgNames(4) = "County Code": cfgNames(5) = "EQ Construction Type": cfgNames(6) = "Rate"
 
@@ -362,7 +362,7 @@ Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, coun
     Dim eYB As Long, eRetro As Long, eCT As Long, eFactor As Long
     Dim eCountyName As Long, eCountyCode As Long
     eYB = FindColumn(wsExport, expHeaderRow, "Year Built")
-    eRetro = FindColumn(wsExport, expHeaderRow, "Retrofit Indicator")
+    eRetro = FindColumn(wsExport, expHeaderRow, "Retrofit Indicator|Retro Ind")
     eCT = FindColumn(wsExport, expHeaderRow, "Construction Type")
     eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
     FindCountyColumns wsExport, expHeaderRow, eCountyName, eCountyCode
@@ -425,7 +425,7 @@ End Function
 
 '====================================================================
 ' CASE 4: R_O_LossAssessmentEQ
-' Export: County Code | Earthquake Construction Type | Factor  (optional: County)
+' Export: County Code | Earthquake Construction Type (or "Construction") | Factor  (optional: County)
 ' Config: County Code | County | Earthquake Construction Type | Factor
 '====================================================================
 Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
@@ -433,7 +433,7 @@ Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, coun
     On Error GoTo EH
 
     Dim expNames(1 To 3) As String, cfgNames(1 To 4) As String
-    expNames(1) = "County Code": expNames(2) = "Earthquake Construction Type": expNames(3) = "Factor"
+    expNames(1) = "County Code": expNames(2) = "Earthquake Construction Type|Construction": expNames(3) = "Factor"
     cfgNames(1) = "County Code": cfgNames(2) = "County": cfgNames(3) = "Earthquake Construction Type": cfgNames(4) = "Factor"
 
     Dim expHeaderRow As Long, cfgHeaderRow As Long
@@ -443,7 +443,7 @@ Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, coun
     Dim eCC As Long, eCT As Long, eFactor As Long, eCountyDirect As Long
     Dim cCC As Long, cCounty As Long, cCT As Long, cFactor As Long
     eCC = FindColumn(wsExport, expHeaderRow, "County Code")
-    eCT = FindColumn(wsExport, expHeaderRow, "Earthquake Construction Type")
+    eCT = FindColumn(wsExport, expHeaderRow, "Earthquake Construction Type|Construction")
     eFactor = FindColumn(wsExport, expHeaderRow, "Factor")
     eCountyDirect = FindColumn(wsExport, expHeaderRow, "County")
 
@@ -577,20 +577,30 @@ Private Function FindHeaderRow(ws As Worksheet, targetNames() As String) As Long
 End Function
 
 ' Finds the FIRST column whose header matches targetName after normalization
-' (case-insensitive, ignores extra spaces/punctuation) but requires FULL match, not partial/substring
+' (case-insensitive, ignores extra spaces/punctuation) but requires FULL match, not partial/substring.
+' targetName can contain multiple acceptable alternatives separated by "|",
+' e.g. "Retrofit Indicator|Retro Ind" - the first alternative that matches any column wins.
 Private Function FindColumn(ws As Worksheet, headerRow As Long, targetName As String) As Long
     Dim lastCol As Long, c As Long
-    Dim normTarget As String, normHeader As String
-    normTarget = NormalizeForCompare(targetName)
+    Dim normHeader As String
+    Dim altNames() As String, a As Long, normTarget As String
+
+    altNames = Split(targetName, "|")
+
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
     If lastCol < 1 Then lastCol = 1
-    For c = 1 To lastCol
-        normHeader = NormalizeForCompare(CStr(ws.Cells(headerRow, c).Value))
-        If normHeader = normTarget Then
-            FindColumn = c
-            Exit Function
-        End If
-    Next c
+
+    For a = LBound(altNames) To UBound(altNames)
+        normTarget = NormalizeForCompare(altNames(a))
+        For c = 1 To lastCol
+            normHeader = NormalizeForCompare(CStr(ws.Cells(headerRow, c).Value))
+            If normHeader = normTarget Then
+                FindColumn = c
+                Exit Function
+            End If
+        Next c
+    Next a
+
     FindColumn = 0
 End Function
 
