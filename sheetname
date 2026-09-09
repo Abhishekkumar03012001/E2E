@@ -11,9 +11,9 @@ Sub MarkEQFileNotFound()
     ' If you want to base it on Column D itself instead, use this line:
     ' lastRow = ws.Cells(ws.Rows.Count, "D").End(xlUp).Row
     
-    If lastRow < 1 Then lastRow = 1
+    If lastRow < 2 Then lastRow = 2
     
-    Set rng = ws.Range("D1:D" & lastRow)
+    Set rng = ws.Range("D2:D" & lastRow)
     
     With rng
         .Value = "EQ file not found"
@@ -21,5 +21,5 @@ Sub MarkEQFileNotFound()
         .Font.Color = RGB(156, 0, 6)         ' Optional: dark red text for readability
     End With
     
-    MsgBox "Column D updated with 'EQ file not found' and light red background.", vbInformation
+    MsgBox "Column D updated (from row 2) with 'EQ file not found' and light red background.", vbInformation
 End Sub
