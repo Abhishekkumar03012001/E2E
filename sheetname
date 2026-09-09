@@ -1,25 +1,24 @@
-Sub MarkEQFileNotFound()
-    Dim ws As Worksheet
-    Dim lastRow As Long
-    Dim rng As Range
+Sub DeleteSpecificSheets()
+    Dim sheetNames As Variant
+    Dim i As Integer
     
-    Set ws = ThisWorkbook.Sheets("EQ Tabs")
+    sheetNames = Array("QC C vs T", "QC C vs CAT", "Summary C vs CAT", "Summary C vs T")
     
-    ' Find the last used row in the sheet (based on column A, adjust if needed)
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    Application.DisplayAlerts = False
     
-    ' If you want to base it on Column D itself instead, use this line:
-    ' lastRow = ws.Cells(ws.Rows.Count, "D").End(xlUp).Row
+    For i = LBound(sheetNames) To UBound(sheetNames)
+        If SheetExists(sheetNames(i)) Then
+            ThisWorkbook.Sheets(sheetNames(i)).Delete
+        End If
+    Next i
     
-    If lastRow < 2 Then lastRow = 2
-    
-    Set rng = ws.Range("D2:D" & lastRow)
-    
-    With rng
-        .Value = "EQ file not found"
-        .Interior.Color = RGB(255, 199, 206) ' Light red
-        .Font.Color = RGB(156, 0, 6)         ' Optional: dark red text for readability
-    End With
-    
-    MsgBox "Column D updated (from row 2) with 'EQ file not found' and light red background.", vbInformation
+    Application.DisplayAlerts = True
 End Sub
+
+Function SheetExists(sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(sheetName)
+    On Error GoTo 0
+    SheetExists = Not ws Is Nothing
+End Function
