@@ -186,7 +186,8 @@ End Function
 '====================================================================
 ' Loads County -> County Code lookup from the "County" sheet in Export workbook.
 ' Sheet name search is case-insensitive. Searches for a "County" column (name) and
-' a "County Code" column; falls back to "new code" if "County Code" isn't found.
+' a "County Code" column (also accepts a header simply named "Code"); falls back to
+' "new code" if neither "County Code" nor "Code" is found.
 ' Used ONLY as a fallback when a mapped export data sheet has no "County" column of its own.
 '====================================================================
 Private Function LoadCountyLookup(wbExport As Workbook) As Object
@@ -201,13 +202,13 @@ Private Function LoadCountyLookup(wbExport As Workbook) As Object
     End If
 
     Dim hdrNames(1 To 2) As String
-    hdrNames(1) = "County": hdrNames(2) = "County Code"
+    hdrNames(1) = "County": hdrNames(2) = "County Code|Code"
     Dim hdrRow As Long
     hdrRow = FindHeaderRow(wsCounty, hdrNames)
 
     Dim nameCol As Long, codeCol As Long
     nameCol = FindColumn(wsCounty, hdrRow, "County")
-    codeCol = FindColumn(wsCounty, hdrRow, "County Code")
+    codeCol = FindColumn(wsCounty, hdrRow, "County Code|Code")
     If codeCol = 0 Then codeCol = FindColumn(wsCounty, hdrRow, "new code")
 
     If nameCol = 0 Or codeCol = 0 Then
@@ -238,12 +239,58 @@ Private Function LookupCounty(dict As Object, codeVal As Variant) As String
     End If
 End Function
 
+' Snapshots the EXISTING Config sheet's County Code -> County Name mapping,
+' read BEFORE WriteRowsToConfig clears/overwrites the old data rows.
+' Used as the last-resort fallback when a county name can't be resolved from
+' either the mapped export sheet or the County sheet.
+Private Function BuildPrevCountyLookup(wsConfig As Worksheet, cfgHeaderRow As Long, codeCol As Long, nameCol As Long) As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+
+    If codeCol = 0 Or nameCol = 0 Then
+        Set BuildPrevCountyLookup = dict
+        Exit Function
+    End If
+
+    Dim lastRow As Long, r As Long, key As String
+    lastRow = wsConfig.Cells(wsConfig.Rows.Count, codeCol).End(xlUp).Row
+    For r = cfgHeaderRow + 1 To lastRow
+        If Trim(wsConfig.Cells(r, codeCol).Value) <> "" Then
+            key = NormalizeKeyValue(wsConfig.Cells(r, codeCol).Value, "text")
+            If Not dict.Exists(key) Then dict.Add key, wsConfig.Cells(r, nameCol).Value
+        End If
+    Next r
+
+    Set BuildPrevCountyLookup = dict
+End Function
+
+' Resolves a county name for one export row using the 3-tier fallback chain:
+'   1) the value directly from the mapped export sheet's own County column (if any/non-blank)
+'   2) the County sheet lookup by county code
+'   3) the PREVIOUS value that was in Config for that same county code, before it was cleared
+Private Function ResolveCountyName(directVal As Variant, codeVal As Variant, countyDict As Object, prevCountyDict As Object) As String
+    Dim nm As String
+
+    nm = Trim(CStr(directVal))
+    If nm <> "" Then
+        ResolveCountyName = nm
+        Exit Function
+    End If
+
+    nm = LookupCounty(countyDict, codeVal)
+    If Trim(nm) <> "" Then
+        ResolveCountyName = nm
+        Exit Function
+    End If
+
+    ResolveCountyName = LookupCounty(prevCountyDict, codeVal)
+End Function
+
 '====================================================================
 ' CASE 1: R_O_EQCovA/B/C/D , R_O_EQIncrCovA/B/C/D
 ' Export: County Code | Earthquake Construction Type | Rate per $1000  (optional: County)
 ' Config: County | County Code | EQ Construction Type | Rate
-' County name: use Export's own "County" column if that mapped sheet has one;
-' only if that column doesn't exist on the sheet, fall back to the County-sheet lookup.
+' County name resolution (3-tier): Export's own "County" column (if present & non-blank)
+' -> County-sheet lookup -> previous Config value for that County Code.
 ' All column-header matching is case-insensitive. Deletes old Config data rows,
 ' writes new rows in Export's order.
 '====================================================================
@@ -277,17 +324,22 @@ Private Function ProcessCase1(wsExport As Worksheet, wsConfig As Worksheet, coun
         Exit Function
     End If
 
+    '-- Snapshot existing Config County Code -> County Name mapping BEFORE it gets cleared
+    Dim prevCountyDict As Object
+    Set prevCountyDict = BuildPrevCountyLookup(wsConfig, cfgHeaderRow, cCC, cCounty)
+
     Dim outputRows As Collection: Set outputRows = New Collection
-    Dim lastRowE As Long, r As Long, rowDict As Object, countyName As String
+    Dim lastRowE As Long, r As Long, rowDict As Object, countyName As String, directVal As Variant
     lastRowE = wsExport.Cells(wsExport.Rows.Count, eCC).End(xlUp).Row
     For r = expHeaderRow + 1 To lastRowE
         If Trim(wsExport.Cells(r, eCC).Value) <> "" Then
             Set rowDict = CreateObject("Scripting.Dictionary")
             If eCountyDirect > 0 Then
-                countyName = wsExport.Cells(r, eCountyDirect).Value
+                directVal = wsExport.Cells(r, eCountyDirect).Value
             Else
-                countyName = LookupCounty(countyDict, wsExport.Cells(r, eCC).Value)
+                directVal = ""
             End If
+            countyName = ResolveCountyName(directVal, wsExport.Cells(r, eCC).Value, countyDict, prevCountyDict)
             rowDict.Add cCounty, countyName
             rowDict.Add cCC, wsExport.Cells(r, eCC).Value
             rowDict.Add cCT, wsExport.Cells(r, eCT).Value
@@ -389,9 +441,8 @@ End Function
 ' one holds the numeric County Code, the other holds County name text. FindCountyColumns
 ' tells them apart by sampling the first data value (numeric = code, text = name),
 ' case-insensitively on the header text itself.
-' County name: if the Export sheet has its own County name column (eCountyName > 0), use it
-' directly. Only if that name column doesn't exist on the sheet, fall back to the
-' County-sheet lookup by County Code.
+' County name resolution (3-tier): Export's own County name column (if present & non-blank)
+' -> County-sheet lookup -> previous Config value for that County Code.
 '====================================================================
 Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -430,17 +481,22 @@ Private Function ProcessCase3(wsExport As Worksheet, wsConfig As Worksheet, coun
         Exit Function
     End If
 
+    '-- Snapshot existing Config County Code -> County Name mapping BEFORE it gets cleared
+    Dim prevCountyDict As Object
+    Set prevCountyDict = BuildPrevCountyLookup(wsConfig, cfgHeaderRow, cCountyCode, cCountyName)
+
     Dim outputRows As Collection: Set outputRows = New Collection
-    Dim lastRowE As Long, r As Long, rowDict As Object, countyNameVal As String
+    Dim lastRowE As Long, r As Long, rowDict As Object, countyNameVal As String, directVal As Variant
     lastRowE = wsExport.Cells(wsExport.Rows.Count, eCountyCode).End(xlUp).Row
     For r = expHeaderRow + 1 To lastRowE
         If Trim(wsExport.Cells(r, eCountyCode).Value) <> "" Then
             Set rowDict = CreateObject("Scripting.Dictionary")
             If eCountyName > 0 Then
-                countyNameVal = wsExport.Cells(r, eCountyName).Value
+                directVal = wsExport.Cells(r, eCountyName).Value
             Else
-                countyNameVal = LookupCounty(countyDict, wsExport.Cells(r, eCountyCode).Value)
+                directVal = ""
             End If
+            countyNameVal = ResolveCountyName(directVal, wsExport.Cells(r, eCountyCode).Value, countyDict, prevCountyDict)
             rowDict.Add cYB, wsExport.Cells(r, eYB).Value
             rowDict.Add cRetro, MapRetrofit(wsExport.Cells(r, eRetro).Value)
             rowDict.Add cCountyName, countyNameVal
@@ -475,8 +531,8 @@ End Function
 ' CASE 4: R_O_LossAssessmentEQ
 ' Export: County Code | Earthquake Construction Type (or "Construction") | Factor  (optional: County)
 ' Config: County Code | County | Earthquake Construction Type | Factor
-' County name: use Export's own "County" column if that mapped sheet has one;
-' only if that column doesn't exist on the sheet, fall back to the County-sheet lookup.
+' County name resolution (3-tier): Export's own "County" column (if present & non-blank)
+' -> County-sheet lookup -> previous Config value for that County Code.
 '====================================================================
 Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, countyDict As Object, _
     ByRef statusMsg As String, ByRef copiedRows As Long) As Boolean
@@ -508,17 +564,22 @@ Private Function ProcessCase4(wsExport As Worksheet, wsConfig As Worksheet, coun
         Exit Function
     End If
 
+    '-- Snapshot existing Config County Code -> County Name mapping BEFORE it gets cleared
+    Dim prevCountyDict As Object
+    Set prevCountyDict = BuildPrevCountyLookup(wsConfig, cfgHeaderRow, cCC, cCounty)
+
     Dim outputRows As Collection: Set outputRows = New Collection
-    Dim lastRowE As Long, r As Long, rowDict As Object, countyName As String
+    Dim lastRowE As Long, r As Long, rowDict As Object, countyName As String, directVal As Variant
     lastRowE = wsExport.Cells(wsExport.Rows.Count, eCC).End(xlUp).Row
     For r = expHeaderRow + 1 To lastRowE
         If Trim(wsExport.Cells(r, eCC).Value) <> "" Then
             Set rowDict = CreateObject("Scripting.Dictionary")
             If eCountyDirect > 0 Then
-                countyName = wsExport.Cells(r, eCountyDirect).Value
+                directVal = wsExport.Cells(r, eCountyDirect).Value
             Else
-                countyName = LookupCounty(countyDict, wsExport.Cells(r, eCC).Value)
+                directVal = ""
             End If
+            countyName = ResolveCountyName(directVal, wsExport.Cells(r, eCC).Value, countyDict, prevCountyDict)
             rowDict.Add cCC, wsExport.Cells(r, eCC).Value
             rowDict.Add cCounty, countyName
             rowDict.Add cCT, wsExport.Cells(r, eCT).Value
