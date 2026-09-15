@@ -1,48 +1,35 @@
-Sub UpdateHyperlinksOnly()
-
+Sub UnmergeAndKeepRightValue()
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets("Result")   ' change to "Results" if that's the actual tab name
-
-    Dim targetCells As Variant
-    Dim sheetLinks As Variant
-    targetCells = Array("H10", "J10")
-    sheetLinks = Array("TabQC_Row", "TabQC_Col")
-
+    Dim ranges As Variant
     Dim i As Integer
-    Dim c As Range
-    Dim anchorCell As Range
-    Dim displayText As String
+    Dim leftCell As Range, rightCell As Range
+    Dim val As Variant
 
-    For i = LBound(targetCells) To UBound(targetCells)
+    Set ws = ThisWorkbook.Sheets("Result")
 
-        Set c = ws.Range(targetCells(i))
+    ' Pairs of (left cell, right cell) to process
+    ranges = Array("G10:H10", "G11:H11", "I10:J10", "I11:J11")
 
-        ' If the cell is part of a merged range, get the top-left cell of that merge
-        If c.MergeCells Then
-            Set anchorCell = c.MergeArea.Cells(1, 1)
-        Else
-            Set anchorCell = c
-        End If
+    Application.ScreenUpdating = False
 
-        displayText = anchorCell.Value
+    For i = LBound(ranges) To UBound(ranges)
+        With ws.Range(ranges(i))
+            Set leftCell = .Cells(1, 1)   ' G10, G11, I10, I11
+            Set rightCell = .Cells(1, 2)  ' H10, H11, J10, J11
 
-        ' Avoid the error if the cell is blank - fallback to a default label
-        If Trim(displayText) = "" Then
-            displayText = sheetLinks(i)
-        End If
+            ' Capture the current value (merged cell stores it in top-left)
+            val = .Cells(1, 1).Value
 
-        ' Remove any existing hyperlink on that anchor cell first
-        anchorCell.Hyperlinks.Delete
+            ' Unmerge
+            .UnMerge
+        End With
 
-        ' Add the hyperlink
-        ws.Hyperlinks.Add _
-            Anchor:=anchorCell, _
-            Address:="", _
-            SubAddress:="'" & sheetLinks(i) & "'!A1", _
-            TextToDisplay:=displayText
-
+        ' Clear left cell, put value in right cell
+        leftCell.ClearContents
+        rightCell.Value = val
     Next i
 
-    MsgBox "Hyperlinks updated successfully (merge-safe).", vbInformation
+    Application.ScreenUpdating = True
 
+    MsgBox "Done! Cells unmerged and values moved.", vbInformation
 End Sub
