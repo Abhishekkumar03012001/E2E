@@ -3,26 +3,25 @@ Sub FormatQCResults()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Worksheets("Results")
 
-    '=============================
+    '====================================
     ' G10:H10
-    '=============================
+    '====================================
     With ws.Range("G10:H10")
-        'Copy H10 value and formatting to G10
+
+        'Keep H10 value
         ws.Range("G10").Value = ws.Range("H10").Value
+
+        'Keep H10 background color
         ws.Range("G10").Interior.Color = ws.Range("H10").Interior.Color
-        ws.Range("G10").Font = ws.Range("H10").Font
-        ws.Range("G10").HorizontalAlignment = ws.Range("H10").HorizontalAlignment
-        ws.Range("G10").VerticalAlignment = ws.Range("H10").VerticalAlignment
-        
-        'Remove existing hyperlinks
-        ws.Range("H10").Hyperlinks.Delete
-        ws.Range("G10").Hyperlinks.Delete
-        
-        'Merge
+
+        'Merge cells
         .Merge
+
     End With
 
-    'Add hyperlink to merged G10:H10
+    'H10 link -> TabQC_Row
+    ws.Range("G10").Hyperlinks.Delete
+
     ws.Hyperlinks.Add _
         Anchor:=ws.Range("G10"), _
         Address:="", _
@@ -30,26 +29,25 @@ Sub FormatQCResults()
         TextToDisplay:="Prop to FR"
 
 
-    '=============================
+    '====================================
     ' I10:J10
-    '=============================
+    '====================================
     With ws.Range("I10:J10")
-        'Copy J10 value and formatting to I10
+
+        'Keep J10 value
         ws.Range("I10").Value = ws.Range("J10").Value
+
+        'Keep J10 background color
         ws.Range("I10").Interior.Color = ws.Range("J10").Interior.Color
-        ws.Range("I10").Font = ws.Range("J10").Font
-        ws.Range("I10").HorizontalAlignment = ws.Range("J10").HorizontalAlignment
-        ws.Range("I10").VerticalAlignment = ws.Range("J10").VerticalAlignment
-        
-        'Remove existing hyperlinks
-        ws.Range("J10").Hyperlinks.Delete
-        ws.Range("I10").Hyperlinks.Delete
-        
-        'Merge
+
+        'Merge cells
         .Merge
+
     End With
 
-    'Add hyperlink to merged I10:J10
+    'J10 link -> TabQC_Col
+    ws.Range("I10").Hyperlinks.Delete
+
     ws.Hyperlinks.Add _
         Anchor:=ws.Range("I10"), _
         Address:="", _
@@ -57,56 +55,47 @@ Sub FormatQCResults()
         TextToDisplay:="Prop to FR"
 
 
-    '=============================
+    '====================================
     ' G11:H11
-    '=============================
+    '====================================
     With ws.Range("G11:H11")
+
         ws.Range("G11").Value = ws.Range("H11").Value
         ws.Range("G11").Interior.Color = ws.Range("H11").Interior.Color
-        ws.Range("G11").Font = ws.Range("H11").Font
-        ws.Range("G11").HorizontalAlignment = ws.Range("H11").HorizontalAlignment
-        ws.Range("G11").VerticalAlignment = ws.Range("H11").VerticalAlignment
-        
+
         .Merge
+
     End With
 
 
-    '=============================
+    '====================================
     ' I11:J11
-    '=============================
+    '====================================
     With ws.Range("I11:J11")
+
         ws.Range("I11").Value = ws.Range("J11").Value
         ws.Range("I11").Interior.Color = ws.Range("J11").Interior.Color
-        ws.Range("I11").Font = ws.Range("J11").Font
-        ws.Range("I11").HorizontalAlignment = ws.Range("J11").HorizontalAlignment
-        ws.Range("I11").VerticalAlignment = ws.Range("J11").VerticalAlignment
-        
+
         .Merge
+
     End With
 
 
-    '=============================
+    '====================================
     ' OUTSIDE BORDERS
-    '=============================
+    '====================================
 
-    'G10:H10
     AddOutsideBorder ws.Range("G10:H10")
-
-    'I10:J10
     AddOutsideBorder ws.Range("I10:J10")
-
-    'G11:H11
     AddOutsideBorder ws.Range("G11:H11")
-
-    'I11:J11
     AddOutsideBorder ws.Range("I11:J11")
 
 End Sub
 
 
-'=========================================
-' Add outside border to a range
-'=========================================
+'====================================
+' OUTSIDE BORDER
+'====================================
 Sub AddOutsideBorder(rng As Range)
 
     With rng.Borders(xlEdgeLeft)
