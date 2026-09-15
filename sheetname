@@ -1,102 +1,48 @@
-Sub UpdateQCLinksAndMerge()
+Sub UpdateHyperlinksOnly()
 
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets("Result")
+    Set ws = ThisWorkbook.Sheets("Result")   ' change to "Results" if that's the actual tab name
 
-    Dim wb As Workbook
-    Set wb = ThisWorkbook
-
-    '----------------------------------------------------------
-    ' STEP 1: Add/Update Hyperlinks on H10 and J10
-    '----------------------------------------------------------
-
-    ' Remove existing hyperlinks first (if any) to avoid duplicates
-    ws.Range("H10").Hyperlinks.Delete
-    ws.Range("J10").Hyperlinks.Delete
-
-    ' H10 -> link to sheet "TabQC_Row"
-    ws.Hyperlinks.Add _
-        Anchor:=ws.Range("H10"), _
-        Address:="", _
-        SubAddress:="'TabQC_Row'!A1", _
-        TextToDisplay:=ws.Range("H10").Value
-
-    ' J10 -> link to sheet "TabQC_Col"
-    ws.Hyperlinks.Add _
-        Anchor:=ws.Range("J10"), _
-        Address:="", _
-        SubAddress:="'TabQC_Col'!A1", _
-        TextToDisplay:=ws.Range("J10").Value
-
-    '----------------------------------------------------------
-    ' STEP 2: Merge cells while keeping H/J values & background color
-    '----------------------------------------------------------
-
-    Dim h10Val As Variant, j10Val As Variant
-    Dim h10Color As Long, j10Color As Long
-
-    h10Val = ws.Range("H10").Value
-    j10Val = ws.Range("J10").Value
-    h10Color = ws.Range("H10").Interior.Color
-    j10Color = ws.Range("J10").Interior.Color
-
-    ' Merge G10:H10
-    ws.Range("G10:H10").Merge
-    ws.Range("G10").Value = h10Val
-    ws.Range("G10").Interior.Color = h10Color
-
-    ' Merge I10:J10
-    ws.Range("I10:J10").Merge
-    ws.Range("I10").Value = j10Val
-    ws.Range("I10").Interior.Color = j10Color
-
-    ' Merge G11:H11 (keep H11's value & color)
-    Dim h11Val As Variant, h11Color As Long
-    h11Val = ws.Range("H11").Value
-    h11Color = ws.Range("H11").Interior.Color
-
-    ws.Range("G11:H11").Merge
-    ws.Range("G11").Value = h11Val
-    ws.Range("G11").Interior.Color = h11Color
-
-    ' Merge I11:J11 (keep J11's value & color)
-    Dim j11Val As Variant, j11Color As Long
-    j11Val = ws.Range("J11").Value
-    j11Color = ws.Range("J11").Interior.Color
-
-    ws.Range("I11:J11").Merge
-    ws.Range("I11").Value = j11Val
-    ws.Range("I11").Interior.Color = j11Color
-
-    '----------------------------------------------------------
-    ' STEP 3: Add outside border to each merged cell
-    '----------------------------------------------------------
-
-    Dim rng As Range
-    Dim mergedRanges As Variant
-    mergedRanges = Array("G10:H10", "I10:J10", "G11:H11", "I11:J11")
+    Dim targetCells As Variant
+    Dim sheetLinks As Variant
+    targetCells = Array("H10", "J10")
+    sheetLinks = Array("TabQC_Row", "TabQC_Col")
 
     Dim i As Integer
-    For i = LBound(mergedRanges) To UBound(mergedRanges)
-        Set rng = ws.Range(mergedRanges(i))
-        With rng.Borders(xlEdgeLeft)
-            .LineStyle = xlContinuous
-            .Weight = xlThin
-        End With
-        With rng.Borders(xlEdgeRight)
-            .LineStyle = xlContinuous
-            .Weight = xlThin
-        End With
-        With rng.Borders(xlEdgeTop)
-            .LineStyle = xlContinuous
-            .Weight = xlThin
-        End With
-        With rng.Borders(xlEdgeBottom)
-            .LineStyle = xlContinuous
-            .Weight = xlThin
-        End With
+    Dim c As Range
+    Dim anchorCell As Range
+    Dim displayText As String
+
+    For i = LBound(targetCells) To UBound(targetCells)
+
+        Set c = ws.Range(targetCells(i))
+
+        ' If the cell is part of a merged range, get the top-left cell of that merge
+        If c.MergeCells Then
+            Set anchorCell = c.MergeArea.Cells(1, 1)
+        Else
+            Set anchorCell = c
+        End If
+
+        displayText = anchorCell.Value
+
+        ' Avoid the error if the cell is blank - fallback to a default label
+        If Trim(displayText) = "" Then
+            displayText = sheetLinks(i)
+        End If
+
+        ' Remove any existing hyperlink on that anchor cell first
+        anchorCell.Hyperlinks.Delete
+
+        ' Add the hyperlink
+        ws.Hyperlinks.Add _
+            Anchor:=anchorCell, _
+            Address:="", _
+            SubAddress:="'" & sheetLinks(i) & "'!A1", _
+            TextToDisplay:=displayText
+
     Next i
 
-    MsgBox "Done! Hyperlinks added, cells merged, and borders applied on 'Result' sheet.", vbInformation
+    MsgBox "Hyperlinks updated successfully (merge-safe).", vbInformation
 
 End Sub
