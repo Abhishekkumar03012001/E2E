@@ -1,121 +1,102 @@
-Sub FormatQCResults()
+Sub UpdateQCLinksAndMerge()
 
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Worksheets("Results")
+    Set ws = ThisWorkbook.Sheets("Result")
 
-    '====================================
-    ' G10:H10
-    '====================================
-    With ws.Range("G10:H10")
+    Dim wb As Workbook
+    Set wb = ThisWorkbook
 
-        'Keep H10 value
-        ws.Range("G10").Value = ws.Range("H10").Value
+    '----------------------------------------------------------
+    ' STEP 1: Add/Update Hyperlinks on H10 and J10
+    '----------------------------------------------------------
 
-        'Keep H10 background color
-        ws.Range("G10").Interior.Color = ws.Range("H10").Interior.Color
+    ' Remove existing hyperlinks first (if any) to avoid duplicates
+    ws.Range("H10").Hyperlinks.Delete
+    ws.Range("J10").Hyperlinks.Delete
 
-        'Merge cells
-        .Merge
-
-    End With
-
-    'H10 link -> TabQC_Row
-    ws.Range("G10").Hyperlinks.Delete
-
+    ' H10 -> link to sheet "TabQC_Row"
     ws.Hyperlinks.Add _
-        Anchor:=ws.Range("G10"), _
+        Anchor:=ws.Range("H10"), _
         Address:="", _
         SubAddress:="'TabQC_Row'!A1", _
-        TextToDisplay:="Prop to FR"
+        TextToDisplay:=ws.Range("H10").Value
 
-
-    '====================================
-    ' I10:J10
-    '====================================
-    With ws.Range("I10:J10")
-
-        'Keep J10 value
-        ws.Range("I10").Value = ws.Range("J10").Value
-
-        'Keep J10 background color
-        ws.Range("I10").Interior.Color = ws.Range("J10").Interior.Color
-
-        'Merge cells
-        .Merge
-
-    End With
-
-    'J10 link -> TabQC_Col
-    ws.Range("I10").Hyperlinks.Delete
-
+    ' J10 -> link to sheet "TabQC_Col"
     ws.Hyperlinks.Add _
-        Anchor:=ws.Range("I10"), _
+        Anchor:=ws.Range("J10"), _
         Address:="", _
         SubAddress:="'TabQC_Col'!A1", _
-        TextToDisplay:="Prop to FR"
+        TextToDisplay:=ws.Range("J10").Value
 
+    '----------------------------------------------------------
+    ' STEP 2: Merge cells while keeping H/J values & background color
+    '----------------------------------------------------------
 
-    '====================================
-    ' G11:H11
-    '====================================
-    With ws.Range("G11:H11")
+    Dim h10Val As Variant, j10Val As Variant
+    Dim h10Color As Long, j10Color As Long
 
-        ws.Range("G11").Value = ws.Range("H11").Value
-        ws.Range("G11").Interior.Color = ws.Range("H11").Interior.Color
+    h10Val = ws.Range("H10").Value
+    j10Val = ws.Range("J10").Value
+    h10Color = ws.Range("H10").Interior.Color
+    j10Color = ws.Range("J10").Interior.Color
 
-        .Merge
+    ' Merge G10:H10
+    ws.Range("G10:H10").Merge
+    ws.Range("G10").Value = h10Val
+    ws.Range("G10").Interior.Color = h10Color
 
-    End With
+    ' Merge I10:J10
+    ws.Range("I10:J10").Merge
+    ws.Range("I10").Value = j10Val
+    ws.Range("I10").Interior.Color = j10Color
 
+    ' Merge G11:H11 (keep H11's value & color)
+    Dim h11Val As Variant, h11Color As Long
+    h11Val = ws.Range("H11").Value
+    h11Color = ws.Range("H11").Interior.Color
 
-    '====================================
-    ' I11:J11
-    '====================================
-    With ws.Range("I11:J11")
+    ws.Range("G11:H11").Merge
+    ws.Range("G11").Value = h11Val
+    ws.Range("G11").Interior.Color = h11Color
 
-        ws.Range("I11").Value = ws.Range("J11").Value
-        ws.Range("I11").Interior.Color = ws.Range("J11").Interior.Color
+    ' Merge I11:J11 (keep J11's value & color)
+    Dim j11Val As Variant, j11Color As Long
+    j11Val = ws.Range("J11").Value
+    j11Color = ws.Range("J11").Interior.Color
 
-        .Merge
+    ws.Range("I11:J11").Merge
+    ws.Range("I11").Value = j11Val
+    ws.Range("I11").Interior.Color = j11Color
 
-    End With
+    '----------------------------------------------------------
+    ' STEP 3: Add outside border to each merged cell
+    '----------------------------------------------------------
 
+    Dim rng As Range
+    Dim mergedRanges As Variant
+    mergedRanges = Array("G10:H10", "I10:J10", "G11:H11", "I11:J11")
 
-    '====================================
-    ' OUTSIDE BORDERS
-    '====================================
+    Dim i As Integer
+    For i = LBound(mergedRanges) To UBound(mergedRanges)
+        Set rng = ws.Range(mergedRanges(i))
+        With rng.Borders(xlEdgeLeft)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+        End With
+        With rng.Borders(xlEdgeRight)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+        End With
+        With rng.Borders(xlEdgeTop)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+        End With
+        With rng.Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+        End With
+    Next i
 
-    AddOutsideBorder ws.Range("G10:H10")
-    AddOutsideBorder ws.Range("I10:J10")
-    AddOutsideBorder ws.Range("G11:H11")
-    AddOutsideBorder ws.Range("I11:J11")
-
-End Sub
-
-
-'====================================
-' OUTSIDE BORDER
-'====================================
-Sub AddOutsideBorder(rng As Range)
-
-    With rng.Borders(xlEdgeLeft)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With rng.Borders(xlEdgeTop)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With rng.Borders(xlEdgeBottom)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With rng.Borders(xlEdgeRight)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
+    MsgBox "Done! Hyperlinks added, cells merged, and borders applied on 'Result' sheet.", vbInformation
 
 End Sub
