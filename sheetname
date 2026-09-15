@@ -10,21 +10,23 @@ Sub UnmergeAndKeepRightValueWithHyperlink()
 
     Set ws = ThisWorkbook.Sheets("Result")
 
-    ' Pairs of (left cell, right cell) to process
     ranges = Array("G10:H10", "G11:H11", "I10:J10", "I11:J11")
 
     Application.ScreenUpdating = False
 
     For i = LBound(ranges) To UBound(ranges)
         With ws.Range(ranges(i))
-            Set leftCell = .Cells(1, 1)   ' G10, G11, I10, I11
-            Set rightCell = .Cells(1, 2)  ' H10, H11, J10, J11
+            Set leftCell = .Cells(1, 1)
+            Set rightCell = .Cells(1, 2)
 
-            ' Capture the current value (merged cell stores it in top-left)
             val = leftCell.Value
 
-            ' Check for hyperlink and capture its details
             hasHyperlink = False
+            hAddress = ""
+            hSubAddress = ""
+            hTextToDisplay = ""
+            hScreenTip = ""
+
             If leftCell.Hyperlinks.Count > 0 Then
                 hasHyperlink = True
                 With leftCell.Hyperlinks(1)
@@ -37,18 +39,36 @@ Sub UnmergeAndKeepRightValueWithHyperlink()
                 End With
             End If
 
-            ' Unmerge
+            ' Fallback: if TextToDisplay is blank, use the cell's value instead
+            If hasHyperlink And Trim(hTextToDisplay) = "" Then
+                If Len(Trim(CStr(val))) > 0 Then
+                    hTextToDisplay = CStr(val)
+                Else
+                    hTextToDisplay = IIf(hAddress <> "", hAddress, hSubAddress)
+                End If
+            End If
+
             .UnMerge
         End With
 
-        ' Clear left cell completely (removes value + hyperlink)
         leftCell.Clear
 
-        ' Restore value and hyperlink (if any) to the right cell
         If hasHyperlink Then
-            ws.Hyperlinks.Add Anchor:=rightCell, Address:=hAddress, _
-                SubAddress:=hSubAddress, TextToDisplay:=hTextToDisplay, _
-                ScreenTip:=hScreenTip
+            On Error Resume Next
+            If hScreenTip <> "" Then
+                ws.Hyperlinks.Add Anchor:=rightCell, Address:=hAddress, _
+                    SubAddress:=hSubAddress, ScreenTip:=hScreenTip, _
+                    TextToDisplay:=hTextToDisplay
+            Else
+                ws.Hyperlinks.Add Anchor:=rightCell, Address:=hAddress, _
+                    SubAddress:=hSubAddress, TextToDisplay:=hTextToDisplay
+            End If
+            If Err.Number <> 0 Then
+                ' Fallback: hyperlink creation failed, just write the value as plain text
+                rightCell.Value = val
+                Err.Clear
+            End If
+            On Error GoTo 0
         Else
             rightCell.Value = val
         End If
