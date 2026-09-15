@@ -1,9 +1,12 @@
-Sub UnmergeAndKeepRightValue()
+Sub UnmergeAndKeepRightValueWithHyperlink()
     Dim ws As Worksheet
     Dim ranges As Variant
     Dim i As Integer
     Dim leftCell As Range, rightCell As Range
     Dim val As Variant
+    Dim hAddress As String, hSubAddress As String
+    Dim hTextToDisplay As String, hScreenTip As String
+    Dim hasHyperlink As Boolean
 
     Set ws = ThisWorkbook.Sheets("Result")
 
@@ -18,18 +21,41 @@ Sub UnmergeAndKeepRightValue()
             Set rightCell = .Cells(1, 2)  ' H10, H11, J10, J11
 
             ' Capture the current value (merged cell stores it in top-left)
-            val = .Cells(1, 1).Value
+            val = leftCell.Value
+
+            ' Check for hyperlink and capture its details
+            hasHyperlink = False
+            If leftCell.Hyperlinks.Count > 0 Then
+                hasHyperlink = True
+                With leftCell.Hyperlinks(1)
+                    hAddress = .Address
+                    hSubAddress = .SubAddress
+                    hTextToDisplay = .TextToDisplay
+                    On Error Resume Next
+                    hScreenTip = .ScreenTip
+                    On Error GoTo 0
+                End With
+            End If
 
             ' Unmerge
             .UnMerge
         End With
 
-        ' Clear left cell, put value in right cell
-        leftCell.ClearContents
-        rightCell.Value = val
+        ' Clear left cell completely (removes value + hyperlink)
+        leftCell.Clear
+
+        ' Restore value and hyperlink (if any) to the right cell
+        If hasHyperlink Then
+            ws.Hyperlinks.Add Anchor:=rightCell, Address:=hAddress, _
+                SubAddress:=hSubAddress, TextToDisplay:=hTextToDisplay, _
+                ScreenTip:=hScreenTip
+        Else
+            rightCell.Value = val
+        End If
+
     Next i
 
     Application.ScreenUpdating = True
 
-    MsgBox "Done! Cells unmerged and values moved.", vbInformation
+    MsgBox "Done! Cells unmerged, values moved, and hyperlinks preserved.", vbInformation
 End Sub
