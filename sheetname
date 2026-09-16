@@ -1,108 +1,22 @@
-Sub MergeResultCells()
-
-    Dim ws As Worksheet
-
-    Set ws = ThisWorkbook.Worksheets("Result")
-
-    On Error GoTo CleanUp
-
-    'Disable all pop-ups / screen changes
-    Application.DisplayAlerts = False
-    Application.ScreenUpdating = False
-    Application.EnableEvents = False
-
-    'Merge cells
-    MergeTwoCells ws, "G10:H10", "H10"
-    MergeTwoCells ws, "G11:H11", "H11"
-    MergeTwoCells ws, "I10:J10", "J10"
-    MergeTwoCells ws, "I11:J11", "J11"
-
-CleanUp:
-
-    'Restore Excel settings
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
-    Application.EnableEvents = True
-
-End Sub
-
-
-Private Sub MergeTwoCells(ws As Worksheet, _
-                          MergeRange As String, _
-                          SourceCell As String)
-
-    Dim rng As Range
-    Dim src As Range
-    Dim cellValue As Variant
-    Dim linkAddress As String
-    Dim linkSubAddress As String
-    Dim hasLink As Boolean
-
-    Set rng = ws.Range(MergeRange)
-    Set src = ws.Range(SourceCell)
-
-    '---------------------------------------
-    ' Store value/formula from H/J
-    '---------------------------------------
-    cellValue = src.Formula
-
-    '---------------------------------------
-    ' Store hyperlink from H/J
-    '---------------------------------------
-    If src.Hyperlinks.Count > 0 Then
-
-        hasLink = True
-
-        With src.Hyperlinks(1)
-            linkAddress = .Address
-            linkSubAddress = .SubAddress
-        End With
-
-    End If
-
-    '---------------------------------------
-    ' Remove existing merge if any
-    '---------------------------------------
-    If rng.MergeCells Then
-        rng.UnMerge
-    End If
-
-    '---------------------------------------
-    ' Copy formatting from H/J
-    '---------------------------------------
-    src.Copy
-    rng.Cells(1, 1).PasteSpecial Paste:=xlPasteFormats
-    Application.CutCopyMode = False
-
-    '---------------------------------------
-    ' ACTUAL MERGE
-    '---------------------------------------
-    rng.Merge
-
-    '---------------------------------------
-    ' Put H/J value/formula in merged cell
-    '---------------------------------------
-    rng.Cells(1, 1).Formula = cellValue
-
-    '---------------------------------------
-    ' Restore hyperlink
-    '---------------------------------------
-    If hasLink Then
-
-        ws.Hyperlinks.Add _
-            Anchor:=rng.Cells(1, 1), _
-            Address:=linkAddress, _
-            SubAddress:=linkSubAddress
-
-    End If
-
-    '---------------------------------------
-    ' Outside border
-    '---------------------------------------
-    With rng
-        .BorderAround _
-            LineStyle:=xlContinuous, _
-            Weight:=xlThin
-    End With
-
-End Sub
+Navigate to the designated file path for the HMR 2.5 Monthly QC Report	☐	☐
+Check whether the New Month folder is present	☐	☐
+If the New Month folder is not present, create the folder	☐	☐
+Copy/paste the latest previous HMR 2.5 Monthly QC Report into the New Month folder	☐	☐
+Rename the copied report with the appropriate month/name	☐	☐
+Open the newly created HMR 2.5 Monthly QC Report Excel file	☐	☐
+Open the Config and Factor QC Checklist link in the Excel file	☐	☐
+Verify that the link opens the correct webpage	☐	☐
+Locate the Final Sign-Off table on the webpage	☐	☐
+Check the Product Delivery Analyst Sign-Off status	☐	☐
+Check the QC Analyst Sign-Off status	☐	☐
+Check the Product Delivery Manager Sign-Off status	☐	☐
+Update/mark the corresponding sign-off status in the HMR 2.5 Monthly QC Report	☐	☐
+Open the Filing QC Checklist	☐	☐
+Locate the Final Sign-Off table in the Filing QC Checklist	☐	☐
+Check the required sign-off statuses	☐	☐
+Update/mark the corresponding sign-off status in the HMR 2.5 Monthly QC Report	☐	☐
+Open the Closeout QC Checklist for the applicable state	☐	☐
+Review the required Closeout QC information for the state	☐	☐
+Update/mark the corresponding information in the HMR 2.5 Monthly QC Report	☐	☐
+Repeat the Closeout QC Checklist process for all applicable states	☐	☐
+Perform a final review to ensure all states and required sign-offs have been updated	☐	☐
