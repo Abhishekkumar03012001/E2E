@@ -1,26 +1,128 @@
-Sub CreateQCHyperlinks()
+Sub MergeResultCells()
 
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Worksheets("Results")
+    Set ws = ThisWorkbook.Worksheets("Result")
 
-    'H10 → TabQC_Row
-    With ws.Range("H10")
-        .Hyperlinks.Delete
+    ' Merge G10:H10 using H10
+    MergeWithRightCell ws, "G10", "H10"
+
+    ' Merge G11:H11 using H11
+    MergeWithRightCell ws, "G11", "H11"
+
+    ' Merge I10:J10 using J10
+    MergeWithRightCell ws, "I10", "J10"
+
+    ' Merge I11:J11 using J11
+    MergeWithRightCell ws, "I11", "J11"
+
+End Sub
+
+
+Private Sub MergeWithRightCell(ws As Worksheet, _
+                               leftCell As String, _
+                               rightCell As String)
+
+    Dim L As Range
+    Dim R As Range
+    Dim hAddress As String
+    Dim hSubAddress As String
+    Dim hText As String
+    Dim hasHyperlink As Boolean
+
+    Set L = ws.Range(leftCell)
+    Set R = ws.Range(rightCell)
+
+    '-----------------------------------------
+    ' If already merged, unmerge first
+    '-----------------------------------------
+    If L.MergeCells Then
+        L.MergeArea.UnMerge
+    End If
+
+    If R.MergeCells Then
+        R.MergeArea.UnMerge
+    End If
+
+    '-----------------------------------------
+    ' Store hyperlink from RIGHT cell
+    '-----------------------------------------
+    If R.Hyperlinks.Count > 0 Then
+
+        hasHyperlink = True
+
+        With R.Hyperlinks(1)
+            hAddress = .Address
+            hSubAddress = .SubAddress
+            hText = .TextToDisplay
+        End With
+
+    End If
+
+    '-----------------------------------------
+    ' Copy value/formula from RIGHT cell
+    '-----------------------------------------
+    L.Formula = R.Formula
+
+    '-----------------------------------------
+    ' Copy formatting from RIGHT cell
+    ' This includes background color, font,
+    ' number format, alignment, etc.
+    '-----------------------------------------
+    R.Copy
+    L.PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    '-----------------------------------------
+    ' Merge the two cells
+    '-----------------------------------------
+    ws.Range(leftCell & ":" & rightCell).Merge
+
+    '-----------------------------------------
+    ' Reapply formatting to merged cell
+    '-----------------------------------------
+    R.Copy
+    L.PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    '-----------------------------------------
+    ' Restore hyperlink
+    '-----------------------------------------
+    If hasHyperlink Then
+
+        'Remove any existing hyperlink
+        On Error Resume Next
+        L.Hyperlinks.Delete
+        On Error GoTo 0
+
         ws.Hyperlinks.Add _
-            Anchor:=.Cells(1, 1), _
-            Address:="", _
-            SubAddress:="'TabQC_Row'!A1", _
-            TextToDisplay:="Prop to FR"
+            Anchor:=L, _
+            Address:=hAddress, _
+            SubAddress:=hSubAddress, _
+            TextToDisplay:=hText
+
+    End If
+
+    '-----------------------------------------
+    ' Outside border
+    '-----------------------------------------
+    With L.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
     End With
 
-    'J10 → TabQC_Col
-    With ws.Range("J10")
-        .Hyperlinks.Delete
-        ws.Hyperlinks.Add _
-            Anchor:=.Cells(1, 1), _
-            Address:="", _
-            SubAddress:="'TabQC_Col'!A1", _
-            TextToDisplay:="Prop to FR"
+    With L.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+
+    With L.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+
+    With L.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
     End With
 
 End Sub
