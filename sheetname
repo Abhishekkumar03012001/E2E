@@ -1,128 +1,108 @@
 Sub MergeResultCells()
 
     Dim ws As Worksheet
+
     Set ws = ThisWorkbook.Worksheets("Result")
 
-    ' Merge G10:H10 using H10
-    MergeWithRightCell ws, "G10", "H10"
+    On Error GoTo CleanUp
 
-    ' Merge G11:H11 using H11
-    MergeWithRightCell ws, "G11", "H11"
+    'Disable all pop-ups / screen changes
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
 
-    ' Merge I10:J10 using J10
-    MergeWithRightCell ws, "I10", "J10"
+    'Merge cells
+    MergeTwoCells ws, "G10:H10", "H10"
+    MergeTwoCells ws, "G11:H11", "H11"
+    MergeTwoCells ws, "I10:J10", "J10"
+    MergeTwoCells ws, "I11:J11", "J11"
 
-    ' Merge I11:J11 using J11
-    MergeWithRightCell ws, "I11", "J11"
+CleanUp:
+
+    'Restore Excel settings
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
 
 End Sub
 
 
-Private Sub MergeWithRightCell(ws As Worksheet, _
-                               leftCell As String, _
-                               rightCell As String)
+Private Sub MergeTwoCells(ws As Worksheet, _
+                          MergeRange As String, _
+                          SourceCell As String)
 
-    Dim L As Range
-    Dim R As Range
-    Dim hAddress As String
-    Dim hSubAddress As String
-    Dim hText As String
-    Dim hasHyperlink As Boolean
+    Dim rng As Range
+    Dim src As Range
+    Dim cellValue As Variant
+    Dim linkAddress As String
+    Dim linkSubAddress As String
+    Dim hasLink As Boolean
 
-    Set L = ws.Range(leftCell)
-    Set R = ws.Range(rightCell)
+    Set rng = ws.Range(MergeRange)
+    Set src = ws.Range(SourceCell)
 
-    '-----------------------------------------
-    ' If already merged, unmerge first
-    '-----------------------------------------
-    If L.MergeCells Then
-        L.MergeArea.UnMerge
-    End If
+    '---------------------------------------
+    ' Store value/formula from H/J
+    '---------------------------------------
+    cellValue = src.Formula
 
-    If R.MergeCells Then
-        R.MergeArea.UnMerge
-    End If
+    '---------------------------------------
+    ' Store hyperlink from H/J
+    '---------------------------------------
+    If src.Hyperlinks.Count > 0 Then
 
-    '-----------------------------------------
-    ' Store hyperlink from RIGHT cell
-    '-----------------------------------------
-    If R.Hyperlinks.Count > 0 Then
+        hasLink = True
 
-        hasHyperlink = True
-
-        With R.Hyperlinks(1)
-            hAddress = .Address
-            hSubAddress = .SubAddress
-            hText = .TextToDisplay
+        With src.Hyperlinks(1)
+            linkAddress = .Address
+            linkSubAddress = .SubAddress
         End With
 
     End If
 
-    '-----------------------------------------
-    ' Copy value/formula from RIGHT cell
-    '-----------------------------------------
-    L.Formula = R.Formula
+    '---------------------------------------
+    ' Remove existing merge if any
+    '---------------------------------------
+    If rng.MergeCells Then
+        rng.UnMerge
+    End If
 
-    '-----------------------------------------
-    ' Copy formatting from RIGHT cell
-    ' This includes background color, font,
-    ' number format, alignment, etc.
-    '-----------------------------------------
-    R.Copy
-    L.PasteSpecial Paste:=xlPasteFormats
+    '---------------------------------------
+    ' Copy formatting from H/J
+    '---------------------------------------
+    src.Copy
+    rng.Cells(1, 1).PasteSpecial Paste:=xlPasteFormats
     Application.CutCopyMode = False
 
-    '-----------------------------------------
-    ' Merge the two cells
-    '-----------------------------------------
-    ws.Range(leftCell & ":" & rightCell).Merge
+    '---------------------------------------
+    ' ACTUAL MERGE
+    '---------------------------------------
+    rng.Merge
 
-    '-----------------------------------------
-    ' Reapply formatting to merged cell
-    '-----------------------------------------
-    R.Copy
-    L.PasteSpecial Paste:=xlPasteFormats
-    Application.CutCopyMode = False
+    '---------------------------------------
+    ' Put H/J value/formula in merged cell
+    '---------------------------------------
+    rng.Cells(1, 1).Formula = cellValue
 
-    '-----------------------------------------
+    '---------------------------------------
     ' Restore hyperlink
-    '-----------------------------------------
-    If hasHyperlink Then
-
-        'Remove any existing hyperlink
-        On Error Resume Next
-        L.Hyperlinks.Delete
-        On Error GoTo 0
+    '---------------------------------------
+    If hasLink Then
 
         ws.Hyperlinks.Add _
-            Anchor:=L, _
-            Address:=hAddress, _
-            SubAddress:=hSubAddress, _
-            TextToDisplay:=hText
+            Anchor:=rng.Cells(1, 1), _
+            Address:=linkAddress, _
+            SubAddress:=linkSubAddress
 
     End If
 
-    '-----------------------------------------
+    '---------------------------------------
     ' Outside border
-    '-----------------------------------------
-    With L.Borders(xlEdgeLeft)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With L.Borders(xlEdgeTop)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With L.Borders(xlEdgeBottom)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
-    End With
-
-    With L.Borders(xlEdgeRight)
-        .LineStyle = xlContinuous
-        .Weight = xlThin
+    '---------------------------------------
+    With rng
+        .BorderAround _
+            LineStyle:=xlContinuous, _
+            Weight:=xlThin
     End With
 
 End Sub
