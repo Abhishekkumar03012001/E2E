@@ -1,9 +1,10 @@
 Check Point	Doer Analyst	Peer Analyst
 Copy the previous report, rename it for the current month, and open it.	☐	☐
-Open the LM Aerial QC Checklist link.	☐	☐
+Open the SAF Aerial State QC Pages link.	☐	☐
 Select the required state from the left side of the Confluence page.	☐	☐
-Open Product Delivery QC and expand all subsections.	☐	☐
-Check Data Validation, Calibration, Stakeholder, and Closeout QC subsections.	☐	☐
-Update the corresponding subfields in the QC report.	☐	☐
+Navigate to the Product Delivery QC section.	☐	☐
+Check Data Validation QC, Calibration QC, Product Delivery Final Filing QC, and Aerial Closeout QC.	☐	☐
+Map the QC statuses to the corresponding fields in the report.	☐	☐
+If the state is not available, open the respective Config & Factor QC, Filing QC, and Closeout QC links.	☐	☐
+For Manager Sign-Off, verify the Final Sign-Off table and update the report accordingly.	☐	☐
 Repeat the process for all states.	☐	☐
-For Closeout QC, check the Manager Sign-Off in the Final Sign-Off section and update the report accordingly.
