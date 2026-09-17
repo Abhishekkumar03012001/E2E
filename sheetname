@@ -1,22 +1,9 @@
-Navigate to the designated file path for the HMR 2.5 Monthly QC Report	☐	☐
-Check whether the New Month folder is present	☐	☐
-If the New Month folder is not present, create the folder	☐	☐
-Copy/paste the latest previous HMR 2.5 Monthly QC Report into the New Month folder	☐	☐
-Rename the copied report with the appropriate month/name	☐	☐
-Open the newly created HMR 2.5 Monthly QC Report Excel file	☐	☐
-Open the Config and Factor QC Checklist link in the Excel file	☐	☐
-Verify that the link opens the correct webpage	☐	☐
-Locate the Final Sign-Off table on the webpage	☐	☐
-Check the Product Delivery Analyst Sign-Off status	☐	☐
-Check the QC Analyst Sign-Off status	☐	☐
-Check the Product Delivery Manager Sign-Off status	☐	☐
-Update/mark the corresponding sign-off status in the HMR 2.5 Monthly QC Report	☐	☐
-Open the Filing QC Checklist	☐	☐
-Locate the Final Sign-Off table in the Filing QC Checklist	☐	☐
-Check the required sign-off statuses	☐	☐
-Update/mark the corresponding sign-off status in the HMR 2.5 Monthly QC Report	☐	☐
-Open the Closeout QC Checklist for the applicable state	☐	☐
-Review the required Closeout QC information for the state	☐	☐
-Update/mark the corresponding information in the HMR 2.5 Monthly QC Report	☐	☐
-Repeat the Closeout QC Checklist process for all applicable states	☐	☐
-Perform a final review to ensure all states and required sign-offs have been updated	☐	☐
+Check Point	Doer Analyst	Peer Analyst
+Copy the previous report, rename it for the current month, and open it.	☐	☐
+Open the LM Aerial QC Checklist link.	☐	☐
+Select the required state from the left side of the Confluence page.	☐	☐
+Open Product Delivery QC and expand all subsections.	☐	☐
+Check Data Validation, Calibration, Stakeholder, and Closeout QC subsections.	☐	☐
+Update the corresponding subfields in the QC report.	☐	☐
+Repeat the process for all states.	☐	☐
+For Closeout QC, check the Manager Sign-Off in the Final Sign-Off section and update the report accordingly.
