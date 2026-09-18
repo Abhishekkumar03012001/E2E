@@ -10,9 +10,15 @@ Option Explicit
 ' - terrPath is OPTIONAL (pass "" or leave it out if not selected)
 ' Output sheets ("QC Details - Territory" and "QC Summary - Territory")
 ' are created in THIS workbook (the one that owns this code).
+' All opened source files (Config / Export / Terr) are closed, without
+' saving, before the sub ends.
 '=========================================================================
 
 Private Const YELLOW As Long = 65535   ' RGB(255,255,0)
+
+' Module-level dictionaries shared between BuildDetailSheet and BuildSummarySheet
+Private gDictConfigKeys As Object
+Private gDictExportKeys As Object
 
 ' The 6 columns we care about, in required order. Position 1 = Territory.
 ' Territory can also be named "ratingTerritory".
@@ -73,9 +79,18 @@ Public Sub GenerateTerritoryQC(ByVal configPath As String, _
 
 CleanExit:
     On Error Resume Next
+    ' --- close every source file that was opened, without saving ---
     If Not wbConfig Is Nothing Then wbConfig.Close SaveChanges:=False
     If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
     If Not wbTerr Is Nothing Then wbTerr.Close SaveChanges:=False
+
+    Set wbConfig = Nothing
+    Set wbExport = Nothing
+    Set wbTerr = Nothing
+    Set wsConfig = Nothing
+    Set wsExport = Nothing
+    Set wsTerr = Nothing
+
     Application.Calculation = origCalc
     Application.EnableEvents = True
     Application.DisplayAlerts = True
@@ -88,7 +103,7 @@ End Sub
 
 '-------------------------------------------------------------------------
 ' Find the correct sheet inside a workbook, case-insensitive,
-' with priority: R_L_Territory > Territory Factors > ratingTerritory > 1st sheet
+' with priority: R_L_Territory > Territory Factors > ratingTerritory > Sheet1
 '-------------------------------------------------------------------------
 Private Function FindTerritorySheet(wb As Workbook) As Worksheet
     Dim names As Variant, i As Long, ws As Worksheet
@@ -117,7 +132,7 @@ End Function
 
 '-------------------------------------------------------------------------
 ' Find header row (assumed row 1) column index for a header name list.
-' Case-insensitive. Returns 0 if not found.
+' Case-insensitive, whitespace-trimmed. Returns 0 if not found.
 '-------------------------------------------------------------------------
 Private Function FindColumn(ws As Worksheet, headerRow As Long, names As Variant) As Long
     Dim lastCol As Long, c As Long, n As Long
@@ -156,7 +171,7 @@ Private Function CountDataRows(ws As Worksheet) As Long
 End Function
 
 '-------------------------------------------------------------------------
-' Copy value + number format + horizontal alignment from src to dest
+' Copy value + number format + alignment from src to dest
 '-------------------------------------------------------------------------
 Private Sub CopyCellFormatted(srcCell As Range, destCell As Range)
     destCell.Value = srcCell.Value
@@ -199,7 +214,7 @@ Private Sub BuildDetailSheet(wsConfig As Worksheet, wsExport As Worksheet)
     Set wsOut = wbOut.Worksheets.Add(After:=wbOut.Worksheets(wbOut.Worksheets.Count))
     wsOut.Name = "QC Details - Territory"
 
-    ' ---- locate config columns ----
+    ' ---- locate config/export columns ----
     Dim cCfg(1 To 6) As Long, cExp(1 To 6) As Long, i As Integer
     For i = 1 To 6
         cCfg(i) = FindColumn(wsConfig, 1, ColNames(i))
@@ -247,7 +262,6 @@ Private Sub BuildDetailSheet(wsConfig As Worksheet, wsExport As Worksheet)
         Next r
     End If
 
-    ' Also track config keys (used for summary later, kept module-scope via module vars)
     Set gDictConfigKeys = CreateObject("Scripting.Dictionary")
     Set gDictExportKeys = dictExp
 
@@ -339,9 +353,6 @@ End Sub
 '-------------------------------------------------------------------------
 ' STEP 2: "QC Summary - Territory" sheet
 '-------------------------------------------------------------------------
-Private gDictConfigKeys As Object
-Private gDictExportKeys As Object
-
 Private Sub BuildSummarySheet(wsConfig As Worksheet, wsExport As Worksheet, terrRowCount As Variant)
 
     Dim wbOut As Workbook
