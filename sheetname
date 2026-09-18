@@ -4,6 +4,8 @@ Sub ClearSheetsExceptHeader()
     Dim i As Integer
     Dim lastRow As Long
     Dim lastCol As Long
+    Dim foundRow As Range
+    Dim foundCol As Range
 
     sheetNames = Array("QC Details - CAT", "QC Summary - CAT", "QC Details - Territory", "QC Summary - Territory")
 
@@ -17,9 +19,6 @@ Sub ClearSheetsExceptHeader()
 
         If Not ws Is Nothing Then
             With ws
-                Dim foundRow As Range
-                Dim foundCol As Range
-
                 Set foundRow = .Cells.Find(What:="*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
                 Set foundCol = .Cells.Find(What:="*", SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
 
@@ -28,9 +27,9 @@ Sub ClearSheetsExceptHeader()
                     lastCol = foundCol.Column
 
                     If lastRow > 1 Then
-                        ' ClearContents ONLY removes values/formulas
-                        ' It does NOT touch background color, borders, or fonts
-                        .Range(.Cells(2, 1), .Cells(lastRow, lastCol)).ClearContents
+                        ' .Clear removes values AND resets formatting
+                        ' (background color, borders, font) to default
+                        .Range(.Cells(2, 1), .Cells(lastRow, lastCol)).Clear
                     End If
                 End If
             End With
