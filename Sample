@@ -116,11 +116,10 @@ Sub CompareConfigWithDislocation()
         .Range("A1").Value = "Config Sheet Name"
         .Range("B1").Value = "Matched Dislocation Sheet Name"
         .Range("C1").Value = "Sheet Status"
-        .Range("D1").Value = "All Headers Match?"
-        .Range("E1").Value = "Headers in Config but Missing in Dislocation"
-        .Range("F1").Value = "Headers in Dislocation but Missing in Config"
-        .Range("A1:F1").Font.Bold = True
-        .Range("A1:F1").Interior.Color = RGB(217, 217, 217)
+        .Range("D1").Value = "All Dislocation Columns Present in Config?"
+        .Range("E1").Value = "Dislocation Columns Missing in Config"
+        .Range("A1:E1").Font.Bold = True
+        .Range("A1:E1").Interior.Color = RGB(217, 217, 217)
     End With
 
     outRow = 2
@@ -129,7 +128,6 @@ Sub CompareConfigWithDislocation()
     ' 6. Loop through every sheet in Config workbook
     '========================
     Dim matchIdx As Long
-    Dim missingInDisloc As String
     Dim missingInConfig As String
     Dim allMatch As Boolean
 
@@ -156,8 +154,8 @@ Sub CompareConfigWithDislocation()
             wsOutput.Cells(outRow, 3).Interior.Color = RGB(198, 239, 206)
             wsOutput.Cells(outRow, 3).Font.Color = RGB(0, 97, 0)
 
-            ' ---- Compare headers ----
-            Call CompareHeaders(ws, dislocHeaders, nDislocHeaders, missingInDisloc, missingInConfig, allMatch)
+            ' ---- Compare headers (Dislocation columns must exist in Config; extra Config columns ignored) ----
+            Call CompareHeaders(ws, dislocHeaders, nDislocHeaders, missingInConfig, allMatch)
 
             If allMatch Then
                 wsOutput.Cells(outRow, 4).Value = "Yes"
@@ -169,8 +167,7 @@ Sub CompareConfigWithDislocation()
                 wsOutput.Cells(outRow, 4).Font.Color = RGB(156, 0, 6)
             End If
 
-            wsOutput.Cells(outRow, 5).Value = IIf(missingInDisloc = "", "NA", missingInDisloc)
-            wsOutput.Cells(outRow, 6).Value = IIf(missingInConfig = "", "NA", missingInConfig)
+            wsOutput.Cells(outRow, 5).Value = IIf(missingInConfig = "", "NA", missingInConfig)
 
         Else
             ' ---- No match found for this Config sheet ----
@@ -180,7 +177,6 @@ Sub CompareConfigWithDislocation()
             wsOutput.Cells(outRow, 3).Font.Color = RGB(156, 0, 6)
             wsOutput.Cells(outRow, 4).Value = "NA"
             wsOutput.Cells(outRow, 5).Value = "NA"
-            wsOutput.Cells(outRow, 6).Value = "NA"
         End If
 
         outRow = outRow + 1
@@ -198,7 +194,6 @@ Sub CompareConfigWithDislocation()
             wsOutput.Cells(outRow, 3).Font.Color = RGB(156, 0, 6)
             wsOutput.Cells(outRow, 4).Value = "NA"
             wsOutput.Cells(outRow, 5).Value = "NA"
-            wsOutput.Cells(outRow, 6).Value = "NA"
             outRow = outRow + 1
         End If
     Next i
@@ -207,7 +202,7 @@ Sub CompareConfigWithDislocation()
     ' 8. Formatting
     '========================
     With wsOutput
-        .Columns("A:F").AutoFit
+        .Columns("A:E").AutoFit
         .Rows(1).AutoFilter
     End With
 
@@ -227,7 +222,7 @@ End Sub
 
 
 Private Sub CompareHeaders(ByVal cfgSheet As Worksheet, ByRef dislocHeaders() As String, ByVal nDislocHeaders As Long, _
-                            ByRef missingInDisloc As String, ByRef missingInConfig As String, ByRef allMatch As Boolean)
+                            ByRef missingInConfig As String, ByRef allMatch As Boolean)
 
     Dim lastCol As Long
     Dim j As Long, k As Long
@@ -235,7 +230,6 @@ Private Sub CompareHeaders(ByVal cfgSheet As Worksheet, ByRef dislocHeaders() As
     Dim nCfgHeaders As Long
     Dim found As Boolean
 
-    missingInDisloc = ""
     missingInConfig = ""
     allMatch = True
 
@@ -251,22 +245,8 @@ Private Sub CompareHeaders(ByVal cfgSheet As Worksheet, ByRef dislocHeaders() As
         End If
     Next j
 
-    ' Headers present in Config sheet but NOT in Dislocation master list
-    For j = 1 To nCfgHeaders
-        found = False
-        For k = 1 To nDislocHeaders
-            If LCase(cfgHeaders(j)) = LCase(dislocHeaders(k)) Then
-                found = True
-                Exit For
-            End If
-        Next k
-        If Not found Then
-            missingInDisloc = missingInDisloc & IIf(missingInDisloc = "", "", ", ") & cfgHeaders(j)
-            allMatch = False
-        End If
-    Next j
-
-    ' Headers in Dislocation master list but NOT in Config sheet
+    ' Check only: every Dislocation header must exist somewhere in Config headers.
+    ' Extra columns present in Config but not in Dislocation are ignored (not flagged).
     For k = 1 To nDislocHeaders
         found = False
         For j = 1 To nCfgHeaders
