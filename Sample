@@ -1,146 +1,138 @@
 Option Explicit
 
-Sub GenerateOutputSheet()
+Sub CheckFireHailColumns()
 
-    Dim fd As FileDialog
-    Dim i As Long, r As Long
-    Dim wbArr(1 To 6) As Workbook
-    Dim wbName(1 To 6) As String
-    Dim wasOpenArr(1 To 6) As Boolean
-    Dim filePath As String, fileNameOnly As String
-    Dim ws As Worksheet
-    Dim outWs As Worksheet
-    Dim masterDict As Object
-    Dim fileDict(1 To 6) As Object
-    Dim keysArr() As Variant
+    Dim configWB As Workbook
+    Dim radWB As Workbook
+    Dim configPath As String
+    Dim radPath As String
+    Dim radOutputSheet As Worksheet
+    Dim configSheet As Worksheet
     Dim lastRow As Long
-    Dim keyVal As String, cellVal As String, cVal As String
-    Dim existCount As Long
-    Dim wbTemp As Workbook
+    Dim i As Long
+    Dim sheetName As String
+    Dim fireFound As Boolean
+    Dim hailFound As Boolean
+    Dim resultCol As Long
+    Dim headerCell As Range
+    Dim lastHeaderCol As Long
+    Dim j As Long
+    Dim sh As Worksheet
+    Dim sheetExists As Boolean
 
-    Set masterDict = CreateObject("Scripting.Dictionary")
-    masterDict.CompareMode = vbTextCompare
-
-    ' Step 1: Let user select exactly 6 Excel files
-    Set fd = Application.FileDialog(msoFileDialogFilePicker)
-    fd.Title = "Select exactly 6 Excel files"
-    fd.Filters.Clear
-    fd.Filters.Add "Excel Files", "*.xlsx; *.xls; *.xlsm"
-    fd.AllowMultiSelect = True
-
-    If fd.Show <> -1 Then
-        MsgBox "No files selected. Macro cancelled.", vbExclamation
+    ' ---- Ask user to select the two files ----
+    configPath = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select CONFIG File")
+    If configPath = "False" Then
+        MsgBox "Config file not selected. Exiting.", vbExclamation
         Exit Sub
     End If
 
-    If fd.SelectedItems.Count <> 6 Then
-        MsgBox "Please select exactly 6 files. You selected " & fd.SelectedItems.Count & ".", vbExclamation
+    radPath = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select RAD File")
+    If radPath = "False" Then
+        MsgBox "RAD file not selected. Exiting.", vbExclamation
         Exit Sub
     End If
 
+    ' ---- Open both workbooks ----
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
 
-    ' Step 2: Open each file (if not already open) and read data
-    For i = 1 To 6
-        filePath = fd.SelectedItems(i)
-        fileNameOnly = Mid(filePath, InStrRev(filePath, "\") + 1)
-        wbName(i) = Left(fileNameOnly, InStrRev(fileNameOnly, ".") - 1) ' name without extension
+    Set configWB = Workbooks.Open(configPath)
+    Set radWB = Workbooks.Open(radPath)
 
-        Set wbTemp = Nothing
-        On Error Resume Next
-        Set wbTemp = Workbooks(fileNameOnly)
-        On Error GoTo 0
-
-        If wbTemp Is Nothing Then
-            Set wbArr(i) = Workbooks.Open(filePath, ReadOnly:=True)
-            wasOpenArr(i) = False
-        Else
-            Set wbArr(i) = wbTemp
-            wasOpenArr(i) = True
-        End If
-
-        Set fileDict(i) = CreateObject("Scripting.Dictionary")
-        fileDict(i).CompareMode = vbTextCompare
-
-        Set ws = Nothing
-        On Error Resume Next
-        Set ws = wbArr(i).Worksheets("Comparison_Output")
-        On Error GoTo 0
-
-        If ws Is Nothing Then
-            MsgBox "'Comparison_Output' sheet not found in file: " & wbName(i), vbExclamation
-        Else
-            lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-            For r = 2 To lastRow
-                cellVal = Trim(CStr(ws.Cells(r, "A").Value))
-                If cellVal <> "" Then
-                    keyVal = LCase(cellVal)
-
-                    If Not fileDict(i).Exists(keyVal) Then
-                        fileDict(i).Add keyVal, True
-                    End If
-
-                    cVal = Trim(CStr(ws.Cells(r, "C").Value))
-                    If StrComp(cVal, "Sheet Not Found in Dislocation", vbTextCompare) = 0 Then
-                        If Not masterDict.Exists(keyVal) Then
-                            masterDict.Add keyVal, cellVal
-                        End If
-                    End If
-                End If
-            Next r
-        End If
-
-        If Not wasOpenArr(i) Then
-            wbArr(i).Close SaveChanges:=False
-        End If
-    Next i
-
-    ' Step 3: Create / reset Output sheet in ThisWorkbook
+    ' ---- Get the Output sheet from RAD file ----
     On Error Resume Next
-    ThisWorkbook.Worksheets("Output").Delete
+    Set radOutputSheet = radWB.Sheets("Output")
     On Error GoTo 0
 
-    Set outWs = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    outWs.Name = "Output"
+    If radOutputSheet Is Nothing Then
+        MsgBox "Sheet 'Output' not found in RAD file.", vbCritical
+        GoTo CleanExit
+    End If
 
-    outWs.Cells(1, 1).Value = "Value"
-    For i = 1 To 6
-        outWs.Cells(1, i + 1).Value = wbName(i)
-    Next i
-    outWs.Rows(1).Font.Bold = True
+    ' ---- Find last row in Column A of Output sheet ----
+    lastRow = radOutputSheet.Cells(radOutputSheet.Rows.Count, "A").End(xlUp).Row
 
-    ' Step 4: Write unique values and check existence in each file
-    keysArr = masterDict.Keys
+    ' ---- Prepare result columns in Output sheet ----
+    radOutputSheet.Cells(1, 2).Value = "Sheet Exists in Config"
+    radOutputSheet.Cells(1, 3).Value = "Fire Column Found"
+    radOutputSheet.Cells(1, 4).Value = "Hail Column Found"
+    radOutputSheet.Cells(1, 5).Value = "Remarks"
 
-    For r = 0 To UBound(keysArr)
-        keyVal = keysArr(r)
-        outWs.Cells(r + 2, 1).Value = masterDict(keyVal)
+    ' ---- Loop through each sheet name in Column A ----
+    For i = 2 To lastRow
 
-        existCount = 0
-        For i = 1 To 6
-            If fileDict(i).Exists(keyVal) Then
-                outWs.Cells(r + 2, i + 1).Value = "Exist in it"
-                outWs.Cells(r + 2, i + 1).Font.Color = RGB(0, 128, 0)
-                outWs.Cells(r + 2, i + 1).Font.Bold = True
-                existCount = existCount + 1
-            Else
-                outWs.Cells(r + 2, i + 1).Value = "Dont exist"
-                outWs.Cells(r + 2, i + 1).Font.Color = RGB(255, 0, 0)
-                outWs.Cells(r + 2, i + 1).Font.Bold = True
+        sheetName = Trim(radOutputSheet.Cells(i, 1).Value)
+
+        If sheetName <> "" Then
+
+            fireFound = False
+            hailFound = False
+            sheetExists = False
+            Set configSheet = Nothing
+
+            ' Check if a sheet with this name exists in config workbook
+            On Error Resume Next
+            Set configSheet = configWB.Sheets(sheetName)
+            On Error GoTo 0
+
+            If Not configSheet Is Nothing Then
+                sheetExists = True
+
+                ' Find last column with data in header row (row 1) of config sheet
+                lastHeaderCol = configSheet.Cells(1, configSheet.Columns.Count).End(xlToLeft).Column
+
+                ' Loop through header row to check for "Fire" and "Hail"
+                For j = 1 To lastHeaderCol
+                    Dim headerVal As String
+                    headerVal = Trim(configSheet.Cells(1, j).Value)
+
+                    If StrComp(headerVal, "Fire", vbTextCompare) = 0 Then
+                        fireFound = True
+                    End If
+
+                    If StrComp(headerVal, "Hail", vbTextCompare) = 0 Then
+                        hailFound = True
+                    End If
+                Next j
+
             End If
-        Next i
 
-        If existCount = 6 Then
-            outWs.Cells(r + 2, 1).Interior.Color = RGB(255, 255, 0)
+            ' ---- Write results back to Output sheet ----
+            radOutputSheet.Cells(i, 2).Value = IIf(sheetExists, "Yes", "No")
+            radOutputSheet.Cells(i, 3).Value = IIf(fireFound, "Yes", "No")
+            radOutputSheet.Cells(i, 4).Value = IIf(hailFound, "Yes", "No")
+
+            If Not sheetExists Then
+                radOutputSheet.Cells(i, 5).Value = "Sheet not found in Config file"
+            ElseIf fireFound And hailFound Then
+                radOutputSheet.Cells(i, 5).Value = "OK - Both columns present"
+            ElseIf Not fireFound And Not hailFound Then
+                radOutputSheet.Cells(i, 5).Value = "Missing both Fire and Hail columns"
+            ElseIf Not fireFound Then
+                radOutputSheet.Cells(i, 5).Value = "Missing Fire column"
+            ElseIf Not hailFound Then
+                radOutputSheet.Cells(i, 5).Value = "Missing Hail column"
+            End If
+
         End If
-    Next r
 
-    outWs.Columns("A:G").AutoFit
+    Next i
 
-    Application.ScreenUpdating = True
+    ' ---- Formatting ----
+    radOutputSheet.Range("A1:E1").Font.Bold = True
+    radOutputSheet.Columns("A:E").AutoFit
+
+    MsgBox "Check completed successfully!", vbInformation
+
+CleanExit:
     Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
 
-    MsgBox "Done! Output sheet created with " & (UBound(keysArr) + 1) & " unique value(s).", vbInformation
+    ' Close config workbook without saving (optional - remove if you want it to stay open)
+    ' configWB.Close SaveChanges:=False
+
+    ' Save and keep RAD workbook open with results
+    ' radWB.Save
 
 End Sub
