@@ -3,9 +3,7 @@ Option Explicit
 Sub CheckFireHailColumns()
 
     Dim configWB As Workbook
-    Dim radWB As Workbook
     Dim configPath As String
-    Dim radPath As String
     Dim radOutputSheet As Worksheet
     Dim configSheet As Worksheet
     Dim lastRow As Long
@@ -13,47 +11,38 @@ Sub CheckFireHailColumns()
     Dim sheetName As String
     Dim fireFound As Boolean
     Dim hailFound As Boolean
-    Dim resultCol As Long
-    Dim headerCell As Range
     Dim lastHeaderCol As Long
     Dim j As Long
-    Dim sh As Worksheet
     Dim sheetExists As Boolean
+    Dim headerVal As String
 
-    ' ---- Ask user to select the two files ----
+    ' ---- Ask user to select the CONFIG file only ----
     configPath = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select CONFIG File")
     If configPath = "False" Then
         MsgBox "Config file not selected. Exiting.", vbExclamation
         Exit Sub
     End If
 
-    radPath = Application.GetOpenFilename("Excel Files (*.xls*), *.xls*", , "Select RAD File")
-    If radPath = "False" Then
-        MsgBox "RAD file not selected. Exiting.", vbExclamation
-        Exit Sub
-    End If
-
-    ' ---- Open both workbooks ----
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
 
+    ' ---- Open the Config workbook ----
     Set configWB = Workbooks.Open(configPath)
-    Set radWB = Workbooks.Open(radPath)
 
-    ' ---- Get the Output sheet from RAD file ----
+    ' ---- Use the Output sheet in THIS workbook (the RAD file running the code) ----
     On Error Resume Next
-    Set radOutputSheet = radWB.Sheets("Output")
+    Set radOutputSheet = ThisWorkbook.Sheets("Output")
     On Error GoTo 0
 
     If radOutputSheet Is Nothing Then
-        MsgBox "Sheet 'Output' not found in RAD file.", vbCritical
+        MsgBox "Sheet 'Output' not found in this RAD file.", vbCritical
         GoTo CleanExit
     End If
 
     ' ---- Find last row in Column A of Output sheet ----
     lastRow = radOutputSheet.Cells(radOutputSheet.Rows.Count, "A").End(xlUp).Row
 
-    ' ---- Prepare result columns in Output sheet ----
+    ' ---- Prepare result headers in Output sheet ----
     radOutputSheet.Cells(1, 2).Value = "Sheet Exists in Config"
     radOutputSheet.Cells(1, 3).Value = "Fire Column Found"
     radOutputSheet.Cells(1, 4).Value = "Hail Column Found"
@@ -84,7 +73,6 @@ Sub CheckFireHailColumns()
 
                 ' Loop through header row to check for "Fire" and "Hail"
                 For j = 1 To lastHeaderCol
-                    Dim headerVal As String
                     headerVal = Trim(configSheet.Cells(1, j).Value)
 
                     If StrComp(headerVal, "Fire", vbTextCompare) = 0 Then
@@ -98,7 +86,7 @@ Sub CheckFireHailColumns()
 
             End If
 
-            ' ---- Write results back to Output sheet ----
+            ' ---- Write results back into THIS workbook's Output sheet ----
             radOutputSheet.Cells(i, 2).Value = IIf(sheetExists, "Yes", "No")
             radOutputSheet.Cells(i, 3).Value = IIf(fireFound, "Yes", "No")
             radOutputSheet.Cells(i, 4).Value = IIf(hailFound, "Yes", "No")
@@ -123,16 +111,16 @@ Sub CheckFireHailColumns()
     radOutputSheet.Range("A1:E1").Font.Bold = True
     radOutputSheet.Columns("A:E").AutoFit
 
-    MsgBox "Check completed successfully!", vbInformation
+    ' ---- Close config workbook without saving (config file stays untouched) ----
+    configWB.Close SaveChanges:=False
+
+    ' ---- Save this (RAD) workbook with the new analysis ----
+    ThisWorkbook.Save
+
+    MsgBox "Check completed and results saved in this file!", vbInformation
 
 CleanExit:
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
-
-    ' Close config workbook without saving (optional - remove if you want it to stay open)
-    ' configWB.Close SaveChanges:=False
-
-    ' Save and keep RAD workbook open with results
-    ' radWB.Save
 
 End Sub
