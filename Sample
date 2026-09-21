@@ -1,264 +1,146 @@
 Option Explicit
 
-Sub CompareConfigWithDislocation()
+Sub GenerateOutputSheet()
 
-    Dim configPath As String
-    Dim dislocationPath As String
-    Dim wbConfig As Workbook
-    Dim wbDisloc As Workbook
-    Dim wsDisloc As Worksheet
-    Dim wsOutput As Worksheet
+    Dim fd As FileDialog
+    Dim i As Long, r As Long
+    Dim wbArr(1 To 6) As Workbook
+    Dim wbName(1 To 6) As String
+    Dim wasOpenArr(1 To 6) As Boolean
+    Dim filePath As String, fileNameOnly As String
     Dim ws As Worksheet
+    Dim outWs As Worksheet
+    Dim masterDict As Object
+    Dim fileDict(1 To 6) As Object
+    Dim keysArr() As Variant
+    Dim lastRow As Long
+    Dim keyVal As String, cellVal As String, cVal As String
+    Dim existCount As Long
+    Dim wbTemp As Workbook
 
-    Dim dislocSheetNames() As String
-    Dim dislocSheetMatched() As Boolean
-    Dim dislocHeaders() As String
-    Dim nDislocSheets As Long
-    Dim nDislocHeaders As Long
+    Set masterDict = CreateObject("Scripting.Dictionary")
+    masterDict.CompareMode = vbTextCompare
 
-    Dim outRow As Long
-    Dim i As Long, j As Long
-    Dim lastRow As Long, lastCol As Long
-    Dim maxRows As Long, maxCols As Long
+    ' Step 1: Let user select exactly 6 Excel files
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "Select exactly 6 Excel files"
+    fd.Filters.Clear
+    fd.Filters.Add "Excel Files", "*.xlsx; *.xls; *.xlsm"
+    fd.AllowMultiSelect = True
 
-    '========================
-    ' 1. Get file paths from user
-    '========================
-    configPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , "Select the CONFIG file")
-    If configPath = "False" Then
-        MsgBox "Config file not selected. Macro cancelled.", vbExclamation
+    If fd.Show <> -1 Then
+        MsgBox "No files selected. Macro cancelled.", vbExclamation
         Exit Sub
     End If
 
-    dislocationPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , "Select the DISLOCATION file")
-    If dislocationPath = "False" Then
-        MsgBox "Dislocation file not selected. Macro cancelled.", vbExclamation
+    If fd.SelectedItems.Count <> 6 Then
+        MsgBox "Please select exactly 6 files. You selected " & fd.SelectedItems.Count & ".", vbExclamation
         Exit Sub
     End If
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
 
-    '========================
-    ' 2. Open workbooks
-    '========================
-    Set wbConfig = Workbooks.Open(configPath, ReadOnly:=True)
-    Set wbDisloc = Workbooks.Open(dislocationPath, ReadOnly:=True)
+    ' Step 2: Open each file (if not already open) and read data
+    For i = 1 To 6
+        filePath = fd.SelectedItems(i)
+        fileNameOnly = Mid(filePath, InStrRev(filePath, "\") + 1)
+        wbName(i) = Left(fileNameOnly, InStrRev(fileNameOnly, ".") - 1) ' name without extension
 
-    ' Find "Dislocation" sheet (case-insensitive)
-    Set wsDisloc = Nothing
-    For Each ws In wbDisloc.Worksheets
-        If LCase(Trim(ws.Name)) = "dislocation" Then
-            Set wsDisloc = ws
-            Exit For
-        End If
-    Next ws
+        Set wbTemp = Nothing
+        On Error Resume Next
+        Set wbTemp = Workbooks(fileNameOnly)
+        On Error GoTo 0
 
-    If wsDisloc Is Nothing Then
-        MsgBox "A sheet named 'Dislocation' was not found in the Dislocation file.", vbCritical
-        wbConfig.Close SaveChanges:=False
-        wbDisloc.Close SaveChanges:=False
-        Application.ScreenUpdating = True
-        Application.DisplayAlerts = True
-        Exit Sub
-    End If
-
-    '========================
-    ' 3. Read sheet names list (Column A, from row 2) from Dislocation sheet
-    '========================
-    lastRow = wsDisloc.Cells(wsDisloc.Rows.Count, "A").End(xlUp).Row
-    maxRows = IIf(lastRow >= 2, lastRow - 1, 1)
-    ReDim dislocSheetNames(1 To maxRows)
-
-    nDislocSheets = 0
-    If lastRow >= 2 Then
-        For i = 2 To lastRow
-            If Trim(wsDisloc.Cells(i, 1).Value) <> "" Then
-                nDislocSheets = nDislocSheets + 1
-                dislocSheetNames(nDislocSheets) = Trim(wsDisloc.Cells(i, 1).Value)
-            End If
-        Next i
-    End If
-    ReDim Preserve dislocSheetNames(1 To IIf(nDislocSheets = 0, 1, nDislocSheets))
-    ReDim dislocSheetMatched(1 To IIf(nDislocSheets = 0, 1, nDislocSheets))
-
-    '========================
-    ' 4. Read master header list (Row 1, from column B) from Dislocation sheet
-    '========================
-    lastCol = wsDisloc.Cells(1, wsDisloc.Columns.Count).End(xlToLeft).Column
-    maxCols = IIf(lastCol >= 2, lastCol - 1, 1)
-    ReDim dislocHeaders(1 To maxCols)
-
-    nDislocHeaders = 0
-    If lastCol >= 2 Then
-        For j = 2 To lastCol
-            If Trim(wsDisloc.Cells(1, j).Value) <> "" Then
-                nDislocHeaders = nDislocHeaders + 1
-                dislocHeaders(nDislocHeaders) = Trim(wsDisloc.Cells(1, j).Value)
-            End If
-        Next j
-    End If
-    ReDim Preserve dislocHeaders(1 To IIf(nDislocHeaders = 0, 1, nDislocHeaders))
-
-    '========================
-    ' 5. Prepare Output sheet IN THIS WORKBOOK (the file running the macro)
-    '========================
-    On Error Resume Next
-    Application.DisplayAlerts = False
-    ThisWorkbook.Worksheets("Comparison_Output").Delete
-    Application.DisplayAlerts = True
-    On Error GoTo 0
-
-    Set wsOutput = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    wsOutput.Name = "Comparison_Output"
-
-    With wsOutput
-        .Range("A1").Value = "Config Sheet Name"
-        .Range("B1").Value = "Matched Dislocation Sheet Name"
-        .Range("C1").Value = "Sheet Status"
-        .Range("D1").Value = "All Dislocation Columns Present in Config?"
-        .Range("E1").Value = "Dislocation Columns Missing in Config"
-        .Range("A1:E1").Font.Bold = True
-        .Range("A1:E1").Interior.Color = RGB(217, 217, 217)
-    End With
-
-    outRow = 2
-
-    '========================
-    ' 6. Loop through every sheet in Config workbook
-    '========================
-    Dim matchIdx As Long
-    Dim missingInConfig As String
-    Dim allMatch As Boolean
-
-    For Each ws In wbConfig.Worksheets
-
-        wsOutput.Cells(outRow, 1).Value = ws.Name
-
-        ' Try to find a case-insensitive, un-used match in dislocSheetNames
-        matchIdx = 0
-        For i = 1 To nDislocSheets
-            If Not dislocSheetMatched(i) Then
-                If LCase(dislocSheetNames(i)) = LCase(Trim(ws.Name)) Then
-                    matchIdx = i
-                    Exit For
-                End If
-            End If
-        Next i
-
-        If matchIdx > 0 Then
-            ' ---- Match found ----
-            dislocSheetMatched(matchIdx) = True
-            wsOutput.Cells(outRow, 2).Value = dislocSheetNames(matchIdx)
-            wsOutput.Cells(outRow, 3).Value = "Found"
-            wsOutput.Cells(outRow, 3).Interior.Color = RGB(198, 239, 206)
-            wsOutput.Cells(outRow, 3).Font.Color = RGB(0, 97, 0)
-
-            ' ---- Compare headers (Dislocation columns must exist in Config; extra Config columns ignored) ----
-            Call CompareHeaders(ws, dislocHeaders, nDislocHeaders, missingInConfig, allMatch)
-
-            If allMatch Then
-                wsOutput.Cells(outRow, 4).Value = "Yes"
-                wsOutput.Cells(outRow, 4).Interior.Color = RGB(198, 239, 206)
-                wsOutput.Cells(outRow, 4).Font.Color = RGB(0, 97, 0)
-            Else
-                wsOutput.Cells(outRow, 4).Value = "No"
-                wsOutput.Cells(outRow, 4).Interior.Color = RGB(255, 199, 206)
-                wsOutput.Cells(outRow, 4).Font.Color = RGB(156, 0, 6)
-            End If
-
-            wsOutput.Cells(outRow, 5).Value = IIf(missingInConfig = "", "NA", missingInConfig)
-
+        If wbTemp Is Nothing Then
+            Set wbArr(i) = Workbooks.Open(filePath, ReadOnly:=True)
+            wasOpenArr(i) = False
         Else
-            ' ---- No match found for this Config sheet ----
-            wsOutput.Cells(outRow, 2).Value = ""
-            wsOutput.Cells(outRow, 3).Value = "Sheet Not Found in Dislocation"
-            wsOutput.Cells(outRow, 3).Interior.Color = RGB(255, 199, 206)
-            wsOutput.Cells(outRow, 3).Font.Color = RGB(156, 0, 6)
-            wsOutput.Cells(outRow, 4).Value = "NA"
-            wsOutput.Cells(outRow, 5).Value = "NA"
+            Set wbArr(i) = wbTemp
+            wasOpenArr(i) = True
         End If
 
-        outRow = outRow + 1
-    Next ws
+        Set fileDict(i) = CreateObject("Scripting.Dictionary")
+        fileDict(i).CompareMode = vbTextCompare
 
-    '========================
-    ' 7. Add remaining unmatched Dislocation sheet names at the end
-    '========================
-    For i = 1 To nDislocSheets
-        If Not dislocSheetMatched(i) Then
-            wsOutput.Cells(outRow, 1).Value = ""
-            wsOutput.Cells(outRow, 2).Value = dislocSheetNames(i)
-            wsOutput.Cells(outRow, 3).Value = "Sheet Not Found in Config"
-            wsOutput.Cells(outRow, 3).Interior.Color = RGB(255, 199, 206)
-            wsOutput.Cells(outRow, 3).Font.Color = RGB(156, 0, 6)
-            wsOutput.Cells(outRow, 4).Value = "NA"
-            wsOutput.Cells(outRow, 5).Value = "NA"
-            outRow = outRow + 1
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = wbArr(i).Worksheets("Comparison_Output")
+        On Error GoTo 0
+
+        If ws Is Nothing Then
+            MsgBox "'Comparison_Output' sheet not found in file: " & wbName(i), vbExclamation
+        Else
+            lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+            For r = 2 To lastRow
+                cellVal = Trim(CStr(ws.Cells(r, "A").Value))
+                If cellVal <> "" Then
+                    keyVal = LCase(cellVal)
+
+                    If Not fileDict(i).Exists(keyVal) Then
+                        fileDict(i).Add keyVal, True
+                    End If
+
+                    cVal = Trim(CStr(ws.Cells(r, "C").Value))
+                    If StrComp(cVal, "Sheet Not Found in Dislocation", vbTextCompare) = 0 Then
+                        If Not masterDict.Exists(keyVal) Then
+                            masterDict.Add keyVal, cellVal
+                        End If
+                    End If
+                End If
+            Next r
+        End If
+
+        If Not wasOpenArr(i) Then
+            wbArr(i).Close SaveChanges:=False
         End If
     Next i
 
-    '========================
-    ' 8. Formatting
-    '========================
-    With wsOutput
-        .Columns("A:E").AutoFit
-        .Rows(1).AutoFilter
-    End With
+    ' Step 3: Create / reset Output sheet in ThisWorkbook
+    On Error Resume Next
+    ThisWorkbook.Worksheets("Output").Delete
+    On Error GoTo 0
 
-    '========================
-    ' 9. Close both source workbooks (both opened read-only, nothing to save)
-    '========================
-    wbConfig.Close SaveChanges:=False
-    wbDisloc.Close SaveChanges:=False
+    Set outWs = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    outWs.Name = "Output"
+
+    outWs.Cells(1, 1).Value = "Value"
+    For i = 1 To 6
+        outWs.Cells(1, i + 1).Value = wbName(i)
+    Next i
+    outWs.Rows(1).Font.Bold = True
+
+    ' Step 4: Write unique values and check existence in each file
+    keysArr = masterDict.Keys
+
+    For r = 0 To UBound(keysArr)
+        keyVal = keysArr(r)
+        outWs.Cells(r + 2, 1).Value = masterDict(keyVal)
+
+        existCount = 0
+        For i = 1 To 6
+            If fileDict(i).Exists(keyVal) Then
+                outWs.Cells(r + 2, i + 1).Value = "Exist in it"
+                outWs.Cells(r + 2, i + 1).Font.Color = RGB(0, 128, 0)
+                outWs.Cells(r + 2, i + 1).Font.Bold = True
+                existCount = existCount + 1
+            Else
+                outWs.Cells(r + 2, i + 1).Value = "Dont exist"
+                outWs.Cells(r + 2, i + 1).Font.Color = RGB(255, 0, 0)
+                outWs.Cells(r + 2, i + 1).Font.Bold = True
+            End If
+        Next i
+
+        If existCount = 6 Then
+            outWs.Cells(r + 2, 1).Interior.Color = RGB(255, 255, 0)
+        End If
+    Next r
+
+    outWs.Columns("A:G").AutoFit
 
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
 
-    MsgBox "Comparison complete!" & vbCrLf & _
-           "Results are in the 'Comparison_Output' sheet of THIS workbook (" & ThisWorkbook.Name & ").", vbInformation
-
-End Sub
-
-
-Private Sub CompareHeaders(ByVal cfgSheet As Worksheet, ByRef dislocHeaders() As String, ByVal nDislocHeaders As Long, _
-                            ByRef missingInConfig As String, ByRef allMatch As Boolean)
-
-    Dim lastCol As Long
-    Dim j As Long, k As Long
-    Dim cfgHeaders() As String
-    Dim nCfgHeaders As Long
-    Dim found As Boolean
-
-    missingInConfig = ""
-    allMatch = True
-
-    ' Read Config sheet's headers - assumed to be in Row 1
-    lastCol = cfgSheet.Cells(1, cfgSheet.Columns.Count).End(xlToLeft).Column
-    ReDim cfgHeaders(1 To lastCol)
-
-    nCfgHeaders = 0
-    For j = 1 To lastCol
-        If Trim(cfgSheet.Cells(1, j).Value) <> "" Then
-            nCfgHeaders = nCfgHeaders + 1
-            cfgHeaders(nCfgHeaders) = Trim(cfgSheet.Cells(1, j).Value)
-        End If
-    Next j
-
-    ' Check only: every Dislocation header must exist somewhere in Config headers.
-    ' Extra columns present in Config but not in Dislocation are ignored (not flagged).
-    For k = 1 To nDislocHeaders
-        found = False
-        For j = 1 To nCfgHeaders
-            If LCase(dislocHeaders(k)) = LCase(cfgHeaders(j)) Then
-                found = True
-                Exit For
-            End If
-        Next j
-        If Not found Then
-            missingInConfig = missingInConfig & IIf(missingInConfig = "", "", ", ") & dislocHeaders(k)
-            allMatch = False
-        End If
-    Next k
+    MsgBox "Done! Output sheet created with " & (UBound(keysArr) + 1) & " unique value(s).", vbInformation
 
 End Sub
