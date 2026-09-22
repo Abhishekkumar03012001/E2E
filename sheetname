@@ -1,24 +1,18 @@
 Create a new working folder at the designated location.	☐	☐
-Copy the Tool into the working folder.	☐	☐
-Copy the Mapping File into the working folder.	☐	☐
-Create/copy the Inputs and Outputs folders in the working folder.	☐	☐
-Place the required Config File and Key Tables File inside the Inputs folder.	☐	☐
-Verify that the Key Tables File contains all required files/tables.	☐	☐
-Remove the Conversion Version and Billing files from the Key Tables File.	☐	☐
-Open the Mapping File and navigate to the Inputs sheet.	☐	☐
-Enter the path of the Input File Folder.	☐	☐
-Enter the path of the Config File.	☐	☐
-Enter the path of the Database Files / Key Tables location.	☐	☐
-Enter the path of the Output Folder.	☐	☐
-Select the required State in the Mapping File.	☐	☐
-Save the Mapping File.	☐	☐
-Open the Tool and enter the Mapping File path in the required field.	☐	☐
-Verify that the Mapping File path is correct.	☐	☐
-Run the tool/code.	☐	☐
-Wait for the tool to complete and verify that the output is generated in the Output Folder.	☐	☐
-Open the generated Output File.	☐	☐
-Check the output for non-validated rows.	☐	☐
-For non-validated rows, navigate to the required sheet and manually validate the relevant records.	☐	☐
-Resolve/update the non-validated records based on the manual validation.	☐	☐
-Save the validated Output File.	☐	☐
-Perform a final check to confirm that the output has been saved successfully and contains no unresolved validation issues.
+Place the required Ratabase Files in the working folder.	☐	☐
+Remove the Version Conversion and Billing files from the Ratabase Files.	☐	☐
+Place the required Config File in the working folder.	☐	☐
+Open and run the Tool from the working folder.	☐	☐
+Enable the required Macro in the tool.	☐	☐
+Verify that the User Form opens after enabling the macro.	☐	☐
+Browse and select the Ratabase Location in the User Form.	☐	☐
+Select the required Product (e.g., HMR 2.5 / HMR 3.0).	☐	☐
+Browse and select the required Config File.	☐	☐
+Verify that the selected Ratabase, product, and config file are correct.	☐	☐
+Click Generate Report.	☐	☐
+Verify that the output file is generated in the tool's working folder.	☐	☐
+Open the generated output file and check Report 1 and Report 2 sheets.	☐	☐
+Identify the sheets/records requiring manual validation.	☐	☐
+Perform the required manual validation.	☐	☐
+Update the report based on the manual validation results.	☐	☐
+Verify the completed report and proceed with the next QC process.	☐	
