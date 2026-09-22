@@ -1,18 +1,15 @@
-Create a new working folder at the designated location.	☐	☐
-Place the required Ratabase Files in the working folder.	☐	☐
-Remove the Version Conversion and Billing files from the Ratabase Files.	☐	☐
-Place the required Config File in the working folder.	☐	☐
-Open and run the Tool from the working folder.	☐	☐
-Enable the required Macro in the tool.	☐	☐
-Verify that the User Form opens after enabling the macro.	☐	☐
-Browse and select the Ratabase Location in the User Form.	☐	☐
-Select the required Product (e.g., HMR 2.5 / HMR 3.0).	☐	☐
-Browse and select the required Config File.	☐	☐
-Verify that the selected Ratabase, product, and config file are correct.	☐	☐
-Click Generate Report.	☐	☐
-Verify that the output file is generated in the tool's working folder.	☐	☐
-Open the generated output file and check Report 1 and Report 2 sheets.	☐	☐
-Identify the sheets/records requiring manual validation.	☐	☐
-Perform the required manual validation.	☐	☐
-Update the report based on the manual validation results.	☐	☐
-Verify the completed report and proceed with the next QC process.	☐	
+Create a new working folder at the desired location.	☐	☐
+Place the required Export File, Mapping File, and Product Config File in the working folder.	☐	☐
+Place the required Tool in the working folder.	☐	☐
+Open the Tool.	☐	☐
+Enter the Export File Path in the tool.	☐	☐
+Enter the Config File Path in the tool.	☐	☐
+Enter the Mapping File Path in the tool.	☐	☐
+Verify that all three file paths are correct.	☐	☐
+Click Run to execute the tool.	☐	☐
+Verify that the output file is generated in the working folder.	☐	☐
+Open the generated Output File and review the results.	☐	☐
+Identify any items requiring Manual Validation.	☐	☐
+Perform the required manual validation and update the report accordingly.	☐	☐
+Perform a final check of the output and confirm that all required validations are complete.	☐	☐
+Confirm completion of the tool run and proceed to the next product.	☐	☐
