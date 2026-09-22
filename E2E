@@ -170,6 +170,24 @@ MAPPING_CONFIG_COL = "Config"
 TERRITORY_CONFIG_TAB = "R_L_Territory"
 ROOF_CONFIG_TAB = "R_O_RoofLimit"
 
+# NEW: Config tabs that should be compared against the supplemental
+# Territory File 2 / CAT file (Inputs!D56) -- handled the exact same way
+# the Radar section handles its tabs (read tab 1/row 1, exact-name column
+# matching only, full row comparison, Summary row + detail sheet on
+# mismatch), except the export source is Territory File 2 instead of the
+# Radar file. Only tabs that are BOTH present in Config AND present (by
+# name, case/space/punctuation-insensitive) in Territory File 2 are
+# compared here.
+ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS = [
+    "R_O_FortifiedRoof",
+    "R_O_MineSubsidenceA",
+    "R_O_MineSubsidenceB",
+    "R_Z_ServiceCharge",
+    "R_Z_Surcharge",
+    "R_Z_TaxMinimum",
+    "R_Z_Tax",
+]
+
 # Tab names (config OR export) that should be completely ignored -- never
 # compared, never added to the Summary sheet, never flagged as missing.
 # Matched case/space/punctuation-insensitively, same as all other tab-name
@@ -209,7 +227,7 @@ TERRITORY_SHEET_PRIORITY = [TERRITORY_CONFIG_TAB, "ratingTerritory"]
 
 # Columns pulled from the CAT file (D56) into the Territory buffer sheet
 # -- but ONLY for a given column if the Territory file (D57) doesn't
-# already have it. Matched case/space/punctuation-insensitively. If the
+# already have it. Matched case/space/punctuation-insensitive. If the
 # Territory file already has one of these columns, that column is left
 # alone and the CAT file's version of it is ignored entirely.
 TERRITORY_CAT_SUPPLEMENT_COLUMNS = [
@@ -615,6 +633,13 @@ def find_sheet_name(wb, target):
 
 
 _EXCLUDED_TAB_NAMES_CLEAN = {clean_col(n) for n in EXCLUDED_TAB_NAMES}
+
+# Cleaned (case/space/punctuation-insensitive) lookup set for
+# ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS, used to filter Territory File 2's
+# sheet names down to just this specific tab list.
+_ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS_CLEAN = {
+    clean_col(n) for n in ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS
+}
 
 
 def is_excluded_tab(name):
@@ -1653,6 +1678,61 @@ def main(input_file):
             summary_rows.append(missing_row(export_tab="Sheet1", result=MISSING_IN_CONFIG))
     except Exception as e:
         print(f"WARNING: Roof Limit file processing failed: {e}")
+
+    # ---------------- Additional tabs compared against Territory File 2 (CAT / D56) ----------------
+    # NEW: For the specific Config tabs listed in
+    # ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS ("R_O_FortifiedRoof",
+    # "R_O_MineSubsidenceA", "R_O_MineSubsidenceB", "R_Z_ServiceCharge",
+    # "R_Z_Surcharge", "R_Z_TaxMinimum", "R_Z_Tax") -- if a tab by that
+    # name exists BOTH in the Config file AND (by name, case/space/
+    # punctuation-insensitive) in Territory File 2 (Inputs!D56), it's
+    # compared the same way the Radar section compares its tabs (header
+    # row 1 on both sides, exact-name column matching, full row
+    # comparison) -- just using Territory File 2 as the export source
+    # instead of the Radar file. Results feed into the same
+    # summary_rows/detail_sheets used everywhere else, so they show up in
+    # the Summary of Results sheet and get a detail sheet on mismatch,
+    # exactly like every other tab.
+    try:
+        territory_file2_path = paths.get("territory_file2")
+        if territory_file2_path:
+            terr2_wb = load_workbook(territory_file2_path, data_only=True)
+            for sheet_name in terr2_wb.sheetnames:
+                if clean_col(sheet_name) not in _ADDITIONAL_TERRITORY_FILE2_CONFIG_TABS_CLEAN:
+                    continue
+                if is_excluded_tab(sheet_name):
+                    continue
+                resolved_cfg = resolve_name(sheet_name, config_tabs)
+                if resolved_cfg and is_excluded_tab(resolved_cfg):
+                    continue
+                # Skip if this Config tab was already matched/compared by an
+                # earlier section (Radar, EQ, Territory, Roof Limit), so it's
+                # never double-processed or double-listed in the Summary sheet.
+                if resolved_cfg and resolved_cfg in matched_config_tabs:
+                    continue
+                if resolved_cfg:
+                    config_df = read_df(paths["config_file"], resolved_cfg, 1)
+                    export_df = read_df(territory_file2_path, sheet_name, 1)
+
+                    res = process_pair(config_df, export_df, resolved_cfg, sheet_name, None, decimal_places)
+                    matched_config_tabs.add(resolved_cfg)
+                    summary_rows.append(res)
+                    if res["result"] != VALIDATED:
+                        detail_sheets[resolved_cfg] = res
+                # NOTE: if a tab from this list exists in Territory File 2
+                # but NOT in Config, it's intentionally left out of the
+                # Summary sheet (unlike Radar/EQ), since this list is
+                # Config-tab-driven -- only these 7 specific Config tabs are
+                # ever meant to be compared here.
+        else:
+            print(
+                "WARNING: Territory File 2 (Inputs!D56) is missing/blank -- skipping "
+                "comparison of R_O_FortifiedRoof / R_O_MineSubsidenceA / "
+                "R_O_MineSubsidenceB / R_Z_ServiceCharge / R_Z_Surcharge / "
+                "R_Z_TaxMinimum / R_Z_Tax against it."
+            )
+    except Exception as e:
+        print(f"WARNING: Additional Territory File 2 tab processing failed: {e}")
 
     # ---------------- Config tabs never matched by any export ----------------
     for tab in config_tabs:
