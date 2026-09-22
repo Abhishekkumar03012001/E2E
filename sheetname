@@ -1,43 +1,10 @@
-Sub ClearSheetsExceptHeader()
-    Dim ws As Worksheet
-    Dim sheetNames As Variant
-    Dim i As Integer
-    Dim lastRow As Long
-    Dim lastCol As Long
-    Dim foundRow As Range
-    Dim foundCol As Range
-
-    sheetNames = Array("QC Details - CAT", "QC Summary - CAT", "QC Details - Territory", "QC Summary - Territory")
-
-    Application.ScreenUpdating = False
-    Application.DisplayAlerts = False
-
-    For i = LBound(sheetNames) To UBound(sheetNames)
-        On Error Resume Next
-        Set ws = ThisWorkbook.Sheets(sheetNames(i))
-        On Error GoTo 0
-
-        If Not ws Is Nothing Then
-            With ws
-                Set foundRow = .Cells.Find(What:="*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
-                Set foundCol = .Cells.Find(What:="*", SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
-
-                If Not foundRow Is Nothing And Not foundCol Is Nothing Then
-                    lastRow = foundRow.Row
-                    lastCol = foundCol.Column
-
-                    If lastRow > 1 Then
-                        ' .Clear removes values AND resets formatting
-                        ' (background color, borders, font) to default
-                        .Range(.Cells(2, 1), .Cells(lastRow, lastCol)).Clear
-                    End If
-                End If
-            End With
-        End If
-
-        Set ws = Nothing
-    Next i
-
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
-End Sub
+Copy the previous report, rename it for the current month, and open it.	☐	☐
+Open the UMR 1.0 Monthly QC Report.	☐	☐
+Open the Config & Factor QC Checklist link.	☐	☐
+Select the required state from the left side of the page.	☐	☐
+Navigate to Data & Tools QC and expand all sections.	☐	☐
+Check each section in detail and mark the required points in the report.	☐	☐
+Open the Filing QC Checklist, select the required state, go to Product Delivery QC, expand all sections, and mark the required points in the report.	☐	☐
+Open the Closeout QC Checklist and mark the required changes in the report.	☐	☐
+Check the Final Sign-Off table for the Manager Sign-Off and update the report accordingly.	☐	☐
+Repeat the process for all states.	☐	☐
