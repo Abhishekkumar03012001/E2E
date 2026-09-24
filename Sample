@@ -1,16 +1,65 @@
-'===== Part 5: C72 (Column B except first value = 1.00) =====
-If Not wsC72 Is Nothing Then
-    Dim lastRowC72 As Long
-    
-    lastRowC72 = wsC72.Cells(wsC72.Rows.Count, "B").End(xlUp).Row
-    If lastRowC72 >= 3 Then
-        wsC72.Range("B3:B" & lastRowC72).Value = 1#
-        wsC72.Range("B3:B" & lastRowC72).NumberFormat = "0.00"
-    End If
-End If
+'========================
+' C72
+' All values in Column B must equal 1.00
+'========================
+Sub Check_C72()
 
-'===== Part 6: C73 (B2 = 0) =====
-If Not wsC73 Is Nothing Then
-    wsC73.Range("B2").Value = 0
-    wsC73.Range("B2").NumberFormat = "General"
-End If
+    Dim sName As String: sName = "C72"
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim i As Long
+    Dim cellValue As Variant
+    Dim allValid As Boolean
+
+    If Not SheetExists(wbCRL, sName) Then
+
+        AddResult _
+            sName, _
+            "Sheet does not exists", _
+            "Sheet """ & sName & """ not found in CRL Config."
+
+        Exit Sub
+
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+
+    'Find last populated row in Column B
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+
+    allValid = True
+
+    'Check all values in Column B starting from B2
+    For i = 2 To lastRow
+
+        cellValue = ws.Cells(i, "B").Value
+
+        If Not IsNumeric(cellValue) Then
+            allValid = False
+            Exit For
+        End If
+
+        If CDbl(cellValue) <> 1# Then
+            allValid = False
+            Exit For
+        End If
+
+    Next i
+
+    If allValid Then
+
+        AddResult _
+            sName, _
+            "Validated", _
+            "All values in Column B are 1.00."
+
+    Else
+
+        AddResult _
+            sName, _
+            "Manual validation required", _
+            "Column B contains a value other than 1.00."
+
+    End If
+
+End Sub
