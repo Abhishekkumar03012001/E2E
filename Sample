@@ -1,35 +1,16 @@
-KY State
-R_C_AOIRel_PAWDDDedAOI
-The tab is not present in the export.
-R_C_AOIRel_HURRDedAOI
-Different values are observed in the Hurricane, Reinsurance, and Capital columns between the config and export.
-R_C_AOIRel_WHDedAOI
-Different values are observed in the Hurricane, Reinsurance, and Capital columns between the config and export.
-R_O_EQYearBuilt
-An additional Retrofit column is present in the export.
-The column contains Yes/No values, which causes an error during QC.
-The additional column also makes mapping difficult, as the config contains more rows than the export.
-R_L_Territory
-The Fixed column is missing in the CAT/Territory exports.
-The following tabs are not found in the export:
-R_Z_Tax
-R_Z_Surcharge
-R_Z_TaxMinimum
-R_Z_ServiseCharge
-R_D_Loyalty
-Other tabs marked as Factor tabs in the config but not found in the export are also missing from the export.
-OH State
-R_K_NummOccupants
-Additional values 6, 7, 8, and 9 are present in the export.
-R_O_OrdinanceLaw
-Different values are observed in the Ordinance or Law % column between the config and export.
-R_P_AgeHome_AgeRoof
-Different values are observed in the Age of Home and AgeRoof columns between the config and export.
-The Age of Roof values are higher than the corresponding Age of Home values.
-R_O_EQYearBuilt
-An additional Retrofit column is present in the export.
-The column contains Yes/No values, which causes an error during QC.
-The additional column also makes mapping difficult, as the config contains more rows than the export.
-R_L_Territory
-The Fixed column is missing in the CAT/Territory exports.
-Other tabs marked as Factor tabs in the config but not found in the export are also missing from the export.
+'===== Part 5: C72 (Column B except first value = 1.00) =====
+If Not wsC72 Is Nothing Then
+    Dim lastRowC72 As Long
+    
+    lastRowC72 = wsC72.Cells(wsC72.Rows.Count, "B").End(xlUp).Row
+    If lastRowC72 >= 3 Then
+        wsC72.Range("B3:B" & lastRowC72).Value = 1#
+        wsC72.Range("B3:B" & lastRowC72).NumberFormat = "0.00"
+    End If
+End If
+
+'===== Part 6: C73 (B2 = 0) =====
+If Not wsC73 Is Nothing Then
+    wsC73.Range("B2").Value = 0
+    wsC73.Range("B2").NumberFormat = "General"
+End If
