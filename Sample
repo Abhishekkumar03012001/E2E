@@ -5,6 +5,10 @@ Sub BuildSummarySheet()
     Dim i As Long
     Dim reportPath As String
 
+    '----------------------------------------------------------
+    ' Check if validation results exist
+    '----------------------------------------------------------
+
     If resCount = 0 Then
 
         MsgBox _
@@ -17,7 +21,7 @@ Sub BuildSummarySheet()
     End If
 
     '----------------------------------------------------------
-    ' Create a NEW workbook for the QC report
+    ' Create a NEW Excel workbook
     '----------------------------------------------------------
 
     Set wbReport = Workbooks.Add(xlWBATWorksheet)
@@ -63,13 +67,14 @@ Sub BuildSummarySheet()
 
         wsSummary.Cells(i + 1, 4).Value = ""
 
+        'Font size
         wsSummary.Range( _
             wsSummary.Cells(i + 1, 1), _
             wsSummary.Cells(i + 1, 4) _
         ).Font.Size = 11
 
         '------------------------------------------------------
-        ' Format Result column based on validation result
+        ' Result formatting
         '------------------------------------------------------
 
         Select Case resResult(i)
@@ -120,31 +125,35 @@ Sub BuildSummarySheet()
     End With
 
     '----------------------------------------------------------
-    ' Save the NEW workbook
+    ' Create report path
     '----------------------------------------------------------
 
     reportPath = ThisWorkbook.Path & _
                  Application.PathSeparator & _
                  "UMB CRL Config QC report.xlsx"
 
+    '----------------------------------------------------------
+    ' Save the new report
+    '----------------------------------------------------------
+
     Application.DisplayAlerts = False
 
-    'Delete old report if it already exists
+    'If an old report exists, delete it
     If Dir(reportPath) <> "" Then
         Kill reportPath
     End If
 
+    'Save new report
     wbReport.SaveAs _
         Filename:=reportPath, _
         FileFormat:=xlOpenXMLWorkbook
 
+    '----------------------------------------------------------
+    ' Close the newly created report
+    '----------------------------------------------------------
+
+    wbReport.Close SaveChanges:=False
+
     Application.DisplayAlerts = True
-
-    '----------------------------------------------------------
-    ' Activate the newly created report
-    '----------------------------------------------------------
-
-    wbReport.Activate
-    wsSummary.Activate
 
 End Sub
