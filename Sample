@@ -1,65 +1,150 @@
-'========================
-' C72
-' All values in Column B must equal 1.00
-'========================
-Sub Check_C72()
+Sub BuildSummarySheet()
 
-    Dim sName As String: sName = "C72"
-    Dim ws As Worksheet
-    Dim lastRow As Long
+    Dim wbReport As Workbook
+    Dim wsSummary As Worksheet
     Dim i As Long
-    Dim cellValue As Variant
-    Dim allValid As Boolean
+    Dim reportPath As String
 
-    If Not SheetExists(wbCRL, sName) Then
+    If resCount = 0 Then
 
-        AddResult _
-            sName, _
-            "Sheet does not exists", _
-            "Sheet """ & sName & """ not found in CRL Config."
+        MsgBox _
+            "No validation results were generated." & vbCrLf & _
+            "Please run Qrun from the UserForm.", _
+            vbExclamation
 
         Exit Sub
 
     End If
 
-    Set ws = wbCRL.Sheets(sName)
+    '----------------------------------------------------------
+    ' Create a NEW workbook for the QC report
+    '----------------------------------------------------------
 
-    'Find last populated row in Column B
-    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    Set wbReport = Workbooks.Add(xlWBATWorksheet)
 
-    allValid = True
+    Set wsSummary = wbReport.Worksheets(1)
 
-    'Check all values in Column B starting from B2
-    For i = 2 To lastRow
+    wsSummary.Name = "Summary"
 
-        cellValue = ws.Cells(i, "B").Value
+    wsSummary.Cells.Font.Size = 11
 
-        If Not IsNumeric(cellValue) Then
-            allValid = False
-            Exit For
-        End If
+    '----------------------------------------------------------
+    ' Headers
+    '----------------------------------------------------------
 
-        If CDbl(cellValue) <> 1# Then
-            allValid = False
-            Exit For
-        End If
+    wsSummary.Range("A1").Value = "Tab Name"
+    wsSummary.Range("B1").Value = "Result"
+    wsSummary.Range("C1").Value = "Comments"
+    wsSummary.Range("D1").Value = "Analyst Comment"
+
+    With wsSummary.Range("A1:D1")
+
+        .Font.Bold = True
+        .Font.Size = 11
+        .Font.Color = RGB(255, 255, 255)
+        .Interior.Color = RGB(0, 0, 90)
+
+    End With
+
+    '----------------------------------------------------------
+    ' Results
+    '----------------------------------------------------------
+
+    For i = 1 To resCount
+
+        wsSummary.Cells(i + 1, 1).Value = _
+            resName(i)
+
+        wsSummary.Cells(i + 1, 2).Value = _
+            resResult(i)
+
+        wsSummary.Cells(i + 1, 3).Value = _
+            resComment(i)
+
+        wsSummary.Cells(i + 1, 4).Value = ""
+
+        wsSummary.Range( _
+            wsSummary.Cells(i + 1, 1), _
+            wsSummary.Cells(i + 1, 4) _
+        ).Font.Size = 11
+
+        '------------------------------------------------------
+        ' Format Result column based on validation result
+        '------------------------------------------------------
+
+        Select Case resResult(i)
+
+            Case "Manual validation required"
+
+                wsSummary.Cells(i + 1, 2).Interior.Color = _
+                    RGB(255, 199, 206)
+
+                wsSummary.Cells(i + 1, 2).Font.Color = _
+                    RGB(0, 0, 0)
+
+            Case "Sheet does not exists"
+
+                wsSummary.Cells(i + 1, 2).Interior.Color = _
+                    RGB(255, 255, 153)
+
+                wsSummary.Cells(i + 1, 2).Font.Color = _
+                    RGB(0, 0, 0)
+
+        End Select
 
     Next i
 
-    If allValid Then
+    '----------------------------------------------------------
+    ' Formatting
+    '----------------------------------------------------------
 
-        AddResult _
-            sName, _
-            "Validated", _
-            "All values in Column B are 1.00."
+    With wsSummary
 
-    Else
+        .Columns("A").ColumnWidth = 14
+        .Columns("B").ColumnWidth = 24
+        .Columns("C").ColumnWidth = 70
+        .Columns("D").ColumnWidth = 30
 
-        AddResult _
-            sName, _
-            "Manual validation required", _
-            "Column B contains a value other than 1.00."
+        .Columns("C").WrapText = True
 
+        .Rows("2:" & (resCount + 1)).AutoFit
+
+        .Range( _
+            "A1:D" & (resCount + 1) _
+        ).Borders.LineStyle = xlContinuous
+
+        .Range( _
+            "A1:D" & (resCount + 1) _
+        ).AutoFilter
+
+    End With
+
+    '----------------------------------------------------------
+    ' Save the NEW workbook
+    '----------------------------------------------------------
+
+    reportPath = ThisWorkbook.Path & _
+                 Application.PathSeparator & _
+                 "UMB CRL Config QC report.xlsx"
+
+    Application.DisplayAlerts = False
+
+    'Delete old report if it already exists
+    If Dir(reportPath) <> "" Then
+        Kill reportPath
     End If
+
+    wbReport.SaveAs _
+        Filename:=reportPath, _
+        FileFormat:=xlOpenXMLWorkbook
+
+    Application.DisplayAlerts = True
+
+    '----------------------------------------------------------
+    ' Activate the newly created report
+    '----------------------------------------------------------
+
+    wbReport.Activate
+    wsSummary.Activate
 
 End Sub
