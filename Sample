@@ -95,6 +95,7 @@ Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = 
     '---------------- Run all checks in order ----------------
     Check_SimpleExist "C51"
     Check_SimpleExist "C52"
+    Check_C61
     Check_C62
     Check_C63
     Check_C71
@@ -252,6 +253,41 @@ Sub Check_SimpleExist(sName As String)
 End Sub
 
 '--------------------------------------------------------------------
+' NEW) C61 - where Column A = "0", Column B must also = "0"
+'--------------------------------------------------------------------
+Sub Check_C61()
+    Dim sName As String: sName = "C61"
+    Dim ws As Worksheet
+    Dim lastRowVal As Long, i As Long
+    Dim allMatch As Boolean, failRow As Long
+
+    If Not SheetExists(wbCRL, sName) Then
+        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        Exit Sub
+    End If
+
+    Set ws = wbCRL.Sheets(sName)
+    lastRowVal = GetLastRow(ws, "A")
+    allMatch = True
+
+    For i = 1 To lastRowVal
+        If Trim(CStr(ws.Cells(i, 1).Value)) = "0" Then
+            If Trim(CStr(ws.Cells(i, 2).Value)) <> "0" Then
+                allMatch = False
+                failRow = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If allMatch Then
+        AddResult sName, "Validated", "0 factor for 0 vehichles"
+    Else
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A = 0 but Column B <> 0."
+    End If
+End Sub
+
+'--------------------------------------------------------------------
 ' 3) C62 - "Rejected" should NOT exist in Column A or B
 '--------------------------------------------------------------------
 Sub Check_C62()
@@ -280,45 +316,24 @@ Sub Check_C62()
     Next i
 
     If Not found Then
-        AddResult sName, "Validated", "'Rejected' value not found in Column A or B."
+        AddResult sName, "Validated", "'Rejected' row removed successfully"
     Else
         AddResult sName, "Manual validation required", "'Rejected' value found in Column A/B at row " & i & "."
     End If
 End Sub
 
 '--------------------------------------------------------------------
-' 4) C63 - where Column A = "0", Column B must also = "0"
+' 4) C63 - just confirm the sheet exists
 '--------------------------------------------------------------------
 Sub Check_C63()
     Dim sName As String: sName = "C63"
-    Dim ws As Worksheet
-    Dim lastRowVal As Long, i As Long
-    Dim allMatch As Boolean, failRow As Long
 
     If Not SheetExists(wbCRL, sName) Then
         AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
         Exit Sub
     End If
 
-    Set ws = wbCRL.Sheets(sName)
-    lastRowVal = GetLastRow(ws, "A")
-    allMatch = True
-
-    For i = 1 To lastRowVal
-        If Trim(CStr(ws.Cells(i, 1).Value)) = "0" Then
-            If Trim(CStr(ws.Cells(i, 2).Value)) <> "0" Then
-                allMatch = False
-                failRow = i
-                Exit For
-            End If
-        End If
-    Next i
-
-    If allMatch Then
-        AddResult sName, "Validated", "All '0' values in Column A have corresponding '0' in Column B."
-    Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A = 0 but Column B <> 0."
-    End If
+    AddResult sName, "Validated", "Base UMUIM"
 End Sub
 
 '--------------------------------------------------------------------
@@ -336,7 +351,7 @@ Sub Check_C71()
     Set ws = wbCRL.Sheets(sName)
 
     If Trim(CStr(ws.Range("B2").Value)) = "0" Then
-        AddResult sName, "Validated", "Cell B2 = 0."
+        AddResult sName, "Validated", "Fixed expense set to $0"
     Else
         AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
     End If
@@ -376,7 +391,7 @@ Sub Check_C72()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "All Column B values (excluding row 1) = 1.00."
+        AddResult sName, "Validated", "Neutralized/0"
     Else
         AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 1.00."
     End If
@@ -399,7 +414,7 @@ Sub Check_C73()
 
     If TryParseNumber(ws.Range("B2").Value, bNum) Then
         If bNum = 0 Then
-            AddResult sName, "Validated", "Cell B2 = 0."
+            AddResult sName, "Validated", "rate = 0"
         Else
             AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
         End If
@@ -450,7 +465,7 @@ Sub Check_H11()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column D values are consistent for matching A,B,C combinations where B=999 or 6."
+        AddResult sName, "Validated", "999 will be the same factor as 6 vehicles"
     Else
         AddResult sName, "Manual validation required", mismatchInfo
     End If
@@ -485,7 +500,9 @@ Sub Check_H21()
     If Not CheckGroupSameB(ws, g3, msg) Then ok = False
 
     If ok Then
-        AddResult sName, "Validated", "All grouped values in Column A have matching Column B values."
+        AddResult sName, "Validated", "300/500 will be the same factor as 250/500" & vbCrLf & _
+            "500/1000, 1000/1000 and 1500/1500 will be the same factor as 500/500" & vbCrLf & _
+            "1000 will be same factor as 500"
     Else
         AddResult sName, "Manual validation required", msg
     End If
@@ -558,7 +575,7 @@ Sub Check_O02()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column D = 1.00 for all Column C values >= 25."
+        AddResult sName, "Validated", "All factors for ages 25 or above are 1.0"
     Else
         AddResult sName, "Manual validation required", "Row " & failRow & ": Column C >= 25 but Column D <> 1.00."
     End If
@@ -601,14 +618,14 @@ Sub Check_P29()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column B values match expected (No -> 1, Yes -> 0.85)."
+        AddResult sName, "Validated", "1-0.85 = 15% discount"
     Else
         AddResult sName, "Manual validation required", "Row " & failRow & ": Column B does not match expected value for Column A."
     End If
 End Sub
 
 '--------------------------------------------------------------------
-' 10) T90 - Column B = 10000 x Column A, from row 2
+' 10) T90 - Factor = 10000 x Tier Component, from row 2
 '--------------------------------------------------------------------
 Sub Check_T90()
     Dim sName As String: sName = "T90"
@@ -637,14 +654,14 @@ Sub Check_T90()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column B = 10000 x Column A for all rows (from row 2)."
+        AddResult sName, "Validated", "Factor = 10000 x Tier Component for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 10000 x Column A."
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Factor <> 10000 x Tier Component."
     End If
 End Sub
 
 '--------------------------------------------------------------------
-' 11) T99 - Column A = 10000 x Column B, from row 2
+' 11) T99 - Tier Code = 10000 x Factor, from row 2
 '--------------------------------------------------------------------
 Sub Check_T99()
     Dim sName As String: sName = "T99"
@@ -673,16 +690,16 @@ Sub Check_T99()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column A = 10000 x Column B for all rows (from row 2)."
+        AddResult sName, "Validated", "Tier Code = 10000 x Factor for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A <> 10000 x Column B."
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Tier Code <> 10000 x Factor."
     End If
 End Sub
 
 '--------------------------------------------------------------------
-' 12 & 13) U99 / V99 - Column B must all be 1 (from row 2), and
-'          Column A values must match between CRL Config and the
-'          same-named sheet in the Proposed Config workbook.
+' 12 & 13) U99 / V99 - Factor (Column B) must all be 1 (from row 2), and
+'          Territory (Column A) values must match between CRL Config and
+'          the same-named sheet in the Proposed Config workbook.
 '
 '          NOTE: These subs are only called from QCRun
 '          when proposedAvailable = True.
@@ -768,13 +785,13 @@ Sub CheckU_V_Style(sName As String)
     End If
 
     If allOne And allCommon Then
-        AddResult sName, "Validated", "All Column B values = 1 and Column A matches between CRL Config and Proposed Config."
+        AddResult sName, "Validated", "All Factor values = 1 and Territory matches between CRL Config and Proposed Config."
     Else
         Dim c As String
         c = ""
-        If Not allOne Then c = c & "Row " & failRow & ": Column B <> 1. "
-        If missingFromCRL <> "" Then c = c & "In Proposed Config but not in CRL Config: " & missingFromCRL
-        If missingFromProp <> "" Then c = c & "In CRL Config but not in Proposed Config: " & missingFromProp
+        If Not allOne Then c = c & "Row " & failRow & ": Factor <> 1. "
+        If missingFromCRL <> "" Then c = c & "Territory in Proposed Config but not in CRL Config: " & missingFromCRL
+        If missingFromProp <> "" Then c = c & "Territory in CRL Config but not in Proposed Config: " & missingFromProp
         AddResult sName, "Manual validation required", c
     End If
 End Sub
