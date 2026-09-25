@@ -125,7 +125,7 @@ Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = 
     End If
 
     '---------------- Build the new report workbook ----------------
-    Set newWb = Workbooks.Add(xlWBATWorksheet)   ' new workbook with a single default sheet
+    Set newWb = Workbooks.Add(xlWBATWorksheet)
 
     CopyFailingSheets newWb
     BuildSummarySheet newWb
@@ -582,69 +582,206 @@ Sub Check_O02()
 End Sub
 
 '--------------------------------------------------------------------
-' 9) P29 - A="No"->B=1, A="Yes"->B=(1 - Discount sheet rate)
-'    The expected "Yes" factor is driven by the discount rate stored
-'    in the "Discount" sheet (Column B) of THIS workbook (the tool
-'    file), not the CRL Config or Proposed Config files.
-'    e.g. Discount sheet B2 = 0.15 (15%)  ->  expected P29 factor = 0.85
+' 9) P29 - A="No"->B=1, A="Yes"->B=(1 - Discount)
+'
+'    The discount is searched for in the hidden "Discount" sheet
+'    of THIS workbook.
+'
+'    The macro searches Column B and Column C for a decimal value.
+'
+'    Example:
+'       Discount sheet contains 0.15
+'       0.15 = 15% discount
+'       Expected P29 Yes factor = 1 - 0.15 = 0.85
+'
+'    P29 validation:
+'       No  -> B = 1.00
+'       Yes -> B = 0.85
 '--------------------------------------------------------------------
 Sub Check_P29()
+
     Dim sName As String: sName = "P29"
     Dim ws As Worksheet
-    Dim lastRowVal As Long, i As Long
-    Dim allMatch As Boolean, failRow As Long
+    Dim wsDiscount As Worksheet
+
+    Dim lastRowVal As Long
+    Dim lastRowB As Long
+    Dim lastRowC As Long
+    Dim lastDiscountRow As Long
+
+    Dim i As Long
+    Dim allMatch As Boolean
+    Dim failRow As Long
+
     Dim aVal As String
+
     Dim discountRate As Double
     Dim expectedYesFactor As Double
-    Dim discountOK As Boolean
+
+    Dim discountFound As Boolean
+    Dim bNum As Double
+    Dim cNum As Double
+    Dim tempVal As Double
 
     If Not SheetExists(wbCRL, sName) Then
-        AddResult sName, "Sheet does not exists", "Sheet """ & sName & """ not found in CRL Config."
+        AddResult sName, "Sheet does not exists", _
+                  "Sheet """ & sName & """ not found in CRL Config."
         Exit Sub
     End If
 
-    ' Pull the discount rate from the "Discount" sheet in THIS workbook (tool file)
-    discountOK = False
-    If SheetExists(ThisWorkbook, "Discount") Then
-        If TryParseNumber(ThisWorkbook.Sheets("Discount").Range("B2").Value, discountRate) Then
-            discountOK = True
+    '---------------------------------------------------------------
+    ' Find the hidden Discount sheet in THIS workbook.
+    ' Hidden status does not matter; VBA can still read it.
+    '---------------------------------------------------------------
+    If Not SheetExists(ThisWorkbook, "Discount") Then
+        AddResult sName, "Manual validation required", _
+                  "Could not find the 'Discount' sheet in this tool workbook."
+        Exit Sub
+    End If
+
+    Set wsDiscount = ThisWorkbook.Sheets("Discount")
+
+    '---------------------------------------------------------------
+    ' Search Column B and Column C for a decimal discount value.
+    '
+    ' Example:
+    '   0.15 -> 15% discount
+    '   0.10 -> 10% discount
+    '   0.20 -> 20% discount
+    '
+    ' We only accept decimal values between 0 and 1.
+    '---------------------------------------------------------------
+
+    lastRowB = GetLastRow(wsDiscount, "B")
+    lastRowC = GetLastRow(wsDiscount, "C")
+
+    If lastRowB > lastRowC Then
+        lastDiscountRow = lastRowB
+    Else
+        lastDiscountRow = lastRowC
+    End If
+
+    discountFound = False
+
+    For i = 1 To lastDiscountRow
+
+        '---------------- Column B ----------------
+        If TryParseNumber(wsDiscount.Cells(i, 2).Value, bNum) Then
+
+            If bNum > 0 And bNum < 1 Then
+                discountRate = bNum
+                discountFound = True
+                Exit For
+            End If
+
         End If
-    End If
 
-    If Not discountOK Then
-        AddResult sName, "Manual validation required", "1-0.85 = 15% discount - could not read discount rate from 'Discount' sheet (Cell B2) in this tool workbook."
+        '---------------- Column C ----------------
+        If TryParseNumber(wsDiscount.Cells(i, 3).Value, cNum) Then
+
+            If cNum > 0 And cNum < 1 Then
+                discountRate = cNum
+                discountFound = True
+                Exit For
+            End If
+
+        End If
+
+    Next i
+
+    '---------------------------------------------------------------
+    ' If no decimal discount value was found, P29 cannot be
+    ' validated.
+    '---------------------------------------------------------------
+    If Not discountFound Then
+        AddResult sName, "Manual validation required", _
+                  "Could not find a decimal discount value between 0 and 1 in Column B or Column C of the 'Discount' sheet."
         Exit Sub
     End If
 
+    '---------------------------------------------------------------
+    ' Calculate expected Yes factor.
+    '
+    ' Example:
+    ' Discount = 0.15
+    ' Yes factor = 1 - 0.15
+    '            = 0.85
+    '---------------------------------------------------------------
     expectedYesFactor = Round(1 - discountRate, 4)
 
     Set ws = wbCRL.Sheets(sName)
+
     lastRowVal = GetLastRow(ws, "A")
+
     allMatch = True
 
+    '---------------------------------------------------------------
+    ' Validate P29
+    '
+    ' A = No  -> B must be 1.00
+    ' A = Yes -> B must be 1 - Discount
+    '---------------------------------------------------------------
     For i = 1 To lastRowVal
+
         aVal = Trim(LCase(CStr(ws.Cells(i, 1).Value)))
+
         If aVal = "no" Then
-            If Not IsNumeric(ws.Cells(i, 2).Value) Then
-                allMatch = False: failRow = i: Exit For
-            ElseIf Round(CDbl(ws.Cells(i, 2).Value), 2) <> 1 Then
-                allMatch = False: failRow = i: Exit For
+
+            If Not TryParseNumber(ws.Cells(i, 2).Value, tempVal) Then
+
+                allMatch = False
+                failRow = i
+                Exit For
+
+            ElseIf Round(tempVal, 4) <> 1 Then
+
+                allMatch = False
+                failRow = i
+                Exit For
+
             End If
+
         ElseIf aVal = "yes" Then
-            If Not IsNumeric(ws.Cells(i, 2).Value) Then
-                allMatch = False: failRow = i: Exit For
-            ElseIf Round(CDbl(ws.Cells(i, 2).Value), 4) <> expectedYesFactor Then
-                allMatch = False: failRow = i: Exit For
+
+            If Not TryParseNumber(ws.Cells(i, 2).Value, tempVal) Then
+
+                allMatch = False
+                failRow = i
+                Exit For
+
+            ElseIf Round(tempVal, 4) <> expectedYesFactor Then
+
+                allMatch = False
+                failRow = i
+                Exit For
+
             End If
+
         End If
+
     Next i
 
+    '---------------------------------------------------------------
+    ' Final result
+    '---------------------------------------------------------------
     If allMatch Then
-        AddResult sName, "Validated", "1-" & Format(expectedYesFactor, "0.####") & " = " & Format(discountRate * 100, "0.##") & "% discount"
+
+        AddResult sName, "Validated", _
+                  Format(discountRate * 100, "0.##") & _
+                  "% discount applied - Yes factor = " & _
+                  Format(expectedYesFactor, "0.####") & _
+                  ", No factor = 1.00"
+
     Else
-        AddResult sName, "Manual validation required", Format(discountRate * 100, "0.##") & "% discount not applied correctly - see row " & failRow & _
-            " (expected Yes factor = " & Format(expectedYesFactor, "0.####") & ")."
+
+        AddResult sName, "Manual validation required", _
+                  Format(discountRate * 100, "0.##") & _
+                  "% discount not applied correctly - see row " & _
+                  failRow & " (expected Yes factor = " & _
+                  Format(expectedYesFactor, "0.####") & ")."
+
     End If
+
 End Sub
 
 '--------------------------------------------------------------------
