@@ -283,7 +283,7 @@ Sub Check_C61()
     If allMatch Then
         AddResult sName, "Validated", "0 factor for 0 vehichles"
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A = 0 but Column B <> 0."
+        AddResult sName, "Manual validation required", "0 factor for 0 vehichles not applied - row " & failRow & " has 0 vehicles but factor <> 0."
     End If
 End Sub
 
@@ -318,7 +318,7 @@ Sub Check_C62()
     If Not found Then
         AddResult sName, "Validated", "'Rejected' row removed successfully"
     Else
-        AddResult sName, "Manual validation required", "'Rejected' value found in Column A/B at row " & i & "."
+        AddResult sName, "Manual validation required", "'Rejected' row still present - found in Column A/B at row " & i & "."
     End If
 End Sub
 
@@ -353,7 +353,7 @@ Sub Check_C71()
     If Trim(CStr(ws.Range("B2").Value)) = "0" Then
         AddResult sName, "Validated", "Fixed expense set to $0"
     Else
-        AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
+        AddResult sName, "Manual validation required", "Fixed expense not set to $0 - Cell B2 = '" & ws.Range("B2").Value & "'."
     End If
 End Sub
 
@@ -393,7 +393,7 @@ Sub Check_C72()
     If allMatch Then
         AddResult sName, "Validated", "Neutralized/0"
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 1.00."
+        AddResult sName, "Manual validation required", "Not neutralized - row " & failRow & " <> 1.00."
     End If
 End Sub
 
@@ -416,10 +416,10 @@ Sub Check_C73()
         If bNum = 0 Then
             AddResult sName, "Validated", "rate = 0"
         Else
-            AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
+            AddResult sName, "Manual validation required", "rate <> 0 - Cell B2 = '" & ws.Range("B2").Value & "'."
         End If
     Else
-        AddResult sName, "Manual validation required", "Cell B2 = '" & ws.Range("B2").Value & "' instead of 0."
+        AddResult sName, "Manual validation required", "rate <> 0 - Cell B2 = '" & ws.Range("B2").Value & "'."
     End If
 End Sub
 
@@ -454,8 +454,8 @@ Sub Check_H11()
             If dict.Exists(key) Then
                 If dict(key) <> dVal Then
                     allMatch = False
-                    mismatchInfo = "Combination (A,B,C)=" & key & " has differing D values (" & _
-                                   dict(key) & " vs " & dVal & ") - see row " & i & "."
+                    mismatchInfo = "999 does not match factor for 6 vehicles - combination (A,B,C)=" & key & _
+                                   " has differing D values (" & dict(key) & " vs " & dVal & ") - see row " & i & "."
                     Exit For
                 End If
             Else
@@ -504,7 +504,7 @@ Sub Check_H21()
             "500/1000, 1000/1000 and 1500/1500 will be the same factor as 500/500" & vbCrLf & _
             "1000 will be same factor as 500"
     Else
-        AddResult sName, "Manual validation required", msg
+        AddResult sName, "Manual validation required", "Expected matching factor group(s) not applied - " & msg
     End If
 End Sub
 
@@ -537,7 +537,7 @@ Function CheckGroupSameB(ws As Worksheet, grp As Variant, ByRef msg As String) A
         Else
             If vals(k) <> firstVal Then
                 CheckGroupSameB = False
-                msg = msg & "Group (" & Join(grp, ", ") & ") has mismatched Column B values. "
+                msg = msg & "Group (" & Join(grp, ", ") & ") has mismatched factor values. "
                 Exit Function
             End If
         End If
@@ -577,7 +577,7 @@ Sub Check_O02()
     If allMatch Then
         AddResult sName, "Validated", "All factors for ages 25 or above are 1.0"
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column C >= 25 but Column D <> 1.00."
+        AddResult sName, "Manual validation required", "Not all factors for ages 25 or above are 1.0 - see row " & failRow & "."
     End If
 End Sub
 
@@ -620,7 +620,7 @@ Sub Check_P29()
     If allMatch Then
         AddResult sName, "Validated", "1-0.85 = 15% discount"
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B does not match expected value for Column A."
+        AddResult sName, "Manual validation required", "15% discount not applied correctly - see row " & failRow & "."
     End If
 End Sub
 
@@ -656,7 +656,7 @@ Sub Check_T90()
     If allMatch Then
         AddResult sName, "Validated", "Factor = 10000 x Tier Component for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Factor <> 10000 x Tier Component."
+        AddResult sName, "Manual validation required", "Factor <> 10000 x Tier Component - see row " & failRow & "."
     End If
 End Sub
 
@@ -692,7 +692,7 @@ Sub Check_T99()
     If allMatch Then
         AddResult sName, "Validated", "Tier Code = 10000 x Factor for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Tier Code <> 10000 x Factor."
+        AddResult sName, "Manual validation required", "Tier Code <> 10000 x Factor - see row " & failRow & "."
     End If
 End Sub
 
@@ -789,7 +789,7 @@ Sub CheckU_V_Style(sName As String)
     Else
         Dim c As String
         c = ""
-        If Not allOne Then c = c & "Row " & failRow & ": Factor <> 1. "
+        If Not allOne Then c = c & "Factor <> 1 - row " & failRow & ". "
         If missingFromCRL <> "" Then c = c & "Territory in Proposed Config but not in CRL Config: " & missingFromCRL
         If missingFromProp <> "" Then c = c & "Territory in CRL Config but not in Proposed Config: " & missingFromProp
         AddResult sName, "Manual validation required", c
