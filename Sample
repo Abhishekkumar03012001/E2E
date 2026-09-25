@@ -5,18 +5,19 @@ Option Explicit
 ' - Can be run two ways:
 '     1) ValidateCRLConfig  -> reads paths from "Read Me" sheet (D23/D24/D15)
 '     2) QCRun propPath, crlPath, [stateAbbr]  -> pass paths directly
-'        e.g. QCRun "", crlPath   (state abbr optional too)
-'            QCRun "", crlPath, "TX"
-'            QCRun proposedPath, crlPath
-' - Deletes all sheets except "Read Me" before each run
+'        e.g. QCRun "", crlPath              (no proposed file, state omitted)
+'             QCRun "", crlPath, "TX"        (state provided)
+'             QCRun proposedPath, crlPath
 ' - Validates a defined list of tabs in CRL Config workbook
 ' - If the Proposed Config file is NOT found/blank, U99 and V99 still
 '   appear in the Summary, flagged as "Manual validation required"
 '   with comment "Proposed File missing"
-' - Copies any sheet that exists but fails validation right after "Read Me"
-' - Builds a "Summary" sheet right after "Read Me" (pushing review sheets right)
-' - Exports the Summary + failing tabs into a NEW workbook named
-'   "UMB CRL Config QC report.xlsx" saved in the same folder as this tool
+' - ThisWorkbook (this tool) is NEVER modified - no sheets are added,
+'   copied, or deleted in it.
+' - A brand-new workbook is created to hold the "Summary" sheet plus
+'   any sheet that failed validation, saved as
+'   "UMB CRL Config QC report.xlsx" in the same folder as this tool,
+'   then closed.
 ' - Runs silently: no MsgBox / popups
 '====================================================================
 
@@ -54,6 +55,7 @@ End Sub
 Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = "")
 
     Dim i As Long
+    Dim newWb As Workbook
 
     On Error GoTo ErrHandler
 
@@ -81,9 +83,6 @@ Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = 
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
-
-    '---------------- Clean up sheets from any previous run ----------------
-    CleanupSheets
 
     Set wbCRL = Workbooks.Open(crlPath, ReadOnly:=True)
 
@@ -124,10 +123,20 @@ Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = 
         AddResult "V99", "Manual validation required", "Proposed File missing"
     End If
 
-    '---------------- Build outputs ----------------
-    CopyFailingSheets
-    BuildSummarySheet
+    '---------------- Build the new report workbook ----------------
+    Set newWb = Workbooks.Add(xlWBATWorksheet)   ' new workbook with a single default sheet
 
+    CopyFailingSheets newWb
+    BuildSummarySheet newWb
+
+    ' Remove the default blank sheet that came with the new workbook
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    newWb.Sheets("Sheet1").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    '---------------- Close source workbooks ----------------
     wbCRL.Close SaveChanges:=False
     Set wbCRL = Nothing
 
@@ -136,8 +145,16 @@ Sub QCRun(propPath As String, crlPath As String, Optional stateAbbr As String = 
         Set wbProposed = Nothing
     End If
 
-    '---------------- Export Summary + failing tabs to new workbook ----------------
-    ExportReportWorkbook
+    '---------------- Save & close the report workbook ----------------
+    Dim savePath As String
+    savePath = ThisWorkbook.Path & Application.PathSeparator & "UMB CRL Config QC report.xlsx"
+
+    On Error Resume Next
+    newWb.SaveAs Filename:=savePath, FileFormat:=xlOpenXMLWorkbook
+    newWb.Close SaveChanges:=False
+    On Error GoTo 0
+
+    Set newWb = Nothing
 
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
@@ -150,21 +167,7 @@ ErrHandler:
     On Error Resume Next
     If Not wbProposed Is Nothing Then wbProposed.Close SaveChanges:=False
     If Not wbCRL Is Nothing Then wbCRL.Close SaveChanges:=False
-End Sub
-
-'--------------------------------------------------------------------
-' Delete every sheet in ThisWorkbook except "Read Me"
-'--------------------------------------------------------------------
-Sub CleanupSheets()
-    Dim ws As Worksheet
-    Dim i As Long
-
-    For i = ThisWorkbook.Sheets.Count To 1 Step -1
-        Set ws = ThisWorkbook.Sheets(i)
-        If ws.Name <> "Read Me" Then
-            ws.Delete
-        End If
-    Next i
+    If Not newWb Is Nothing Then newWb.Close SaveChanges:=False
 End Sub
 
 '--------------------------------------------------------------------
@@ -340,7 +343,7 @@ Sub Check_C71()
 End Sub
 
 '--------------------------------------------------------------------
-' NEW) C72 - all Column B values must be 1.00, except row 1 (header)
+' C72 - all Column B values must be 1.00, except row 1 (header)
 '--------------------------------------------------------------------
 Sub Check_C72()
     Dim sName As String: sName = "C72"
@@ -380,7 +383,7 @@ Sub Check_C72()
 End Sub
 
 '--------------------------------------------------------------------
-' NEW) C73 - Cell B2 must equal 0
+' C73 - Cell B2 must equal 0
 '--------------------------------------------------------------------
 Sub Check_C73()
     Dim sName As String: sName = "C73"
@@ -605,7 +608,7 @@ Sub Check_P29()
 End Sub
 
 '--------------------------------------------------------------------
-' 10) T90 - Column B = 1000 x Column A, from row 2
+' 10) T90 - Column B = 10000 x Column A, from row 2
 '--------------------------------------------------------------------
 Sub Check_T90()
     Dim sName As String: sName = "T90"
@@ -625,7 +628,7 @@ Sub Check_T90()
 
     For i = 2 To lastRowVal - 1
         If TryParseNumber(ws.Cells(i, 1).Value, aNum) And TryParseNumber(ws.Cells(i, 2).Value, bNum) Then
-            If Round(bNum, 4) <> Round(aNum * 1000, 4) Then
+            If Round(bNum, 4) <> Round(aNum * 10000, 4) Then
                 allMatch = False
                 failRow = i
                 Exit For
@@ -634,14 +637,14 @@ Sub Check_T90()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column B = 1000 x Column A for all rows (from row 2)."
+        AddResult sName, "Validated", "Column B = 10000 x Column A for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 1000 x Column A."
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column B <> 10000 x Column A."
     End If
 End Sub
 
 '--------------------------------------------------------------------
-' 11) T99 - Column A = 1000 x Column B, from row 2
+' 11) T99 - Column A = 10000 x Column B, from row 2
 '--------------------------------------------------------------------
 Sub Check_T99()
     Dim sName As String: sName = "T99"
@@ -661,7 +664,7 @@ Sub Check_T99()
 
     For i = 2 To lastRowVal
         If TryParseNumber(ws.Cells(i, 1).Value, aNum) And TryParseNumber(ws.Cells(i, 2).Value, bNum) Then
-            If Round(aNum, 4) <> Round(bNum * 1000, 4) Then
+            If Round(aNum, 4) <> Round(bNum * 10000, 4) Then
                 allMatch = False
                 failRow = i
                 Exit For
@@ -670,9 +673,9 @@ Sub Check_T99()
     Next i
 
     If allMatch Then
-        AddResult sName, "Validated", "Column A = 1000 x Column B for all rows (from row 2)."
+        AddResult sName, "Validated", "Column A = 10000 x Column B for all rows (from row 2)."
     Else
-        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A <> 1000 x Column B."
+        AddResult sName, "Manual validation required", "Row " & failRow & ": Column A <> 10000 x Column B."
     End If
 End Sub
 
@@ -777,30 +780,28 @@ Sub CheckU_V_Style(sName As String)
 End Sub
 
 '--------------------------------------------------------------------
-' COPY SHEETS THAT EXIST BUT FAILED VALIDATION, right after "Read Me"
+' COPY SHEETS THAT EXIST BUT FAILED VALIDATION into the report
+' workbook (targetWb), appended after its current last sheet.
 '--------------------------------------------------------------------
-Sub CopyFailingSheets()
+Sub CopyFailingSheets(targetWb As Workbook)
     Dim i As Long
     Dim sName As String
-    Dim insertAfterIndex As Long
-
-    insertAfterIndex = ThisWorkbook.Sheets("Read Me").Index
 
     For i = 1 To resCount
         If resResult(i) = "Manual validation required" Then
             sName = resName(i)
             If SheetExists(wbCRL, sName) Then
-                wbCRL.Sheets(sName).Copy After:=ThisWorkbook.Sheets(insertAfterIndex)
-                insertAfterIndex = insertAfterIndex + 1
+                wbCRL.Sheets(sName).Copy After:=targetWb.Sheets(targetWb.Sheets.Count)
             End If
         End If
     Next i
 End Sub
 
 '--------------------------------------------------------------------
-' BUILD SUMMARY SHEET
+' BUILD SUMMARY SHEET in the report workbook (targetWb), placed as
+' the FIRST sheet in that workbook.
 '--------------------------------------------------------------------
-Sub BuildSummarySheet()
+Sub BuildSummarySheet(targetWb As Workbook)
     Dim wsSummary As Worksheet
     Dim i As Long
 
@@ -808,13 +809,7 @@ Sub BuildSummarySheet()
         Exit Sub
     End If
 
-    Application.DisplayAlerts = False
-    On Error Resume Next
-    ThisWorkbook.Sheets("Summary").Delete
-    On Error GoTo 0
-    Application.DisplayAlerts = True
-
-    Set wsSummary = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("Read Me"))
+    Set wsSummary = targetWb.Sheets.Add(Before:=targetWb.Sheets(1))
     wsSummary.Name = "Summary"
 
     wsSummary.Cells.Font.Size = 11
@@ -860,53 +855,4 @@ Sub BuildSummarySheet()
 
         .Range("A1:D" & (resCount + 1)).AutoFilter
     End With
-End Sub
-
-'--------------------------------------------------------------------
-' EXPORT REPORT WORKBOOK
-' Copies "Summary" plus every failing tab that was copied into
-' ThisWorkbook into a brand-new workbook, saves it as
-' "UMB CRL Config QC report.xlsx" in the same folder as this tool,
-' then closes it. Runs silently (no alerts/popups).
-'--------------------------------------------------------------------
-Sub ExportReportWorkbook()
-    Dim newWb As Workbook
-    Dim ws As Worksheet
-    Dim savePath As String
-    Dim i As Long
-    Dim copiedAny As Boolean
-
-    Application.DisplayAlerts = False
-    Application.ScreenUpdating = False
-
-    Set newWb = Workbooks.Add(xlWBATWorksheet)   ' new workbook with a single default sheet
-    copiedAny = False
-
-    ' Copy every sheet except "Read Me" (Summary + any failing tabs), preserving order
-    For i = 1 To ThisWorkbook.Sheets.Count
-        Set ws = ThisWorkbook.Sheets(i)
-        If ws.Name <> "Read Me" Then
-            ws.Copy After:=newWb.Sheets(newWb.Sheets.Count)
-            copiedAny = True
-        End If
-    Next i
-
-    ' Remove the default blank sheet that came with the new workbook
-    If copiedAny Then
-        On Error Resume Next
-        newWb.Sheets(1).Delete
-        On Error GoTo 0
-    End If
-
-    savePath = ThisWorkbook.Path & Application.PathSeparator & "UMB CRL Config QC report.xlsx"
-
-    On Error Resume Next
-    newWb.SaveAs Filename:=savePath, FileFormat:=xlOpenXMLWorkbook
-    newWb.Close SaveChanges:=False
-    On Error GoTo 0
-
-    Set newWb = Nothing
-
-    Application.DisplayAlerts = True
-    Application.ScreenUpdating = True
 End Sub
