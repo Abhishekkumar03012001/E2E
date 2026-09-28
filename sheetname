@@ -1,30 +1,17 @@
-Public Sub PickFile_And_Run_Mapping()
+ThisWorkbook.Unprotect Password:="YOUR_PASSWORD"
 
-    Dim dstFullPath As String
-    Dim wsPaths As Worksheet
+On Error Resume Next
+Set wsPaths = ThisWorkbook.Worksheets("Paths")
+On Error GoTo CleanFail
 
-    On Error Resume Next
-    Set wsPaths = ThisWorkbook.Worksheets("Paths")
-    On Error GoTo 0
+If wsPaths Is Nothing Then
+    Set wsPaths = ThisWorkbook.Worksheets.Add( _
+        After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsPaths.Name = "Paths"
+End If
 
-    If wsPaths Is Nothing Then
-        MsgBox "Paths sheet was not found.", vbExclamation
-        Exit Sub
-    End If
+wsPaths.Range("B2").Value = newFilePath
+wsPaths.Visible = xlSheetVeryHidden
 
-    dstFullPath = Trim(CStr(wsPaths.Range("B2").Value))
-
-    If Len(dstFullPath) = 0 Then
-        MsgBox "No destination path found in Paths!B2.", vbExclamation
-        Exit Sub
-    End If
-
-    If Dir(dstFullPath) = "" Then
-        MsgBox "Destination file was not found:" & vbCrLf & vbCrLf & _
-               dstFullPath, vbExclamation
-        Exit Sub
-    End If
-
-    Call Transfer_All_ToSelected(dstFullPath)
-
-End Sub
+ThisWorkbook.Protect Password:="YOUR_PASSWORD", Structure:=True
+ThisWorkbook.Save
