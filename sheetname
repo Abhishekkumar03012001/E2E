@@ -1,41 +1,30 @@
-'==========================================================
-' Button handler: get destination path from Paths!B2
-' and run the mapping
-'==========================================================
 Public Sub PickFile_And_Run_Mapping()
 
     Dim dstFullPath As String
     Dim wsPaths As Worksheet
 
-    'Get the hidden Paths sheet from the workbook
-    'where this tool/macro is running
     On Error Resume Next
     Set wsPaths = ThisWorkbook.Worksheets("Paths")
     On Error GoTo 0
 
-    'Check if Paths sheet exists
     If wsPaths Is Nothing Then
-        MsgBox "Paths sheet was not found. Please run the tool setup first.", vbExclamation
+        MsgBox "Paths sheet was not found.", vbExclamation
         Exit Sub
     End If
 
-    'Read destination path from B2
     dstFullPath = Trim(CStr(wsPaths.Range("B2").Value))
 
-    'Check if B2 contains a path
     If Len(dstFullPath) = 0 Then
-        MsgBox "No destination file path was found in Paths!B2.", vbExclamation
+        MsgBox "No destination path found in Paths!B2.", vbExclamation
         Exit Sub
     End If
 
-    'Check whether the file actually exists
     If Dir(dstFullPath) = "" Then
-        MsgBox "The destination file was not found:" & vbCrLf & vbCrLf & _
+        MsgBox "Destination file was not found:" & vbCrLf & vbCrLf & _
                dstFullPath, vbExclamation
         Exit Sub
     End If
 
-    'Run the mapping using the path from Paths!B2
     Call Transfer_All_ToSelected(dstFullPath)
 
 End Sub
