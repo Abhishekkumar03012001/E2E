@@ -1,4 +1,6 @@
-ThisWorkbook.Unprotect Password:="YOUR_PASSWORD"
+Dim wsPaths As Worksheet
+
+'Look for Paths sheet in the TOOL workbook
 
 On Error Resume Next
 Set wsPaths = ThisWorkbook.Worksheets("Paths")
