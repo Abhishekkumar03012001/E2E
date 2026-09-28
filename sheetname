@@ -1,15 +1,21 @@
-Create a new working folder at the desired location.	☐	☐
-Place the required Export File, Mapping File, and Product Config File in the working folder.	☐	☐
-Place the required Tool in the working folder.	☐	☐
-Open the Tool.	☐	☐
-Enter the Export File Path in the tool.	☐	☐
-Enter the Config File Path in the tool.	☐	☐
-Enter the Mapping File Path in the tool.	☐	☐
-Verify that all three file paths are correct.	☐	☐
-Click Run to execute the tool.	☐	☐
-Verify that the output file is generated in the working folder.	☐	☐
-Open the generated Output File and review the results.	☐	☐
-Identify any items requiring Manual Validation.	☐	☐
-Perform the required manual validation and update the report accordingly.	☐	☐
-Perform a final check of the output and confirm that all required validations are complete.	☐	☐
-Confirm completion of the tool run and proceed to the next product.	☐	☐
+'Create or update the hidden "Paths" sheet
+Dim wsPaths As Worksheet
+
+On Error Resume Next
+Set wsPaths = wbDst.Worksheets("Paths")
+On Error GoTo CleanFail
+
+'If Paths sheet does not exist, create it
+If wsPaths Is Nothing Then
+    Set wsPaths = wbDst.Worksheets.Add(After:=wbDst.Worksheets(wbDst.Worksheets.Count))
+    wsPaths.Name = "Paths"
+End If
+
+'Save the new file path in B2
+wsPaths.Range("B2").Value = newFilePath
+
+'Always keep the Paths sheet hidden
+wsPaths.Visible = xlSheetVeryHidden
+
+'Save the new workbook
+wbDst.SaveAs Filename:=newFilePath, FileFormat:=saveFormat
