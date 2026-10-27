@@ -41,8 +41,9 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
      - Sheet selection within BOTH the Territory file (D57) and the CAT
        file (D56) follows the same priority order -- first look for a
        sheet named "R_L_Territory"; if that's not present, look for a
-       sheet named "ratingTerritory"; if neither is present, fall back
-       to that workbook's first sheet. See TERRITORY_SHEET_PRIORITY and
+       sheet named "ratingTerritory"; if that's not present either, look
+       for a sheet named "Territory Factors"; if none is present, fall
+       back to that workbook's first sheet. See TERRITORY_SHEET_PRIORITY and
        resolve_territory_sheet() below.
      - The buffer sheet STARTS as an exact copy of the Territory file's
        own columns and values (all of them, not restricted).
@@ -163,6 +164,10 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
      are skipped by the Radar/EQ sections so they aren't listed twice).
      For every state not in the list nothing changes -- these
      tabs are handled exactly as before.
+18. NEW: In the Summary of Results sheet, rows are listed in ALPHABETICAL
+   order of the Config tab name (A -> Z, case-insensitive, top to
+   bottom). Rows with no Config tab name (export tab not found in Config)
+   are listed after them.
 -------------------------------------------------------------------------
 
 Run:
@@ -255,10 +260,10 @@ TERRITORY_MERGE_COLUMN_ALIASES = ["Territory", "ratingTerritory"]
 
 # Sheet-name priority used for BOTH the main Territory file (D57) and the
 # supplemental CAT file (D56) -- tries "R_L_Territory" first, then
-# "ratingTerritory", falling back to that workbook's first sheet if
-# neither is found. Matched case/space/punctuation-insensitively, same as
+# "ratingTerritory", then "Territory Factors", falling back to that
+# workbook's first sheet if none of them is found. Matched case/space/punctuation-insensitively, same as
 # all other sheet-name lookups.
-TERRITORY_SHEET_PRIORITY = [TERRITORY_CONFIG_TAB, "ratingTerritory"]
+TERRITORY_SHEET_PRIORITY = [TERRITORY_CONFIG_TAB, "ratingTerritory", "Territory Factors"]
 
 # Columns pulled from the CAT file (D56) into the Territory buffer sheet
 # -- but ONLY for a given column if the Territory file (D57) doesn't
@@ -1257,8 +1262,9 @@ def resolve_territory_sheet(wb):
     supplemental CAT file (D56). Tries each name in
     TERRITORY_SHEET_PRIORITY IN ORDER (case/space/punctuation-insensitive,
     same as all other sheet-name matching in this tool) -- i.e.
-    "R_L_Territory" first, then "ratingTerritory" -- and falls back to
-    that workbook's first sheet if neither is found."""
+    "R_L_Territory" first, then "ratingTerritory", then "Territory
+    Factors" -- and falls back to that workbook's first sheet if none is
+    found."""
     for candidate in TERRITORY_SHEET_PRIORITY:
         resolved = find_sheet_name(wb, candidate)
         if resolved:
@@ -1955,22 +1961,17 @@ def main(input_file):
         if tab not in matched_config_tabs:
             summary_rows.append(missing_row(config_tab=tab, result=MISSING_IN_EXPORT))
 
-    # ---------------- Order the Summary rows by Config tab order ----------------
-    # Rows whose "config_tab" matches an actual Config workbook tab are sorted
-    # to follow that tab's position in the Config file. Any row that doesn't
-    # correspond to a Config tab (e.g. "Factor Tab not Found in export" rows,
-    # which only have an export_tab) is left where it was -- sorted() is
-    # stable, so all such rows simply keep their original relative order,
-    # placed after every row that DID match a Config tab.
-    config_tab_order = {clean_col(t): i for i, t in enumerate(config_tabs)}
-
+    # ---------------- Order the Summary rows alphabetically by Config tab name ----------------
+    # Rows that have a Config tab name are sorted A -> Z (case-insensitive)
+    # from top to bottom, e.g. "ABC" appears before "ABD". Any row without a
+    # Config tab name (e.g. "Factor Tab not found in Config" rows, which only
+    # have an export tab) is placed after all of them; sorted() is stable, so
+    # those rows keep their original relative order.
     def summary_sort_key(row):
         tab = row.get("config_tab", "NA")
-        if tab and tab != "NA":
-            idx = config_tab_order.get(clean_col(tab))
-            if idx is not None:
-                return (0, idx)
-        return (1, 0)
+        if tab and str(tab).strip() and tab != "NA":
+            return (0, str(tab).strip().lower(), str(tab).strip())
+        return (1, "", "")
 
     summary_rows = sorted(summary_rows, key=summary_sort_key)
 
