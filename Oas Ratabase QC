@@ -600,13 +600,39 @@ Public Sub Cons()
 
     Dim wsC As Worksheet
     Dim wsK As Worksheet
+    Dim ws As Worksheet
     Dim lastK As Long
     Dim lastC As Long
+    Dim shList As String
+    Dim kName As String
 
     Application.DisplayAlerts = False
 
     DeleteSheetIfExists "Constant Report"
-    Set wsK = ThisWorkbook.Worksheets("Constants")
+
+    'Find the Constants sheet (exact name first, then any name containing "constant")
+    If SheetExists(ThisWorkbook, "Constants") Then
+        Set wsK = ThisWorkbook.Worksheets("Constants")
+    Else
+        For Each ws In ThisWorkbook.Worksheets
+            If LCase$(ws.Name) Like "*constant*" And ws.Name <> "Constant Report" Then
+                Set wsK = ws
+                Exit For
+            End If
+        Next ws
+    End If
+
+    If wsK Is Nothing Then
+        For Each ws In ThisWorkbook.Worksheets
+            shList = shList & ws.Name & ", "
+        Next ws
+        Err.Raise vbObjectError + 1001, "Cons", _
+            "The 'Constants' sheet was not found in this workbook." & vbCrLf & _
+            "Sheets present: " & shList & vbCrLf & _
+            "Make sure one Ratabase file has a sheet called 'Constants', " & _
+            "or that its mapped name in 'Tab Name Dictionary' is 'Constants'."
+    End If
+    kName = "'" & wsK.Name & "'"
 
     If SheetExists(ThisWorkbook, "Report") Then
         Set wsC = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets("Report"))
@@ -634,7 +660,7 @@ Public Sub Cons()
         "=VLOOKUP(RC[-1],'Tab Name Dictionary'!C[1]:C[2],2,0)"
 
     wsC.Range("C2:C" & lastC).FormulaR1C1 = _
-        "=VLOOKUP(RC[-2],Constants!C[2]:C[8],7,0)"
+        "=VLOOKUP(RC[-2]," & kName & "!C[2]:C[8],7,0)"
     wsC.Range("C2:C" & lastC).Value = wsC.Range("C2:C" & lastC).Value   'paste as values
 
     wsC.Range("D2:D" & lastC).FormulaR1C1 = _
