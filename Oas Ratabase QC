@@ -4,9 +4,31 @@ Option Explicit
 ' OAS 2.0 RATABASE CONFIG QC TOOL
 '=========================================================
 
+Private mLog As String
+Private mLogCount As Long
+
 ' Run this macro to open the form
 Public Sub Start_QC_Tool()
     UserForm1.Show
+End Sub
+
+'---------------------------------------------------------
+' LOG (shows skipped / fallback items at the end instead of failing silently)
+'---------------------------------------------------------
+Public Sub ResetQCLog()
+    mLog = ""
+    mLogCount = 0
+End Sub
+
+Private Sub LogMsg(ByVal msg As String)
+    mLogCount = mLogCount + 1
+    If mLogCount <= 25 Then mLog = mLog & "- " & msg & vbCrLf
+End Sub
+
+Public Sub ShowQCLog()
+    If mLogCount = 0 Then Exit Sub
+    If mLogCount > 25 Then mLog = mLog & "... and " & (mLogCount - 25) & " more." & vbCrLf
+    MsgBox "QC completed. Please note:" & vbCrLf & vbCrLf & mLog, vbInformation, "Ratabase QC Tool"
 End Sub
 
 '---------------------------------------------------------
@@ -55,6 +77,48 @@ Private Function PerilOffset(ByVal lb2 As Long) As Long
         Case 6: PerilOffset = lb2 - 6
         Case Else: PerilOffset = lb2
     End Select
+End Function
+
+' Picks the ONE sheet of a Ratabase file that is used in the comparison:
+'   1) sheet named like the table name extracted from the file name
+'   2) sheet named like the mapped name from the Tab Name Dictionary
+'   3) the only sheet, or else the first visible sheet (a note is logged)
+Private Function PickCompareSheet(ByVal wb As Workbook, ByVal keyName As String, _
+                                  ByVal mappedName As String, ByVal fileName As String) As Worksheet
+    Dim ws As Worksheet
+
+    If Len(keyName) > 0 Then
+        For Each ws In wb.Worksheets
+            If StrComp(Trim$(ws.Name), Trim$(keyName), vbTextCompare) = 0 Then
+                Set PickCompareSheet = ws
+                Exit Function
+            End If
+        Next ws
+    End If
+
+    If Len(mappedName) > 0 Then
+        For Each ws In wb.Worksheets
+            If StrComp(Trim$(ws.Name), Trim$(mappedName), vbTextCompare) = 0 Then
+                Set PickCompareSheet = ws
+                Exit Function
+            End If
+        Next ws
+    End If
+
+    If wb.Worksheets.Count = 1 Then
+        Set PickCompareSheet = wb.Worksheets(1)
+        Exit Function
+    End If
+
+    For Each ws In wb.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            Set PickCompareSheet = ws
+            LogMsg "File '" & fileName & "': no sheet matched '" & keyName & "'; first sheet '" & ws.Name & "' was used."
+            Exit Function
+        End If
+    Next ws
+
+    If wb.Worksheets.Count > 0 Then Set PickCompareSheet = wb.Worksheets(1)
 End Function
 
 Private Sub FormatReportSheet(ByVal ws As Worksheet, ByVal lastR As Long, ByVal titleText As String)
@@ -130,17 +194,19 @@ End Sub
 Public Sub MasterCode(ByVal ff As String)
 
     Dim wsM As Worksheet
-    Dim ws As Worksheet
+    Dim wsSrc As Worksheet
+    Dim wsNew As Worksheet
     Dim wbImport As Workbook
     Dim fName As String
     Dim fList() As String
     Dim nFiles As Long
     Dim k As Long
-    Dim p As Long
     Dim lastA As Long
     Dim lastC As Long
-    Dim rowsUsed As Long
-    Dim v As Variant
+    Dim vKey As Variant
+    Dim vMap As Variant
+    Dim sKey As String
+    Dim sMap As String
     Dim labels As Variant
 
     Application.DisplayAlerts = False
@@ -230,31 +296,40 @@ Public Sub MasterCode(ByVal ff As String)
     wsM.Range("AB3:AO3").Formula = "=COLUMN(INDIRECT(AB$1&1))"
     wsM.Range("AB3:AO3").Value = wsM.Range("AB3:AO3").Value
 
-    'Import data from all Ratabase workbooks in the folder.
+    'Import ONLY the compared sheet from each Ratabase workbook, and name it from the master list.
+    'File k sits on MasterList row k+3 (file names start in A2, then 2 rows were inserted on top).
     For k = 1 To nFiles
-        Set wbImport = Workbooks.Open(ff & "\" & fList(k), ReadOnly:=True, UpdateLinks:=0)
-        For Each ws In wbImport.Worksheets
-            ws.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
-        Next ws
-        wbImport.Close SaveChanges:=False
-    Next k
 
-    'Rename imported tabs based on the master-list mapping.
-    rowsUsed = wsM.UsedRange.Rows.Count
-    p = 1
-    For Each ws In ThisWorkbook.Worksheets
-        If p <= rowsUsed Then
-            v = wsM.Cells(p, 5).Value
-            If Not IsError(v) Then
-                If Len(CStr(v)) > 0 Then
-                    On Error Resume Next
-                    ws.Name = CStr(v)
-                    On Error GoTo 0
+        sKey = "": sMap = ""
+        vKey = wsM.Cells(k + 3, "C").Value
+        vMap = wsM.Cells(k + 3, "E").Value
+        If Not IsError(vKey) Then sKey = CStr(vKey)
+        If Not IsError(vMap) Then sMap = CStr(vMap)
+
+        Set wbImport = Workbooks.Open(ff & "\" & fList(k), ReadOnly:=True, UpdateLinks:=0)
+        Set wsSrc = PickCompareSheet(wbImport, sKey, sMap, fList(k))
+
+        If wsSrc Is Nothing Then
+            LogMsg "File '" & fList(k) & "': no worksheet found - skipped."
+        Else
+            wsSrc.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+            Set wsNew = ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+
+            If Len(sMap) > 0 Then
+                On Error Resume Next
+                wsNew.Name = sMap
+                If Err.Number <> 0 Then
+                    LogMsg "File '" & fList(k) & "': could not rename imported sheet to '" & sMap & "'."
+                    Err.Clear
                 End If
+                On Error GoTo 0
+            Else
+                LogMsg "File '" & fList(k) & "': no mapped tab name in Tab Name Dictionary (sheet not renamed)."
             End If
         End If
-        p = p + 1
-    Next ws
+
+        wbImport.Close SaveChanges:=False
+    Next k
 
     ThisWorkbook.Activate
     Application.DisplayAlerts = True
@@ -303,17 +378,23 @@ Public Sub RBTab()
                 v = wsM.Cells(i + 2, "G").Value
                 If Not IsError(v) Then cat = LCase$(Trim$(CStr(v)))
 
-                If (cat = "peril" Or cat = "multi") And lb2 > 0 Then
-                    k = PerilOffset(lb2)
-                    For j = lb2 To (lb2 + 13)
-                        outCol = j + k + 8
-                        If j <= 16384 And outCol <= 16384 Then
-                            coltotal = Application.Sum(sh.Range(sh.Cells(2, j), sh.Cells(LastRow, j)))
-                            wsM.Cells(i + 2, outCol).Value = coltotal
-                        End If
-                    Next j
+                If (cat = "peril" Or cat = "multi") Then
+                    If lb2 > 0 Then
+                        k = PerilOffset(lb2)
+                        For j = lb2 To (lb2 + 13)
+                            outCol = j + k + 8
+                            If j <= 16384 And outCol <= 16384 Then
+                                coltotal = Application.Sum(sh.Range(sh.Cells(2, j), sh.Cells(LastRow, j)))
+                                wsM.Cells(i + 2, outCol).Value = coltotal
+                            End If
+                        Next j
+                    Else
+                        LogMsg "Ratabase tab '" & a & "': peril start column (MasterList column L) is missing - sums not calculated."
+                    End If
                 End If
 
+            ElseIf Len(a) > 0 Then
+                LogMsg "Ratabase tab '" & a & "' not found in this workbook."
             End If
         End If
 
@@ -348,10 +429,15 @@ Public Sub Config(ByVal conf As String)
     For i = 1 To LastFile - 2
 
         Set sh = Nothing
+        a = ""
         v = wsM.Cells(i + 2, "E").Value
         If Not IsError(v) Then
             a = CStr(v)
-            If SheetExists(wb, a) Then Set sh = wb.Worksheets(a)
+            If SheetExists(wb, a) Then
+                Set sh = wb.Worksheets(a)
+            ElseIf Len(a) > 0 And SheetExists(ThisWorkbook, a) Then
+                LogMsg "Config tab '" & a & "' not found in the Config workbook."
+            End If
         End If
 
         If Not sh Is Nothing Then
@@ -590,7 +676,11 @@ Public Sub Config2(ByVal conf As String)
             a = CStr(vB)
             cat = ""
             If Not IsError(vD) Then cat = LCase$(Trim$(CStr(vD)))
-            If SheetExists(wb, a) Then Set sh = wb.Worksheets(a)
+            If SheetExists(wb, a) Then
+                Set sh = wb.Worksheets(a)
+            ElseIf Len(a) > 0 Then
+                LogMsg "Config tab '" & a & "' (constant) not found in the Config workbook."
+            End If
         End If
 
         If Not sh Is Nothing Then
