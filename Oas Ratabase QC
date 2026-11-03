@@ -1,0 +1,705 @@
+Option Explicit
+
+'=========================================================
+' OAS 2.0 RATABASE CONFIG QC TOOL
+'=========================================================
+
+' Run this macro to open the form
+Public Sub Start_QC_Tool()
+    UserForm1.Show
+End Sub
+
+'---------------------------------------------------------
+' HELPERS
+'---------------------------------------------------------
+Private Function SheetExists(ByVal wb As Workbook, ByVal nm As String) As Boolean
+    Dim s As Object
+    On Error Resume Next
+    Set s = wb.Worksheets(nm)
+    On Error GoTo 0
+    SheetExists = Not s Is Nothing
+End Function
+
+Private Sub DeleteSheetIfExists(ByVal nm As String)
+    Dim prev As Boolean
+    prev = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    If SheetExists(ThisWorkbook, nm) Then ThisWorkbook.Worksheets(nm).Delete
+    Application.DisplayAlerts = prev
+End Sub
+
+' Accepts a column number (6) or a column letter ("F") and returns the column number (0 = invalid)
+Private Function ColNum(ByVal v As Variant) As Long
+    Dim s As String
+    ColNum = 0
+    If IsError(v) Then Exit Function
+    If IsEmpty(v) Then Exit Function
+    s = Trim$(CStr(v))
+    If Len(s) = 0 Then Exit Function
+    If IsNumeric(s) Then
+        If CDbl(s) >= 1 And CDbl(s) <= 16384 Then ColNum = CLng(CDbl(s))
+    ElseIf Len(s) <= 3 And Not (s Like "*[!A-Za-z]*") Then
+        On Error Resume Next
+        ColNum = ThisWorkbook.Worksheets(1).Range(s & "1").Column
+        On Error GoTo 0
+    End If
+End Function
+
+Private Function PerilOffset(ByVal lb2 As Long) As Long
+    Select Case lb2
+        Case 1: PerilOffset = lb2 + 4
+        Case 2: PerilOffset = lb2 + 2
+        Case 3: PerilOffset = lb2
+        Case 4: PerilOffset = lb2 - 2
+        Case 5: PerilOffset = lb2 - 4
+        Case 6: PerilOffset = lb2 - 6
+        Case Else: PerilOffset = lb2
+    End Select
+End Function
+
+Private Sub FormatReportSheet(ByVal ws As Worksheet, ByVal lastR As Long, ByVal titleText As String)
+
+    Dim rng As Range
+    Dim bIdx As Variant
+    Dim tgt As Variant
+
+    If lastR < 3 Then lastR = 3
+
+    ' Thin borders around the table
+    Set rng = ws.Range("B3:G" & lastR)
+    rng.Borders(xlDiagonalDown).LineStyle = xlNone
+    rng.Borders(xlDiagonalUp).LineStyle = xlNone
+    For Each bIdx In Array(xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight, xlInsideVertical)
+        With rng.Borders(bIdx)
+            .LineStyle = xlContinuous
+            .ColorIndex = xlColorIndexAutomatic
+            .Weight = xlThin
+        End With
+    Next bIdx
+    If lastR > 3 Then
+        With rng.Borders(xlInsideHorizontal)
+            .LineStyle = xlContinuous
+            .ColorIndex = xlColorIndexAutomatic
+            .Weight = xlThin
+        End With
+    End If
+
+    ' Title cell
+    With ws.Range("B1")
+        If Len(titleText) > 0 Then .Value = titleText
+        .Borders(xlDiagonalDown).LineStyle = xlNone
+        .Borders(xlDiagonalUp).LineStyle = xlNone
+        For Each bIdx In Array(xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight)
+            With .Borders(bIdx)
+                .LineStyle = xlContinuous
+                .ColorIndex = xlColorIndexAutomatic
+                .Weight = xlMedium
+            End With
+        Next bIdx
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlBottom
+        .WrapText = False
+    End With
+
+    ' Header colouring
+    ws.Range("B3:G3").Font.Bold = True
+    For Each tgt In Array("B1", "B3:G3")
+        With ws.Range(CStr(tgt)).Interior
+            .Pattern = xlSolid
+            .PatternColorIndex = xlAutomatic
+            .ThemeColor = xlThemeColorAccent1
+            .TintAndShade = 0.399975585192419
+            .PatternTintAndShade = 0
+        End With
+    Next tgt
+
+    ws.Columns("G:G").EntireColumn.AutoFit
+
+    ws.Activate
+    On Error Resume Next
+    ActiveWindow.DisplayGridlines = False
+    On Error GoTo 0
+    ws.Range("A1").Select
+
+End Sub
+
+'---------------------------------------------------------
+' MAIN: IMPORT / BUILD MASTER LIST
+'---------------------------------------------------------
+Public Sub MasterCode(ByVal ff As String)
+
+    Dim wsM As Worksheet
+    Dim ws As Worksheet
+    Dim wbImport As Workbook
+    Dim fName As String
+    Dim fList() As String
+    Dim nFiles As Long
+    Dim k As Long
+    Dim p As Long
+    Dim lastA As Long
+    Dim lastC As Long
+    Dim rowsUsed As Long
+    Dim v As Variant
+    Dim labels As Variant
+
+    Application.DisplayAlerts = False
+
+    If Right$(ff, 1) = "\" Then ff = Left$(ff, Len(ff) - 1)
+    Set wsM = ThisWorkbook.Worksheets("MasterList")
+
+    'Get all Excel file names from the selected folder (same list used for listing and importing).
+    nFiles = 0
+    fName = Dir(ff & "\*.xls*")
+    Do While Len(fName) > 0
+        If LCase$(fName) <> LCase$(ThisWorkbook.Name) And Left$(fName, 2) <> "~$" Then
+            nFiles = nFiles + 1
+            ReDim Preserve fList(1 To nFiles)
+            fList(nFiles) = fName
+        End If
+        fName = Dir()
+    Loop
+
+    If nFiles = 0 Then Err.Raise vbObjectError + 1000, "MasterCode", _
+        "No Excel files were found in the selected database folder."
+
+    For k = 1 To nFiles
+        wsM.Cells(k + 1, 1).Value = fList(k)
+    Next k
+
+    lastA = wsM.Cells(wsM.Rows.Count, 1).End(xlUp).Row
+
+    'Create a formula to extract the database tab name, then paste as values in column C.
+    wsM.Range("B1:B" & lastA).Formula = _
+        "=IFERROR(LEFT(MID(A1,FIND(""("",A1)+2,LEN(A1)),FIND(""="",A1)-FIND(""("",A1)-2),A1)"
+    wsM.Range("C1:C" & lastA).Value = wsM.Range("B1:B" & lastA).Value
+
+    'Prepare the Tab Name Dictionary.
+    wsM.Rows("1:2").Insert Shift:=xlDown
+    wsM.Range("C1").Value = "Tab Name Dictionary"
+    wsM.Range("C2").Value = "MasterList"
+    lastC = lastA + 2
+
+    'Map database names and metadata using Tab Name Dictionary.
+    wsM.Range("D1:D" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$D,2,0)"
+    wsM.Range("E1:E" & lastC).Value = wsM.Range("D1:D" & lastC).Value
+
+    wsM.Range("F1:F" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$E,3,0)"
+    wsM.Range("G1:G" & lastC).Value = wsM.Range("F1:F" & lastC).Value
+
+    wsM.Range("H1:H" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$F,4,0)"
+
+    wsM.Range("I1:I" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$G,5,0)"
+    wsM.Range("I1:I" & lastC).Value = wsM.Range("I1:I" & lastC).Value
+
+    wsM.Range("J1:J" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$H,6,0)"
+    wsM.Range("J1:J" & lastC).Value = wsM.Range("J1:J" & lastC).Value
+
+    wsM.Range("K1:K" & lastC).Formula = "=VLOOKUP(C1,'Tab Name Dictionary'!$C:$I,7,0)"
+    wsM.Range("K1:K" & lastC).Value = wsM.Range("K1:K" & lastC).Value
+
+    'Category / type / bounds / configuration labels.
+    wsM.Range("L1").Value = "For Ratabase"
+    wsM.Range("L2").Value = "For Config"
+    wsM.Range("M1").Value = "Lower Bound"
+    wsM.Range("M2").Value = "Lower Bound"
+    wsM.Range("N1").Value = "Peril wise Sum for Ratabase tables - Columns N:AA"
+    wsM.Range("AB1").Value = "Peril wise Sum for Config tabs - Columns AB:AO"
+
+    labels = Array("Fire", "Water Winter", "Water Non Winter", "Hurricane", "Wind Summer", _
+                   "Wind Winter", "Hail", "Lightning", "Liability Poll", "Theft Vandalism", _
+                   "Other", "Reinsurance", "Capital", "Wildfire")
+    wsM.Range("N2:AA2").Value = labels
+    wsM.Range("AB2:AO2").Value = labels
+
+    'Peril start columns (L = Ratabase, M = Config). Filled from Tab Name Dictionary columns J and K
+    'ONLY if these columns are still empty (letters or numbers are both accepted later).
+    If lastC >= 3 Then
+        If Application.WorksheetFunction.CountA(wsM.Range("L3:M" & lastC)) = 0 Then
+            wsM.Range("L3:L" & lastC).Formula = _
+                "=IFERROR(VLOOKUP(C3,'Tab Name Dictionary'!$C:$J,8,0),"""")"
+            wsM.Range("M3:M" & lastC).Formula = _
+                "=IFERROR(VLOOKUP(C3,'Tab Name Dictionary'!$C:$K,9,0),"""")"
+            wsM.Range("L3:M" & lastC).Value = wsM.Range("L3:M" & lastC).Value
+        End If
+    End If
+
+    'Convert column letters to column indexes.
+    wsM.Range("P3:AA3").Formula = "=COLUMN(INDIRECT(P$1&1))"
+    wsM.Range("P3:AA3").Value = wsM.Range("P3:AA3").Value
+    wsM.Range("AB3:AO3").Formula = "=COLUMN(INDIRECT(AB$1&1))"
+    wsM.Range("AB3:AO3").Value = wsM.Range("AB3:AO3").Value
+
+    'Import data from all Ratabase workbooks in the folder.
+    For k = 1 To nFiles
+        Set wbImport = Workbooks.Open(ff & "\" & fList(k), ReadOnly:=True, UpdateLinks:=0)
+        For Each ws In wbImport.Worksheets
+            ws.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+        Next ws
+        wbImport.Close SaveChanges:=False
+    Next k
+
+    'Rename imported tabs based on the master-list mapping.
+    rowsUsed = wsM.UsedRange.Rows.Count
+    p = 1
+    For Each ws In ThisWorkbook.Worksheets
+        If p <= rowsUsed Then
+            v = wsM.Cells(p, 5).Value
+            If Not IsError(v) Then
+                If Len(CStr(v)) > 0 Then
+                    On Error Resume Next
+                    ws.Name = CStr(v)
+                    On Error GoTo 0
+                End If
+            End If
+        End If
+        p = p + 1
+    Next ws
+
+    ThisWorkbook.Activate
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' RBTab: SUM FIELDS IN RATABASE TABLES
+'---------------------------------------------------------
+Public Sub RBTab()
+
+    Dim wsM As Worksheet
+    Dim sh As Worksheet
+    Dim i As Long, j As Long, k As Long
+    Dim LastFile As Long, LastRow As Long
+    Dim lb As Long, ub As Long, lb2 As Long, outCol As Long
+    Dim cat As String, a As String
+    Dim v As Variant
+    Dim coltotal As Variant
+
+    Application.DisplayAlerts = False
+    Set wsM = ThisWorkbook.Worksheets("MasterList")
+
+    LastFile = wsM.UsedRange.Rows(wsM.UsedRange.Rows.Count).Row
+
+    For i = 1 To LastFile - 2
+
+        v = wsM.Cells(i + 2, "E").Value
+        If Not IsError(v) Then
+            a = CStr(v)
+            If SheetExists(ThisWorkbook, a) Then
+
+                Set sh = ThisWorkbook.Worksheets(a)
+                LastRow = sh.UsedRange.Rows(sh.UsedRange.Rows.Count).Row
+
+                lb = ColNum(wsM.Cells(i + 2, "H").Value)
+                ub = ColNum(wsM.Cells(i + 2, "I").Value)
+                lb2 = ColNum(wsM.Cells(i + 2, "L").Value)
+
+                If lb > 0 And ub >= lb Then
+                    sh.Range(sh.Cells(2, lb), sh.Cells(LastRow, ub)).Value = _
+                        sh.Range(sh.Cells(2, lb), sh.Cells(LastRow, ub)).Value
+                End If
+
+                cat = ""
+                v = wsM.Cells(i + 2, "G").Value
+                If Not IsError(v) Then cat = LCase$(Trim$(CStr(v)))
+
+                If (cat = "peril" Or cat = "multi") And lb2 > 0 Then
+                    k = PerilOffset(lb2)
+                    For j = lb2 To (lb2 + 13)
+                        outCol = j + k + 8
+                        If j <= 16384 And outCol <= 16384 Then
+                            coltotal = Application.Sum(sh.Range(sh.Cells(2, j), sh.Cells(LastRow, j)))
+                            wsM.Cells(i + 2, outCol).Value = coltotal
+                        End If
+                    Next j
+                End If
+
+            End If
+        End If
+
+    Next i
+
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' CONFIG: SUM FIELDS IN CONFIG TABS
+'---------------------------------------------------------
+Public Sub Config(ByVal conf As String)
+
+    Dim wsM As Worksheet
+    Dim sh As Worksheet
+    Dim wb As Workbook
+    Dim i As Long, j As Long, k As Long
+    Dim LastFile As Long, LastRow As Long
+    Dim lb As Long, ub As Long, lb2 As Long, outCol As Long
+    Dim cat As String, a As String
+    Dim v As Variant
+    Dim coltotal As Variant
+
+    Application.DisplayAlerts = False
+    Set wsM = ThisWorkbook.Worksheets("MasterList")
+
+    LastFile = wsM.UsedRange.Rows(wsM.UsedRange.Rows.Count).Row
+
+    Set wb = Workbooks.Open(conf, ReadOnly:=True, UpdateLinks:=0)
+
+    For i = 1 To LastFile - 2
+
+        Set sh = Nothing
+        v = wsM.Cells(i + 2, "E").Value
+        If Not IsError(v) Then
+            a = CStr(v)
+            If SheetExists(wb, a) Then Set sh = wb.Worksheets(a)
+        End If
+
+        If Not sh Is Nothing Then
+
+            LastRow = sh.UsedRange.Rows(sh.UsedRange.Rows.Count).Row
+
+            lb = ColNum(wsM.Cells(i + 2, "J").Value)
+            ub = ColNum(wsM.Cells(i + 2, "K").Value)
+            lb2 = ColNum(wsM.Cells(i + 2, "M").Value)
+
+            If lb > 0 And ub >= lb Then
+                sh.Range(sh.Cells(2, lb), sh.Cells(LastRow, ub)).Value = _
+                    sh.Range(sh.Cells(2, lb), sh.Cells(LastRow, ub)).Value
+            End If
+
+            cat = ""
+            v = wsM.Cells(i + 2, "G").Value
+            If Not IsError(v) Then cat = LCase$(Trim$(CStr(v)))
+
+            If (cat = "peril" Or cat = "multi") And lb2 > 0 Then
+                k = PerilOffset(lb2)
+                For j = lb2 To (lb2 + 13)
+                    outCol = j + k + 22
+                    If j <= 16384 And outCol <= 16384 Then
+                        coltotal = Application.Sum(sh.Range(sh.Cells(2, j), sh.Cells(LastRow, j)))
+                        wsM.Cells(i + 2, outCol).Value = coltotal
+                    End If
+                Next j
+            End If
+
+        End If
+
+        Set sh = Nothing
+    Next i
+
+    wb.Close SaveChanges:=False
+    ThisWorkbook.Activate
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' PERIL_MULTI: CREATE PERIL AND MULTI CATEGORY REPORT
+'---------------------------------------------------------
+Public Sub Peril_Multi()
+
+    Dim wsM As Worksheet
+    Dim wsP As Worksheet
+    Dim lastM As Long
+    Dim r As Long
+    Dim outR As Long
+    Dim cat As String
+    Dim v As Variant
+
+    Application.DisplayAlerts = False
+
+    DeleteSheetIfExists "Peril_Multi"
+    Set wsM = ThisWorkbook.Worksheets("MasterList")
+    Set wsP = ThisWorkbook.Worksheets.Add(After:=wsM)
+    wsP.Name = "Peril_Multi"
+
+    'Headers
+    wsP.Range("A1").Value = "Ratabase Table"
+    wsP.Range("B1").Value = "Config Tab"
+    wsP.Range("C1").Value = "Type"
+    wsP.Range("D1:AE1").Value = wsM.Range("N2:AO2").Value
+    wsP.Range("R1:AE1").Value = wsP.Range("D1:Q1").Value
+    wsP.Range("AF1:AS1").Value = wsP.Range("D1:Q1").Value
+    wsP.Range("AT1").Value = "Ratabase Sum"
+    wsP.Range("AU1").Value = "Config Sum"
+    wsP.Range("AV1").Value = "Matches"
+    wsP.Range("AW1").Value = "Peril_Product"
+    wsP.Range("AX1").Value = "Comments"
+
+    'Copy only rows where Category (column G) = Multi or Peril
+    lastM = wsM.Cells(wsM.Rows.Count, "C").End(xlUp).Row
+    outR = 1
+    For r = 2 To lastM
+        cat = ""
+        v = wsM.Cells(r, "G").Value
+        If Not IsError(v) Then cat = LCase$(Trim$(CStr(v)))
+        If cat = "multi" Or cat = "peril" Then
+            outR = outR + 1
+            wsP.Cells(outR, 1).Value = wsM.Cells(r, "C").Value
+            wsP.Cells(outR, 2).Value = wsM.Cells(r, "E").Value
+            wsP.Cells(outR, 3).Value = wsM.Cells(r, "G").Value
+            wsP.Range(wsP.Cells(outR, 4), wsP.Cells(outR, 31)).Value = _
+                wsM.Range(wsM.Cells(r, "N"), wsM.Cells(r, "AO")).Value
+        End If
+    Next r
+
+    If outR >= 2 Then
+        'Peril-by-peril match (1 / 0)
+        wsP.Range("AF2:AS" & outR).Formula = "=IFERROR(IF(ROUND(D2,4)=ROUND(R2,4),1,0),0)"
+        'Overall sums and match
+        wsP.Range("AT2:AT" & outR).Formula = "=SUM(D2:Q2)"
+        wsP.Range("AU2:AU" & outR).Formula = "=SUM(R2:AE2)"
+        wsP.Range("AV2:AV" & outR).Formula = "=IFERROR(IF(ROUND(AT2,4)=ROUND(AU2,4),1,0),0)"
+        'Product of peril matches
+        wsP.Range("AW2:AW" & outR).Formula = "=PRODUCT(AF2:AS2)"
+        'Comments
+        wsP.Range("AX2:AX" & outR).Formula = _
+            "=IF(AND(AV2=1,AW2=1),""Validated"",IF(AND(AV2=1,AW2=0),""Check order of perils - Overall sum match"",IF(AV2=0,""Manual Validation Required"",""Manual validation required"")))"
+        'Paste as values
+        wsP.Range("AF2:AX" & outR).Value = wsP.Range("AF2:AX" & outR).Value
+    End If
+
+    wsP.Range("A1").Select
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' REPORT: CREATE REPORT FOR VARIABLES OTHER THAN CONSTANTS
+'---------------------------------------------------------
+Public Sub Report()
+
+    Dim wsP As Worksheet
+    Dim wsR As Worksheet
+    Dim lastP As Long
+    Dim n As Long
+
+    Application.DisplayAlerts = False
+
+    DeleteSheetIfExists "Report"
+    Set wsP = ThisWorkbook.Worksheets("Peril_Multi")
+    Set wsR = ThisWorkbook.Worksheets.Add(After:=wsP)
+    wsR.Name = "Report"
+
+    lastP = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).Row
+    n = lastP - 1                       'number of data rows
+
+    If n >= 1 Then
+        wsR.Range("B4").Resize(n, 1).Value = wsP.Range("A2").Resize(n, 1).Value
+        wsR.Range("C4").Resize(n, 1).Value = wsP.Range("B2").Resize(n, 1).Value
+        wsR.Range("D4").Resize(n, 1).Value = wsP.Range("AT2").Resize(n, 1).Value
+        wsR.Range("E4").Resize(n, 1).Value = wsP.Range("AU2").Resize(n, 1).Value
+        wsR.Range("F4").Resize(n, 1).Value = wsP.Range("AV2").Resize(n, 1).Value
+        wsR.Range("G4").Resize(n, 1).Value = wsP.Range("AX2").Resize(n, 1).Value
+        wsR.Range("B4:F" & (3 + n)).Columns.AutoFit
+    End If
+
+    wsR.Range("B3").Value = "Ratabase Table Name"
+    wsR.Range("C3").Value = "Config Tab Name"
+    wsR.Range("D3").Value = "Ratabase Sum"
+    wsR.Range("E3").Value = "Config Sum"
+    wsR.Range("F3").Value = "Matches"
+    wsR.Range("G3").Value = "Comments"
+
+    FormatReportSheet wsR, 3 + n, "Final Report"
+
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' CONS: CREATE BASE REPORT FOR CONSTANT VARIABLES
+'---------------------------------------------------------
+Public Sub Cons()
+
+    Dim wsC As Worksheet
+    Dim wsK As Worksheet
+    Dim lastK As Long
+    Dim lastC As Long
+
+    Application.DisplayAlerts = False
+
+    DeleteSheetIfExists "Constant Report"
+    Set wsK = ThisWorkbook.Worksheets("Constants")
+
+    If SheetExists(ThisWorkbook, "Report") Then
+        Set wsC = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets("Report"))
+    Else
+        Set wsC = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    End If
+    wsC.Name = "Constant Report"
+
+    wsC.Range("A1").Value = "Constant Name"
+    wsC.Range("B1").Value = "Config Tab Name"
+    wsC.Range("C1").Value = "Ratabase Value"
+    wsC.Range("D1").Value = "Category"
+    wsC.Range("E1").Value = "Config Value"
+
+    'Constant names = Constants!E1 down to the end of the list
+    If IsEmpty(wsK.Range("E2").Value) Then
+        lastK = 1
+    Else
+        lastK = wsK.Range("E1").End(xlDown).Row
+    End If
+    wsC.Range("A2").Resize(lastK, 1).Value = wsK.Range("E1").Resize(lastK, 1).Value
+    lastC = lastK + 1
+
+    wsC.Range("B2:B" & lastC).FormulaR1C1 = _
+        "=VLOOKUP(RC[-1],'Tab Name Dictionary'!C[1]:C[2],2,0)"
+
+    wsC.Range("C2:C" & lastC).FormulaR1C1 = _
+        "=VLOOKUP(RC[-2],Constants!C[2]:C[8],7,0)"
+    wsC.Range("C2:C" & lastC).Value = wsC.Range("C2:C" & lastC).Value   'paste as values
+
+    wsC.Range("D2:D" & lastC).FormulaR1C1 = _
+        "=VLOOKUP(RC[-3],'Tab Name Dictionary'!C[-1]:C[1],3,0)"
+
+    wsC.Range("A1").Select
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' CONFIG2: EXTRACT CONSTANT VALUES FROM CONFIG WORKBOOK
+'---------------------------------------------------------
+Public Sub Config2(ByVal conf As String)
+
+    Dim wsK As Worksheet
+    Dim sh As Worksheet
+    Dim wb As Workbook
+    Dim i As Long
+    Dim LastFile As Long, LastRow As Long
+    Dim a As String, cat As String
+    Dim vB As Variant, vD As Variant
+    Dim wtot As Variant
+
+    Application.DisplayAlerts = False
+
+    Set wsK = ThisWorkbook.Worksheets("Constant Report")
+    LastFile = wsK.UsedRange.Rows(wsK.UsedRange.Rows.Count).Row
+
+    Set wb = Workbooks.Open(conf, ReadOnly:=True, UpdateLinks:=0)
+
+    For i = 1 To LastFile - 1
+
+        Set sh = Nothing
+        vB = wsK.Cells(i + 1, "B").Value
+        vD = wsK.Cells(i + 1, "D").Value
+
+        If Not IsError(vB) Then
+            a = CStr(vB)
+            cat = ""
+            If Not IsError(vD) Then cat = LCase$(Trim$(CStr(vD)))
+            If SheetExists(wb, a) Then Set sh = wb.Worksheets(a)
+        End If
+
+        If Not sh Is Nothing Then
+
+            LastRow = sh.UsedRange.Rows(sh.UsedRange.Rows.Count).Row
+
+            sh.Range(sh.Cells(2, "B"), sh.Cells(LastRow, "B")).Value = _
+                sh.Range(sh.Cells(2, "B"), sh.Cells(LastRow, "B")).Value
+
+            wtot = Application.Sum(sh.Range(sh.Cells(2, "B"), sh.Cells(LastRow, "B")))
+
+            If cat = "other" Then
+                wsK.Cells(i + 1, "E").Value = ""
+            ElseIf cat = "single" Or cat = "multi" Then
+                wsK.Cells(i + 1, "E").Value = wtot
+            Else
+                wsK.Cells(i + 1, "E").Value = ""
+            End If
+
+        End If
+
+        Set sh = Nothing
+    Next i
+
+    wb.Close SaveChanges:=False
+    ThisWorkbook.Activate
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' CONSREP: CREATE FINAL CONSTANT REPORT
+'---------------------------------------------------------
+Public Sub ConsRep()
+
+    Dim wsK As Worksheet
+    Dim wsR As Worksheet
+    Dim lastK As Long
+    Dim c As Range
+
+    Application.DisplayAlerts = False
+
+    DeleteSheetIfExists "Report-2"
+    Set wsK = ThisWorkbook.Worksheets("Constant Report")
+    Set wsR = ThisWorkbook.Worksheets.Add(After:=wsK)
+    wsR.Name = "Report-2"
+
+    'Remove Category column, then copy the 4 remaining columns as values
+    wsK.Columns("D:D").Delete Shift:=xlToLeft
+    lastK = wsK.Cells(wsK.Rows.Count, "A").End(xlUp).Row
+    If lastK < 1 Then lastK = 1
+    wsR.Range("A1").Resize(lastK, 4).Value = wsK.Range("A1").Resize(lastK, 4).Value
+
+    wsR.Range("A1").Value = "Constant Name"
+    wsR.Range("E1").Value = "Matches"
+    wsR.Range("F1").Value = "Comments"
+
+    If lastK >= 2 Then
+
+        wsR.Range("E2:E" & lastK).FormulaR1C1 = "=RC[-2]=RC[-1]"
+        wsR.Range("E2:E" & lastK).Value = wsR.Range("E2:E" & lastK).Value
+
+        wsR.Range("F2:F" & lastK).FormulaR1C1 = _
+            "=IF(TRIM(RC[-1])=""TRUE"",""Validated"",IF(RC[-2]="""",""Not available in Config"",""Manual Validation Required""))"
+        wsR.Range("F2:F" & lastK).Value = wsR.Range("F2:F" & lastK).Value
+
+        'TRUE -> 1, FALSE -> 0
+        For Each c In wsR.Range("E2:E" & lastK).Cells
+            If VarType(c.Value) = vbBoolean Then c.Value = IIf(c.Value, 1, 0)
+        Next c
+
+    End If
+
+    'Layout: shift right by one column, two blank rows on top (headers on row 3)
+    wsR.Columns("A:A").Insert Shift:=xlToRight
+    wsR.Rows("1:2").Insert Shift:=xlDown
+
+    FormatReportSheet wsR, lastK + 2, ""
+
+    wsR.Name = "Report-2"
+    Application.DisplayAlerts = True
+
+End Sub
+
+'---------------------------------------------------------
+' SAVETOFOLDER: SAVE BOTH REPORT SHEETS TO A NEW FILE
+'---------------------------------------------------------
+Public Sub savetoFolder()
+
+    Dim wbNew As Workbook
+    Dim sFileSaveName As Variant
+
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+
+    ThisWorkbook.Sheets(Array("Report", "Report-2")).Copy
+    Set wbNew = ActiveWorkbook
+
+    sFileSaveName = Application.GetSaveAsFilename( _
+        InitialFileName:="Report", _
+        FileFilter:="Excel Files (*.xlsx), *.xlsx")
+
+    If VarType(sFileSaveName) = vbBoolean Then
+        wbNew.Close SaveChanges:=False
+    Else
+        wbNew.SaveAs Filename:=CStr(sFileSaveName), FileFormat:=xlOpenXMLWorkbook
+    End If
+
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+
+End Sub
