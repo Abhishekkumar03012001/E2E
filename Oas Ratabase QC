@@ -79,26 +79,49 @@ Private Function PerilOffset(ByVal lb2 As Long) As Long
     End Select
 End Function
 
+' File name without extension
+Private Function BaseFileName(ByVal fn As String) As String
+    BaseFileName = fn
+    If InStrRev(fn, ".") > 1 Then BaseFileName = Left$(fn, InStrRev(fn, ".") - 1)
+End Function
+
+' Is this key present in column C of the Tab Name Dictionary?
+Private Function KeyInDictionary(ByVal wsD As Worksheet, ByVal key As String) As Boolean
+    Dim res As Variant
+    If Len(Trim$(key)) = 0 Then Exit Function
+    On Error Resume Next
+    res = Application.Match(key, wsD.Columns("C"), 0)
+    If Err.Number <> 0 Then
+        Err.Clear
+        res = CVErr(xlErrNA)
+    End If
+    On Error GoTo 0
+    KeyInDictionary = Not IsError(res)
+End Function
+
 ' Picks the ONE sheet of a Ratabase file that is used in the comparison:
-'   1) sheet named like the table name extracted from the file name
-'   2) sheet named like the mapped name from the Tab Name Dictionary
+'   1) sheet named like the key (table name / file name), the file base name or the mapped name
+'   2) for the Constants file: any sheet with "constant" in its name
 '   3) the only sheet, or else the first visible sheet (a note is logged)
 Private Function PickCompareSheet(ByVal wb As Workbook, ByVal keyName As String, _
                                   ByVal mappedName As String, ByVal fileName As String) As Worksheet
     Dim ws As Worksheet
+    Dim cand As Variant
 
-    If Len(keyName) > 0 Then
-        For Each ws In wb.Worksheets
-            If StrComp(Trim$(ws.Name), Trim$(keyName), vbTextCompare) = 0 Then
-                Set PickCompareSheet = ws
-                Exit Function
-            End If
-        Next ws
-    End If
+    For Each cand In Array(keyName, BaseFileName(fileName), mappedName)
+        If Len(Trim$(CStr(cand))) > 0 Then
+            For Each ws In wb.Worksheets
+                If StrComp(Trim$(ws.Name), Trim$(CStr(cand)), vbTextCompare) = 0 Then
+                    Set PickCompareSheet = ws
+                    Exit Function
+                End If
+            Next ws
+        End If
+    Next cand
 
-    If Len(mappedName) > 0 Then
+    If StrComp(mappedName, "Constants", vbTextCompare) = 0 Then
         For Each ws In wb.Worksheets
-            If StrComp(Trim$(ws.Name), Trim$(mappedName), vbTextCompare) = 0 Then
+            If InStr(1, ws.Name, "constant", vbTextCompare) > 0 Then
                 Set PickCompareSheet = ws
                 Exit Function
             End If
@@ -113,7 +136,7 @@ Private Function PickCompareSheet(ByVal wb As Workbook, ByVal keyName As String,
     For Each ws In wb.Worksheets
         If ws.Visible = xlSheetVisible Then
             Set PickCompareSheet = ws
-            LogMsg "File '" & fileName & "': no sheet matched '" & keyName & "'; first sheet '" & ws.Name & "' was used."
+            LogMsg "File '" & fileName & "' has several sheets; first visible sheet '" & ws.Name & "' was used."
             Exit Function
         End If
     Next ws
@@ -194,13 +217,16 @@ End Sub
 Public Sub MasterCode(ByVal ff As String)
 
     Dim wsM As Worksheet
+    Dim wsD As Worksheet
     Dim wsSrc As Worksheet
     Dim wsNew As Worksheet
     Dim wbImport As Workbook
     Dim fName As String
+    Dim fn As String
     Dim fList() As String
     Dim nFiles As Long
     Dim k As Long
+    Dim r As Long
     Dim lastA As Long
     Dim lastC As Long
     Dim vKey As Variant
@@ -212,7 +238,14 @@ Public Sub MasterCode(ByVal ff As String)
     Application.DisplayAlerts = False
 
     If Right$(ff, 1) = "\" Then ff = Left$(ff, Len(ff) - 1)
+
+    If Not SheetExists(ThisWorkbook, "MasterList") Then _
+        Err.Raise vbObjectError + 1002, "MasterCode", "Sheet 'MasterList' was not found in this workbook."
+    If Not SheetExists(ThisWorkbook, "Tab Name Dictionary") Then _
+        Err.Raise vbObjectError + 1003, "MasterCode", "Sheet 'Tab Name Dictionary' was not found in this workbook."
+
     Set wsM = ThisWorkbook.Worksheets("MasterList")
+    Set wsD = ThisWorkbook.Worksheets("Tab Name Dictionary")
 
     'Get all Excel file names from the selected folder (same list used for listing and importing).
     nFiles = 0
@@ -239,6 +272,22 @@ Public Sub MasterCode(ByVal ff As String)
     wsM.Range("B1:B" & lastA).Formula = _
         "=IFERROR(LEFT(MID(A1,FIND(""("",A1)+2,LEN(A1)),FIND(""="",A1)-FIND(""("",A1)-2),A1)"
     wsM.Range("C1:C" & lastA).Value = wsM.Range("B1:B" & lastA).Value
+
+    'Dictionary key per file: the extracted table name. If that is not in the dictionary
+    '(e.g. the Constants file, which is mapped by FILE NAME), use the full file name,
+    'then the file name without extension.
+    For r = 2 To lastA
+        fn = Trim$(CStr(wsM.Cells(r, 1).Value))
+        If Len(fn) > 0 Then
+            If Not KeyInDictionary(wsD, CStr(wsM.Cells(r, 3).Value)) Then
+                If KeyInDictionary(wsD, fn) Then
+                    wsM.Cells(r, 3).Value = fn
+                ElseIf KeyInDictionary(wsD, BaseFileName(fn)) Then
+                    wsM.Cells(r, 3).Value = BaseFileName(fn)
+                End If
+            End If
+        End If
+    Next r
 
     'Prepare the Tab Name Dictionary.
     wsM.Rows("1:2").Insert Shift:=xlDown
@@ -306,6 +355,13 @@ Public Sub MasterCode(ByVal ff As String)
         If Not IsError(vKey) Then sKey = CStr(vKey)
         If Not IsError(vMap) Then sMap = CStr(vMap)
 
+        'Constants file safety net: if it is still not mapped, recognise it by its file name
+        If Len(sMap) = 0 And InStr(1, fList(k), "constant", vbTextCompare) > 0 _
+           And Not SheetExists(ThisWorkbook, "Constants") Then
+            sMap = "Constants"
+            LogMsg "File '" & fList(k) & "' was not found in 'Tab Name Dictionary'; its sheet was named 'Constants' by file name."
+        End If
+
         Set wbImport = Workbooks.Open(ff & "\" & fList(k), ReadOnly:=True, UpdateLinks:=0)
         Set wsSrc = PickCompareSheet(wbImport, sKey, sMap, fList(k))
 
@@ -324,12 +380,16 @@ Public Sub MasterCode(ByVal ff As String)
                 End If
                 On Error GoTo 0
             Else
-                LogMsg "File '" & fList(k) & "': no mapped tab name in Tab Name Dictionary (sheet not renamed)."
+                LogMsg "File '" & fList(k) & "' not found in 'Tab Name Dictionary' (sheet not renamed)."
             End If
         End If
 
         wbImport.Close SaveChanges:=False
     Next k
+
+    If Not SheetExists(ThisWorkbook, "Constants") Then
+        LogMsg "No 'Constants' sheet was created. Check that Rb_ConstantTableData.xlsx is in the Database folder and spelled exactly as in 'Tab Name Dictionary'."
+    End If
 
     ThisWorkbook.Activate
     Application.DisplayAlerts = True
@@ -629,8 +689,8 @@ Public Sub Cons()
         Err.Raise vbObjectError + 1001, "Cons", _
             "The 'Constants' sheet was not found in this workbook." & vbCrLf & _
             "Sheets present: " & shList & vbCrLf & _
-            "Make sure one Ratabase file has a sheet called 'Constants', " & _
-            "or that its mapped name in 'Tab Name Dictionary' is 'Constants'."
+            "Make sure Rb_ConstantTableData.xlsx is in the Database folder and is mapped " & _
+            "to 'Constants' in 'Tab Name Dictionary'."
     End If
     kName = "'" & wsK.Name & "'"
 
