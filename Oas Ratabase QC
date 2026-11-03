@@ -1,26 +1,29 @@
-Dim ws As Worksheet
-Dim masterWs As Worksheet
 Dim cellValue As Variant
 
-Set masterWs = ThisWorkbook.Worksheets("MasterList")
+cellValue = ThisWorkbook.Worksheets("MasterList").Cells(i + 2, "E").Value
 
-For Each ws In ThisWorkbook.Worksheets
+If IsError(cellValue) Then
+    MsgBox "Error in MasterList cell E" & i + 2, vbCritical
+    Exit Sub
+End If
 
-    cellValue = masterWs.Cells(p, 5).Value
+a = Trim$(CStr(cellValue))
 
-    If Not IsError(cellValue) Then
+If a = "" Then
+    MsgBox "Blank sheet name in MasterList cell E" & i + 2, vbCritical
+    Exit Sub
+End If
 
-        If Len(Trim$(CStr(cellValue))) > 0 Then
+Set sh = Nothing
 
-            ws.Name = CStr(cellValue)
-            p = p + 1
+On Error Resume Next
+Set sh = ThisWorkbook.Worksheets(a)
+On Error GoTo 0
 
-        End If
+If sh Is Nothing Then
+    MsgBox "Worksheet not found: " & a & vbCrLf & _
+           "MasterList cell: E" & i + 2, vbCritical
+    Exit Sub
+End If
 
-    Else
-
-        Debug.Print "Error in MasterList!E" & p
-
-    End If
-
-Next ws
+sh.Activate
