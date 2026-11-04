@@ -1,2 +1,20 @@
-Migrate the identified SOFA/SODA pages from Wiki to the appropriate Simple Renters projects in Jama, following the agreed reference template and state-specific structure.
-Validate all migrated content, cross-references and links to ensure they are correctly mapped, functional and consistent across projects.
+Hi Thomas,
+
+Good morning.
+
+Thank you for your email.
+
+We have completed the VA OAS 2.0 Ratabase vs. Config QC and attached the required report for your reference.
+
+We would like to highlight a few observations from the validation:
+
+Earthquake Tabs: The following tabs — R_O_EQCovA, R_O_EQIncrCovB, R_O_EQIncrCovC, R_O_EQYearBuilt, and R_O_LassAssessmentEQ — contain additional values in the Config file compared to the Ratabase exports for the same county codes. Since the row counts differ between the two files, we have flagged these tabs for manual validation. We have also attached a screenshot for reference.
+
+Base Amount of Insurance: We were unable to locate the "Base Amount of Insurance" field in the Config file. Therefore, this item has been flagged for manual validation.
+
+Constant Table Data: For some ConstantTable data, the corresponding sheets contain both "Yes" and "No" values. However, the ConstantTable files shared with us contain only "No" values. Accordingly, we have marked these tabs as "Validated – For No Values." We currently do not have the corresponding files for the "Yes" values. If required, we can perform the validation for the "Yes" values as well, once the relevant files are shared.
+
+Please let us know if you have any questions or need any further clarification.
+
+Regards,
+Abhishek
