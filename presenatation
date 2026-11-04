@@ -1,14 +1,1 @@
-Additionally, for the following tabs in the Constant table, we were able to validate the data using the corresponding "No" values available in the Config file; however, we could not identify the respective exports for the "Yes" values:
-- R_O_SchedComicBooksTradingCards
-- R_O_SchedOther
-- R_O_SchedBicycles
-- R_O_SchedCameras
-- R_O_SchedCoins
-- R_O_SchedFarm
-- R_O_SchedFurs
-- R_O_SchedGolfEqpmt
-- R_O_SchedGuns
-- R_O_SchedMusicalInstrument
-- R_O_SchedStamps
-- R_O_SchedSilverware
-All the above tabs have been flagged as "Validated using No field" in the QC report. We would appreciate your guidance on whether this approach is appropriate or if any further validation is required for these cases.
+Earthquake (EQ) Tabs: The following tabs – R_O_EQCovA, R_O_EQIncrCovB, R_O_EQIncrCovC, R_O_EQYearBuilt, and R_O_LassAssessmentEQ – have been flagged for Manual Validation, as we identified additional rows in the Config file that are not present in the corresponding Ratabase exports for the same county codes. For reference, we have attached "Extra EQ Rows.xlsx", which contains the details of all such additional rows identified in each respective sheet.
