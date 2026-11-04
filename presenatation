@@ -1,0 +1,53 @@
+Slide 1: Simple Renters – Current State & Gap Analysis
+Subtitle: Understanding the existing HMR3 migration approach and identifying requirements for Simple Renters.
+1. HMR3 – Existing Migration Approach
+- A Reference Project contains the baseline HMR3 template.
+- The template is copied into the respective State Project folders.
+- State-specific SOFA and SODA pages are maintained within the state projects.
+- Required SOFA/SODA content is migrated from Wiki pages to Jama using this structure.
+2. Simple Renters – Current Situation
+- A Simple Renters Reference Project exists, but the initial migration-ready template is not defined.
+- The required SOFA, SODA and component pages have not been identified or established.
+- State-specific Simple Renters project folders or destination locations are not confirmed.
+- The SOFAs and SODAs required for migration are yet to be finalized.
+3. Key Gap
+Simple Renters requires an agreed baseline template, state-specific project structure and confirmed migration scope before we can begin the migration.
+
+
+
+
+
+Slide 2: Proposed Migration Workflow & Client Clarifications
+Subtitle: Proposed approach for migrating Simple Renters SOFA/SODA content from Wiki to Jama.
+1. Proposed Migration Workflow
+Step	Activity
+1	Confirm the SOFA/SODA migration scope.
+2	Define the initial Simple Renters template, including component pages.
+3	Identify or create state-specific Simple Renters project folders.
+4	Perform SOFA mapping and SODA migration.
+5	Validate migrated content, page structure and links.
+
+2. Client Clarifications Required
+A. Project Structure
+- Should we create state-specific Simple Renters project folders?
+- Where should these projects be located?
+- Is there an existing project structure we should follow?
+B. SOFA/SODA Migration Scope
+- Which specific SOFAs need to be migrated?
+- Are there any SOFAs apart from HMR3 that we should consider?
+- Which SODAs are required for Simple Renters?
+- Is the migration scope state-specific?
+C. Initial Template & Component Pages
+- Which SOFA and SODA pages should be included in the initial template?
+- Which component pages are required?
+- Can the client provide the required template or reference documentation?
+D. Migration Approach
+- Should SOFA pages be created separately for each state?
+- Should SODA migration be performed for all states or only when requested?
+- What information and tables need to be copied from the Wiki pages?
+3. Expected Outcome
+- Client-approved migration workflow.
+- Confirmed initial template and component-page structure.
+- Identified state-specific project locations.
+- Finalized SOFA/SODA migration scope.
+- Clear next steps for migration setup and execution.
