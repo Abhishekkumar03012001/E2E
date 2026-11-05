@@ -1,16 +1,10 @@
-1. Access Reference Project
-- Log in to Jama.
-- Navigate to Change Projects → Reference Projects.
-- Select PL Safeco Property HMR3 Franchise.
-2. Duplicate SOFAs
-- Click on Reuse Items.
-- Duplicate the required SOFAs.
-- Select the target state ID for duplication.
-3. Populate State-Specific Data
-- Navigate to Change Product and select the target state.
-- Refer to the provided wiki-page documentation.
-- Copy the required data into the duplicated SOFAs/SODAs.
-4. Create Filters & Dashboard
-- Create the required filters.
-- Configure the dashboard using the filters.
-- Complete the state-specific setup and validation.
+1. Template
+Establish a standardized Simple Renters template to support migration.
+2. Project Structure
+Identify required SOFAs, SODAs, component pages, and Usage Type sets.
+3. Process Documentation
+Document migration steps based on the existing HMR 3.0 SODA migration process.
+4. Migration Approach
+Consolidate and migrate all relevant Wiki content into the defined Jama structure.
+5. Validation
+Perform a POC to validate migrated content, page structure, and links.
