@@ -1,10 +1,5 @@
-1. Template
-A standardized Simple Renters reference template needs to be established to support the migration process.
-2. Project Structure
-Establish a reference structure to identify all required SOFAs and create the corresponding component pages with the necessary Sets (Usage Types).
-3. Process Documentation
-Prepare process documentation outlining the migration steps, following the approach used in the existing HMR 3.0 SODA Migration documentation.
-4. Migration Approach
-Identify and consolidate all relevant content that needs to be migrated into the defined template structure.
-5. Validation
-Conduct a Proof of Concept (POC) to validate the migrated content, page structure and associated links.
+Migrate the identified SOFA/SODA pages from Wiki to the appropriate Simple Renters projects in Jama, following the agreed reference template and state-specific project structure.
+
+Validate the migrated content, cross-references and associated links to ensure accurate mapping, functionality and consistency across projects.
+
+My recommendation: Use these five headings as separate workflow blocks. Keep the descriptions to 2–3 lines each. This will make the slide easier for the client to read and understand during the meeting.
