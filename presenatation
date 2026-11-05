@@ -1,1 +1,10 @@
-Earthquake (EQ) Tabs: The following tabs – R_O_EQCovA, R_O_EQIncrCovB, R_O_EQIncrCovC, R_O_EQYearBuilt, and R_O_LassAssessmentEQ – have been flagged for Manual Validation, as we identified additional rows in the Config file that are not present in the corresponding Ratabase exports for the same county codes. For reference, we have attached "Extra EQ Rows.xlsx", which contains the details of all such additional rows identified in each respective sheet.
+1. Template
+A standardized Simple Renters reference template needs to be established to support the migration process.
+2. Project Structure
+Establish a reference structure to identify all required SOFAs and create the corresponding component pages with the necessary Sets (Usage Types).
+3. Process Documentation
+Prepare process documentation outlining the migration steps, following the approach used in the existing HMR 3.0 SODA Migration documentation.
+4. Migration Approach
+Identify and consolidate all relevant content that needs to be migrated into the defined template structure.
+5. Validation
+Conduct a Proof of Concept (POC) to validate the migrated content, page structure and associated links.
