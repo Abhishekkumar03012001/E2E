@@ -1,5 +1,1 @@
-Migrate the identified SOFA/SODA pages from Wiki to the appropriate Simple Renters projects in Jama, following the agreed reference template and state-specific project structure.
-
-Validate the migrated content, cross-references and associated links to ensure accurate mapping, functionality and consistency across projects.
-
-My recommendation: Use these five headings as separate workflow blocks. Keep the descriptions to 2–3 lines each. This will make the slide easier for the client to read and understand during the meeting.
+Earthquake (EQ) Tabs: The following tabs – R_O_EQCovA, R_O_EQIncrCovB, R_O_EQIncrCovC, R_O_EQYearBuilt, and R_O_LassAssessmentEQ – have been flagged for Manual Validation, as we identified additional rows in the Config file that are not present in the corresponding Ratabase exports for the same county codes. Additionally, we observed that all the extra rows correspond to the same set of county codes (010, 074, 078, 079, and 096), which are repeated across all the above-mentioned sheets. For reference, we have attached "Extra EQ Rows.xlsx", which contains details of all such additional rows identified in each respective sheet.
