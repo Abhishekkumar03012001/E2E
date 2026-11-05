@@ -1,1 +1,16 @@
-Earthquake (EQ) Tabs: The following tabs – R_O_EQCovA, R_O_EQIncrCovB, R_O_EQIncrCovC, R_O_EQYearBuilt, and R_O_LassAssessmentEQ – have been flagged for Manual Validation, as we identified additional rows in the Config file that are not present in the corresponding Ratabase exports for the same county codes. Additionally, we observed that all the extra rows correspond to the same set of county codes (010, 074, 078, 079, and 096), which are repeated across all the above-mentioned sheets. For reference, we have attached "Extra EQ Rows.xlsx", which contains details of all such additional rows identified in each respective sheet.
+1. Access Reference Project
+- Log in to Jama.
+- Navigate to Change Projects → Reference Projects.
+- Select PL Safeco Property HMR3 Franchise.
+2. Duplicate SOFAs
+- Click on Reuse Items.
+- Duplicate the required SOFAs.
+- Select the target state ID for duplication.
+3. Populate State-Specific Data
+- Navigate to Change Product and select the target state.
+- Refer to the provided wiki-page documentation.
+- Copy the required data into the duplicated SOFAs/SODAs.
+4. Create Filters & Dashboard
+- Create the required filters.
+- Configure the dashboard using the filters.
+- Complete the state-specific setup and validation.
