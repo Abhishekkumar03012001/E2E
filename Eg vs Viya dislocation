@@ -1,0 +1,494 @@
+
+Option Explicit
+
+Sub Compare_Dislocation_Files()
+
+    Dim wb1 As Workbook, wb2 As Workbook, wbOut As Workbook
+    Dim ws1 As Worksheet, ws2 As Worksheet, wsOut As Worksheet
+
+    Dim file1 As Variant, file2 As Variant
+    Dim folderPath As String, outputPath As String
+
+    Dim dictCat1 As Object, dictCat2 As Object
+    Dim dictCol1 As Object, dictCol2 As Object
+    Dim dictAllCat As Object, dictAllCol As Object
+
+    Dim catList As Collection, colList As Collection
+
+    Dim lastRow1 As Long, lastRow2 As Long
+    Dim lastCol1 As Long, lastCol2 As Long
+
+    Dim r As Long, c As Long
+    Dim outRow As Long, outputCol As Long
+    Dim row1 As Long, row2 As Long
+    Dim col1 As Long, col2 As Long
+
+    Dim catKey As String, headerName As String
+    Dim catName As Variant, colName As Variant
+
+    Dim val1 As Variant, val2 As Variant
+    Dim lastOutputCol As Long
+
+    Dim oldCalc As XlCalculation
+    Dim settingsChanged As Boolean
+    Dim errorMessage As String
+
+    On Error GoTo ErrorHandler
+
+    ' Save Excel settings
+    oldCalc = Application.Calculation
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    settingsChanged = True
+
+    ' Check macro workbook location
+    If ThisWorkbook.Path = "" Then
+        MsgBox "Please save the macro workbook first.", vbExclamation
+        GoTo CleanExit
+    End If
+
+    folderPath = ThisWorkbook.Path
+
+    ' Select File 1
+    file1 = Application.GetOpenFilename( _
+        "Excel Files (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , _
+        "Select First Excel File")
+
+    If VarType(file1) = vbBoolean Then GoTo CleanExit
+
+    ' Select File 2
+    file2 = Application.GetOpenFilename( _
+        "Excel Files (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , _
+        "Select Second Excel File")
+
+    If VarType(file2) = vbBoolean Then GoTo CleanExit
+
+    If StrComp(CStr(file1), CStr(file2), vbTextCompare) = 0 Then
+        MsgBox "Please select two different files.", vbExclamation
+        GoTo CleanExit
+    End If
+
+    ' Open input workbooks
+    Set wb1 = Workbooks.Open(CStr(file1), ReadOnly:=True)
+    Set wb2 = Workbooks.Open(CStr(file2), ReadOnly:=True)
+
+    ' Get Dislocation sheets
+    On Error Resume Next
+    Set ws1 = wb1.Worksheets("Dislocation")
+    Set ws2 = wb2.Worksheets("Dislocation")
+    On Error GoTo ErrorHandler
+
+    If ws1 Is Nothing Or ws2 Is Nothing Then
+        MsgBox "Dislocation sheet not found in one or both files.", vbCritical
+        GoTo CleanExit
+    End If
+
+    ' Get last used rows and columns
+    lastRow1 = ws1.Cells(ws1.Rows.Count, 1).End(xlUp).Row
+    lastRow2 = ws2.Cells(ws2.Rows.Count, 1).End(xlUp).Row
+
+    lastCol1 = ws1.Cells(1, ws1.Columns.Count).End(xlToLeft).Column
+    lastCol2 = ws2.Cells(1, ws2.Columns.Count).End(xlToLeft).Column
+
+    ' Create dictionaries
+    Set dictCat1 = CreateObject("Scripting.Dictionary")
+    Set dictCat2 = CreateObject("Scripting.Dictionary")
+    Set dictCol1 = CreateObject("Scripting.Dictionary")
+    Set dictCol2 = CreateObject("Scripting.Dictionary")
+    Set dictAllCat = CreateObject("Scripting.Dictionary")
+    Set dictAllCol = CreateObject("Scripting.Dictionary")
+
+    dictCat1.CompareMode = vbTextCompare
+    dictCat2.CompareMode = vbTextCompare
+    dictCol1.CompareMode = vbTextCompare
+    dictCol2.CompareMode = vbTextCompare
+    dictAllCat.CompareMode = vbTextCompare
+    dictAllCol.CompareMode = vbTextCompare
+
+    Set catList = New Collection
+    Set colList = New Collection
+
+    ' =====================================
+    ' READ CATEGORIES FROM FILE 1
+    ' =====================================
+
+    For r = 2 To lastRow1
+
+        If Not IsError(ws1.Cells(r, 1).Value) Then
+
+            catKey = Trim(CStr(ws1.Cells(r, 1).Value))
+
+            If catKey <> "" Then
+
+                If dictCat1.Exists(catKey) Then
+                    MsgBox "Duplicate Category in File 1: " & catKey, vbCritical
+                    GoTo CleanExit
+                End If
+
+                dictCat1.Add catKey, r
+
+                If Not dictAllCat.Exists(catKey) Then
+                    dictAllCat.Add catKey, True
+                    catList.Add catKey
+                End If
+
+            End If
+
+        End If
+
+    Next r
+
+    ' =====================================
+    ' READ CATEGORIES FROM FILE 2
+    ' =====================================
+
+    For r = 2 To lastRow2
+
+        If Not IsError(ws2.Cells(r, 1).Value) Then
+
+            catKey = Trim(CStr(ws2.Cells(r, 1).Value))
+
+            If catKey <> "" Then
+
+                If dictCat2.Exists(catKey) Then
+                    MsgBox "Duplicate Category in File 2: " & catKey, vbCritical
+                    GoTo CleanExit
+                End If
+
+                dictCat2.Add catKey, r
+
+                If Not dictAllCat.Exists(catKey) Then
+                    dictAllCat.Add catKey, True
+                    catList.Add catKey
+                End If
+
+            End If
+
+        End If
+
+    Next r
+
+    ' =====================================
+    ' READ HEADERS FROM FILE 1
+    ' =====================================
+
+    For c = 2 To lastCol1
+
+        If Not IsError(ws1.Cells(1, c).Value) Then
+
+            headerName = Trim(CStr(ws1.Cells(1, c).Value))
+
+            If headerName <> "" Then
+
+                If dictCol1.Exists(headerName) Then
+                    MsgBox "Duplicate column header in File 1: " & headerName, vbCritical
+                    GoTo CleanExit
+                End If
+
+                dictCol1.Add headerName, c
+
+                If Not dictAllCol.Exists(headerName) Then
+                    dictAllCol.Add headerName, True
+                    colList.Add headerName
+                End If
+
+            End If
+
+        End If
+
+    Next c
+
+    ' =====================================
+    ' READ HEADERS FROM FILE 2
+    ' =====================================
+
+    For c = 2 To lastCol2
+
+        If Not IsError(ws2.Cells(1, c).Value) Then
+
+            headerName = Trim(CStr(ws2.Cells(1, c).Value))
+
+            If headerName <> "" Then
+
+                If dictCol2.Exists(headerName) Then
+                    MsgBox "Duplicate column header in File 2: " & headerName, vbCritical
+                    GoTo CleanExit
+                End If
+
+                dictCol2.Add headerName, c
+
+                If Not dictAllCol.Exists(headerName) Then
+                    dictAllCol.Add headerName, True
+                    colList.Add headerName
+                End If
+
+            End If
+
+        End If
+
+    Next c
+
+    If colList.Count = 0 Then
+        MsgBox "No comparison columns found.", vbExclamation
+        GoTo CleanExit
+    End If
+
+    ' =====================================
+    ' CREATE OUTPUT WORKBOOK
+    ' =====================================
+
+    Set wbOut = Workbooks.Add(xlWBATWorksheet)
+    Set wsOut = wbOut.Worksheets(1)
+
+    wsOut.Name = "Comparison"
+
+    ' Output headers
+    wsOut.Cells(1, 1).Value = "Category"
+    wsOut.Cells(1, 2).Value = "Category Status"
+
+    outputCol = 3
+
+    For Each colName In colList
+
+        headerName = CStr(colName)
+
+        wsOut.Cells(1, outputCol).Value = headerName & " - File 1"
+        wsOut.Cells(1, outputCol + 1).Value = headerName & " - File 2"
+
+        outputCol = outputCol + 2
+
+    Next colName
+
+    lastOutputCol = outputCol - 1
+
+    ' =====================================
+    ' COMPARE CATEGORIES AND VALUES
+    ' =====================================
+
+    outRow = 2
+
+    For Each catName In catList
+
+        catKey = CStr(catName)
+
+        row1 = 0
+        row2 = 0
+
+        If dictCat1.Exists(catKey) Then
+            row1 = dictCat1(catKey)
+        End If
+
+        If dictCat2.Exists(catKey) Then
+            row2 = dictCat2(catKey)
+        End If
+
+        wsOut.Cells(outRow, 1).Value = catKey
+
+        If row1 = 0 Then
+
+            wsOut.Cells(outRow, 2).Value = "Missing in File 1"
+
+        ElseIf row2 = 0 Then
+
+            wsOut.Cells(outRow, 2).Value = "Missing in File 2"
+
+        Else
+
+            wsOut.Cells(outRow, 2).Value = "Found in Both"
+
+        End If
+
+        outputCol = 3
+
+        ' Compare every column
+        For Each colName In colList
+
+            headerName = CStr(colName)
+
+            col1 = 0
+            col2 = 0
+
+            If dictCol1.Exists(headerName) Then
+                col1 = dictCol1(headerName)
+            End If
+
+            If dictCol2.Exists(headerName) Then
+                col2 = dictCol2(headerName)
+            End If
+
+            ' Get File 1 value
+            If row1 > 0 And col1 > 0 Then
+                val1 = ws1.Cells(row1, col1).Value
+                wsOut.Cells(outRow, outputCol).Value = val1
+            ElseIf row1 = 0 Then
+                wsOut.Cells(outRow, outputCol).Value = "CATEGORY MISSING"
+            Else
+                wsOut.Cells(outRow, outputCol).Value = "COLUMN MISSING"
+            End If
+
+            ' Get File 2 value
+            If row2 > 0 And col2 > 0 Then
+                val2 = ws2.Cells(row2, col2).Value
+                wsOut.Cells(outRow, outputCol + 1).Value = val2
+            ElseIf row2 = 0 Then
+                wsOut.Cells(outRow, outputCol + 1).Value = "CATEGORY MISSING"
+            Else
+                wsOut.Cells(outRow, outputCol + 1).Value = "COLUMN MISSING"
+            End If
+
+            ' Highlight both cells yellow if values differ
+            If row1 > 0 And row2 > 0 Then
+
+                If col1 = 0 Or col2 = 0 Then
+
+                    wsOut.Cells(outRow, outputCol).Interior.Color = RGB(255, 255, 0)
+                    wsOut.Cells(outRow, outputCol + 1).Interior.Color = RGB(255, 255, 0)
+
+                ElseIf Not ValuesAreEqual(val1, val2) Then
+
+                    wsOut.Cells(outRow, outputCol).Interior.Color = RGB(255, 255, 0)
+                    wsOut.Cells(outRow, outputCol + 1).Interior.Color = RGB(255, 255, 0)
+
+                End If
+
+            End If
+
+            outputCol = outputCol + 2
+
+        Next colName
+
+        ' Highlight entire row red if category is missing
+        If row1 = 0 Or row2 = 0 Then
+
+            With wsOut.Range(wsOut.Cells(outRow, 1), _
+                             wsOut.Cells(outRow, lastOutputCol))
+
+                .Interior.Color = RGB(255, 0, 0)
+                .Font.Color = RGB(255, 255, 255)
+
+            End With
+
+        End If
+
+        outRow = outRow + 1
+
+    Next catName
+
+    ' =====================================
+    ' FORMAT OUTPUT SHEET
+    ' =====================================
+
+    With wsOut
+
+        .Rows(1).Font.Bold = True
+        .Rows(1).Interior.Color = RGB(31, 78, 121)
+        .Rows(1).Font.Color = RGB(255, 255, 255)
+
+        .Range(.Cells(1, 1), _
+               .Cells(outRow - 1, lastOutputCol)).Borders.LineStyle = xlContinuous
+
+        .Rows(1).WrapText = True
+        .Columns.AutoFit
+
+        .Range(.Cells(1, 1), _
+               .Cells(outRow - 1, lastOutputCol)).AutoFilter
+
+        .Activate
+        .Range("C2").Select
+        ActiveWindow.FreezePanes = True
+
+    End With
+
+    ' =====================================
+    ' SAVE OUTPUT FILE
+    ' =====================================
+
+    outputPath = folderPath & Application.PathSeparator & _
+                 "Dislocation_Comparison.xlsx"
+
+    If Dir(outputPath) <> "" Then
+
+        If MsgBox("Dislocation_Comparison.xlsx already exists." & _
+                  vbCrLf & "Do you want to replace it?", _
+                  vbYesNo + vbQuestion) = vbNo Then
+
+            GoTo CleanExit
+
+        End If
+
+        Kill outputPath
+
+    End If
+
+    wbOut.SaveAs Filename:=outputPath, _
+                 FileFormat:=xlOpenXMLWorkbook
+
+    MsgBox "Comparison completed successfully!" & vbCrLf & vbCrLf & _
+           "Output file saved at:" & vbCrLf & outputPath, vbInformation
+
+CleanExit:
+
+    On Error Resume Next
+
+    If Not wb1 Is Nothing Then wb1.Close SaveChanges:=False
+    If Not wb2 Is Nothing Then wb2.Close SaveChanges:=False
+
+    If settingsChanged Then
+        Application.Calculation = oldCalc
+        Application.ScreenUpdating = True
+        Application.EnableEvents = True
+        Application.DisplayAlerts = True
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+
+    errorMessage = Err.Description
+
+    MsgBox "Error occurred: " & errorMessage, vbCritical
+
+    Resume CleanExit
+
+End Sub
+
+
+' =====================================
+' FUNCTION TO COMPARE TWO VALUES
+' =====================================
+
+Function ValuesAreEqual(ByVal a As Variant, _
+                        ByVal b As Variant) As Boolean
+
+    If IsError(a) Or IsError(b) Then
+        ValuesAreEqual = False
+        Exit Function
+    End If
+
+    ' Treat blank cells and empty strings as equal
+    If (IsEmpty(a) Or CStr(a) = "") And _
+       (IsEmpty(b) Or CStr(b) = "") Then
+
+        ValuesAreEqual = True
+        Exit Function
+
+    End If
+
+    ' Numeric comparison
+    If IsNumeric(a) And IsNumeric(b) Then
+
+        ValuesAreEqual = (CDbl(a) = CDbl(b))
+
+    Else
+
+        ' Text comparison (case-sensitive)
+        ValuesAreEqual = _
+            (StrComp(CStr(a), CStr(b), vbBinaryCompare) = 0)
+
+    End If
+
+End Function
