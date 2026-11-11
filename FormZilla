@@ -1,0 +1,222 @@
+"""
+FormZilla scraper: for every Line of Business (IL, Liberty Agency), get results,
+download each form's PDF, and record the Form Numbers whose PDF contains
+"Springfield" along with the page numbers.
+
+Install:
+    pip install selenium requests pymupdf pandas openpyxl
+
+Run:
+    python formzilla_springfield.py
+(Log in manually in the browser window when asked, then press Enter.)
+"""
+
+import os
+import re
+import time
+import requests
+import fitz  # PyMuPDF
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+# ----------------------------- CONFIG ---------------------------------------
+SITE_URL = "https://doczilla.libertyec.com"   # <- put your exact link here
+BRAND = "Liberty Agency"
+STATE = "IL"
+SEARCH_TEXT = "Springfield"
+OUTPUT_XLSX = "springfield_forms.xlsx"
+PDF_FOLDER = "downloaded_pdfs"
+WAIT = 20
+
+# Line of Business options (from your screenshot). Set to None to auto-read.
+LINES_OF_BUSINESS = [
+    "Condo", "Dwelling fire", "Earthquake", "Homeowners", "Motorcycle",
+    "Personal auto", "Personal umbrella", "Recreational vehicle",
+    "Renters", "Watercraft",
+]
+
+# XPaths - adjust if the page structure differs. Press F12 > right-click
+# element > Copy > Copy XPath to get exact ones.
+X_FORMZILLA_TAB = "//a[normalize-space()='FormZilla'] | //*[normalize-space(text())='FormZilla']"
+# The "Select" button next to a label (label text -> following Select button)
+def x_select_button(label):
+    return (f"(//*[contains(normalize-space(text()),'{label}')]"
+            f"/following::*[normalize-space(text())='Select'][1])")
+def x_menu_item(text):
+    return (f"//*[(self::a or self::li or self::span or self::div or self::button) "
+            f"and normalize-space(text())='{text}']")
+X_STATE_INPUT = ("(//*[contains(normalize-space(text()),'State')]"
+                 "/following::input[1])")
+X_GET_RESULTS = "//*[self::button or self::input or self::a][contains(normalize-space(.),'Get Results') or @value='Get Results']"
+X_RESULT_ROWS = "//table//tbody/tr[.//a]"
+X_NEXT_PAGE = "//a[contains(@class,'next') or normalize-space(.)='Next' or normalize-space(.)='>']"
+# ---------------------------------------------------------------------------
+
+
+def wait_click(driver, xpath, timeout=WAIT):
+    el = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+    try:
+        el.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", el)
+    return el
+
+
+def apply_filters(driver, lob):
+    """Re-enter Brand / Line of Business / State every time (page resets)."""
+    driver.get(SITE_URL)
+    wait_click(driver, X_FORMZILLA_TAB)
+    time.sleep(1.5)
+
+    # Brand
+    wait_click(driver, x_select_button("Brand"))
+    wait_click(driver, x_menu_item(BRAND))
+    time.sleep(1)
+
+    # Line of Business
+    wait_click(driver, x_select_button("Line of Business"))
+    wait_click(driver, x_menu_item(lob))
+    time.sleep(1)
+
+    # State
+    st = WebDriverWait(driver, WAIT).until(
+        EC.element_to_be_clickable((By.XPATH, X_STATE_INPUT)))
+    st.clear()
+    st.send_keys(STATE)
+    time.sleep(0.5)
+
+    # Get Results
+    wait_click(driver, X_GET_RESULTS)
+    time.sleep(3)
+
+
+def get_requests_session(driver):
+    s = requests.Session()
+    for c in driver.get_cookies():
+        s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+    s.headers["User-Agent"] = driver.execute_script("return navigator.userAgent;")
+    return s
+
+
+def collect_rows(driver):
+    """Return list of dicts: form_number, description, pdf_url for current page."""
+    out = []
+    rows = driver.find_elements(By.XPATH, X_RESULT_ROWS)
+    for r in rows:
+        cells = r.find_elements(By.TAG_NAME, "td")
+        if len(cells) < 3:
+            continue
+        link = None
+        for a in r.find_elements(By.TAG_NAME, "a"):
+            href = a.get_attribute("href") or ""
+            if href and not href.startswith("javascript"):
+                link = href
+                break
+        if not link:
+            continue
+        out.append({
+            "form_number": cells[1].text.strip(),
+            "description": cells[2].text.strip(),
+            "pdf_url": link,
+        })
+    return out
+
+
+def collect_all_pages(driver):
+    results, seen = [], set()
+    while True:
+        for row in collect_rows(driver):
+            key = (row["form_number"], row["pdf_url"])
+            if key not in seen:
+                seen.add(key)
+                results.append(row)
+        nxt = driver.find_elements(By.XPATH, X_NEXT_PAGE)
+        nxt = [n for n in nxt if n.is_displayed() and "disabled" not in (n.get_attribute("class") or "")]
+        if not nxt:
+            break
+        driver.execute_script("arguments[0].click();", nxt[0])
+        time.sleep(2)
+    return results
+
+
+def search_pdf(session, url, form_number):
+    """Download PDF and return sorted 1-indexed page numbers containing SEARCH_TEXT."""
+    safe = re.sub(r"[^\w\-]+", "_", form_number)
+    path = os.path.join(PDF_FOLDER, f"{safe}.pdf")
+    if not os.path.exists(path):
+        resp = session.get(url, timeout=60)
+        resp.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(resp.content)
+    pages = []
+    with fitz.open(path) as doc:
+        for i, page in enumerate(doc, start=1):
+            if SEARCH_TEXT.lower() in page.get_text().lower():
+                pages.append(i)
+    return pages
+
+
+def main():
+    os.makedirs(PDF_FOLDER, exist_ok=True)
+    opts = Options()
+    opts.add_argument("--start-maximized")
+    driver = webdriver.Edge(options=opts)
+
+    driver.get(SITE_URL)
+    input("Log in in the browser window if required, then press Enter here... ")
+
+    hits, errors = [], []
+    checked = {}  # (form_number, url) -> pages, avoids re-downloading duplicates
+
+    try:
+        for lob in LINES_OF_BUSINESS:
+            print(f"\n=== {lob} ===")
+            try:
+                apply_filters(driver, lob)
+                rows = collect_all_pages(driver)
+            except TimeoutException:
+                print(f"  Could not apply filters/get results for {lob}")
+                errors.append({"line_of_business": lob, "form_number": "", "error": "filter/result timeout"})
+                continue
+
+            print(f"  {len(rows)} forms found")
+            session = get_requests_session(driver)
+
+            for row in rows:
+                key = (row["form_number"], row["pdf_url"])
+                try:
+                    if key not in checked:
+                        checked[key] = search_pdf(session, row["pdf_url"], row["form_number"])
+                    pages = checked[key]
+                    if pages:
+                        print(f"  MATCH {row['form_number']}  pages {pages}")
+                        hits.append({
+                            "line_of_business": lob,
+                            "form_number": row["form_number"],
+                            "description": row["description"],
+                            "pages_with_text": ", ".join(map(str, pages)),
+                            "pdf_url": row["pdf_url"],
+                        })
+                except Exception as e:
+                    print(f"  ERROR {row['form_number']}: {e}")
+                    errors.append({"line_of_business": lob,
+                                   "form_number": row["form_number"], "error": str(e)})
+    finally:
+        driver.quit()
+
+    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
+        pd.DataFrame(hits, columns=["line_of_business", "form_number", "description",
+                                    "pages_with_text", "pdf_url"]).to_excel(
+            xw, sheet_name="Springfield forms", index=False)
+        if errors:
+            pd.DataFrame(errors).to_excel(xw, sheet_name="Errors", index=False)
+    print(f"\nDone. {len(hits)} matching forms saved to {OUTPUT_XLSX}")
+
+
+if __name__ == "__main__":
+    main()
