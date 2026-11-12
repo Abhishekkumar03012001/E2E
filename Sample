@@ -1,8 +1,9 @@
-Hi,
+Hello Jess,
 
-Thank you for reviewing the files and sharing your findings. The EQ mappings, Base AOI values, and Scheduled Valuables premium calculation logic are all clear.
+Hope you are doing well.
 
-One clarification regarding Scheduled Valuables: Do we also need to validate the cases where Diminution in Value is set to "Yes" to ensure that the rate increase is being applied correctly?
+We have implemented the functionality to validate R_L_TerritoryZone and R_Z_TerritoryZone using the Crosswalk and Zone files.
 
-Thanks,
-Abhishek
+We would now like to perform end-to-end testing of the entire tool for GA. Could you please share all the relevant files required for testing?
+
+Thank you!
