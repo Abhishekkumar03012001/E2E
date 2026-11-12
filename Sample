@@ -4,9 +4,7 @@ Hope you are doing well!
 
 Thank you for sharing your inputs on the findings.
 
-Additionally, regarding Scheduled Valuables, I wanted to check whether there is any reference file or export available to validate the "Yes" factor in the config. So far, we have validated the factors for Diminution in Value set to "No" using the Constant Table reports.
-
-Could you please let us know if a reference is available for validating the "Yes" scenario as well?
+Additionally, regarding Scheduled Valuables, just wanted to confirm whether there is any reference file or export available to validate the "Yes" factor present in the config, as we have validated the factors corresponding to Diminution in Value set to "No" using the Constant Table reports.
 
 Regards,  
 Abhishek
