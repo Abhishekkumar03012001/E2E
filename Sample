@@ -1,11 +1,12 @@
-Hello Jess,
+Hi Stephanie,
 
-Hope you are doing well.
+Hope you are doing well!
 
-We have added the functionality to our Config Builder QC tool to validate `R_L_TerritoryZone` and `R_Z_TerritoryZone` using the Crosswalk and Zone files.
+Thank you for sharing your inputs on the findings.
 
-For `R_Z_TerritoryZone`, we have used the **"Proposed Reformatted"** sheet from the Zone file for validation. Please let us know if this is the correct approach.
+Additionally, regarding Scheduled Valuables, I wanted to check whether there is any reference file or export available to validate the "Yes" factor in the config. So far, we have validated the factors for Diminution in Value set to "No" using the Constant Table reports.
 
-Also, could you share the relevant files for GA at your convenience so that we can perform the End-to-End Config Builder QC?
+Could you please let us know if a reference is available for validating the "Yes" scenario as well?
 
-Thank you!
+Regards,  
+Abhishek
