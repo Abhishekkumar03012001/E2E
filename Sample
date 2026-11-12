@@ -2,7 +2,7 @@ Hello Jess,
 
 Hope you are doing well.
 
-We have implemented the functionality to validate R_L_TerritoryZone and R_Z_TerritoryZone using the Crosswalk and Zone files.
+We have added the functionality to our End-to-End Config Builder tool to validate `R_L_TerritoryZone` and `R_Z_TerritoryZone` using the Crosswalk and Zone files.
 
 We would now like to perform end-to-end testing of the entire tool for GA. Could you please share all the relevant files required for testing?
 
