@@ -1,1 +1,8 @@
-=IF(IFERROR(AND(AA2<>"",IF(ISNUMBER(AA2),TRUE,ISNUMBER(DATEVALUE(AA2)))),FALSE),IF(IFERROR(AND(C2<>"",IF(ISNUMBER(C2),TRUE,ISNUMBER(DATEVALUE(C2)))),FALSE),"Completed","Pass Due"),IF(IFERROR(AND(Z2<>"",IF(ISNUMBER(Z2),TRUE,ISNUMBER(DATEVALUE(Z2)))),FALSE),"Under Progress","Not yet needed"))
+Hi,
+
+Thank you for reviewing the files and sharing your findings. The EQ mappings, Base AOI values, and Scheduled Valuables premium calculation logic are all clear.
+
+One clarification regarding Scheduled Valuables: Do we also need to validate the cases where Diminution in Value is set to "Yes" to ensure that the rate increase is being applied correctly?
+
+Thanks,
+Abhishek
