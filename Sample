@@ -1,1 +1,11 @@
-For R_Z_TerritoryZone, we have used the "Proposed Reformatted" sheet from the Zone file for validation. Please let us know if this is the correct approach.
+Hello Jess,
+
+Hope you are doing well.
+
+We have added the functionality to our Config Builder QC tool to validate `R_L_TerritoryZone` and `R_Z_TerritoryZone` using the Crosswalk and Zone files.
+
+For `R_Z_TerritoryZone`, we have used the **"Proposed Reformatted"** sheet from the Zone file for validation. Please let us know if this is the correct approach.
+
+Also, could you share the relevant files for GA at your convenience so that we can perform the End-to-End Config Builder QC?
+
+Thank you!
