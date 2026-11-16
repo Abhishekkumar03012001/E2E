@@ -20,6 +20,7 @@ Run:
 
 import os
 import re
+import sys
 import time
 import shutil
 import hashlib
@@ -51,11 +52,17 @@ USE_MY_EDGE_PROFILE = False
 EDGE_USER_DATA_DIR = r"C:\Users\YOUR_NAME\AppData\Local\Microsoft\Edge\User Data"
 EDGE_PROFILE = "Default"
 
+# >>> Line of Business to process. To add more, just add names to this list, e.g.
+#     LINES_OF_BUSINESS = ["Homeowners", "Condo", "Renters"]
+#     Available: Condo, Dwelling fire, Earthquake, Homeowners, Motorcycle, Personal auto,
+#                Personal umbrella, Recreational vehicle, Renters, Watercraft
+# Or pass them when running (overrides this list):
+#     python formzilla_springfield.py Homeowners Condo
 LINES_OF_BUSINESS = [
-    "Condo", "Dwelling fire", "Earthquake", "Homeowners", "Motorcycle",
-    "Personal auto", "Personal umbrella", "Recreational vehicle",
-    "Renters", "Watercraft",
+    "Homeowners",
 ]
+if len(sys.argv) > 1:
+    LINES_OF_BUSINESS = sys.argv[1:]
 
 # Results table: column 1 = Icon (pdf), column 2 = Form Number
 ICON_COL = 0
@@ -67,9 +74,8 @@ X_GET_RESULTS = ("//*[self::button or self::input or self::a]"
                  "[contains(normalize-space(.),'Get Results') or @value='Get Results']")
 X_RESULT_ROWS = "//table//tr[td]"
 
-# If the Next button is NOT detected automatically, paste its XPath here, e.g.
-#   X_NEXT_OVERRIDE = "//button[@id='nextPage']"
-X_NEXT_OVERRIDE = ""
+# Next / Previous buttons (taken from your Inspect screenshot: <button id="tableNext" ...>)
+X_NEXT_OVERRIDE = "//button[@id='tableNext']"
 # ---------------------------------------------------------------------------
 
 UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
