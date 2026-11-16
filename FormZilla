@@ -61,8 +61,11 @@ EDGE_PROFILE = "Default"
 LINES_OF_BUSINESS = [
     "Homeowners",
 ]
-if len(sys.argv) > 1:
-    LINES_OF_BUSINESS = sys.argv[1:]
+# (Ignored inside Jupyter/VS Code notebooks, where sys.argv holds kernel arguments)
+if "ipykernel" not in sys.modules:
+    _cli = [a for a in sys.argv[1:] if not a.startswith("-") and not a.lower().endswith(".json")]
+    if _cli:
+        LINES_OF_BUSINESS = _cli
 
 # Results table: column 1 = Icon (pdf), column 2 = Form Number
 ICON_COL = 0
@@ -314,6 +317,9 @@ def go_next_page(driver):
     """Click Next. True only if the rows really changed."""
     before = page_signature(driver)
     btn = find_next_button(driver)
+    if not btn and X_NEXT_OVERRIDE and driver.find_elements(By.XPATH, X_NEXT_OVERRIDE):
+        log("  Next button is disabled - this is the last page")
+        return False
     if not btn:
         log("  Next button NOT found. Diagnostics:")
         log_next_diagnostics(driver)
@@ -509,9 +515,19 @@ def sheet_name(lob, used):
 
 
 def save_excel(results, summary):
+    """Save the workbook; if it is open in Excel (locked), save a timestamped copy instead."""
+    try:
+        _write_excel(OUTPUT_XLSX, results, summary)
+    except PermissionError:
+        alt = OUTPUT_XLSX.replace(".xlsx", f"_{datetime.now():%H%M%S}.xlsx")
+        log(f"  !! {OUTPUT_XLSX} is open/locked - saving to {alt} instead (close Excel next time)")
+        _write_excel(alt, results, summary)
+
+
+def _write_excel(path, results, summary):
     from openpyxl.styles import Font
     used = {"summary"}
-    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
+    with pd.ExcelWriter(path, engine="openpyxl") as xw:
         pd.DataFrame(summary, columns=SUMMARY_COLS).to_excel(xw, sheet_name="Summary", index=False)
         ws = xw.sheets["Summary"]
         for col, w in zip("ABCDEFGH", [24, 24, 20, 14, 16, 16, 10, 40]):
