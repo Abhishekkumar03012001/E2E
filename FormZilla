@@ -1,23 +1,30 @@
 """
-FormZilla scraper: for every Line of Business (IL, Liberty Agency), get results,
-download each form's PDF, and record the Form Numbers whose PDF contains
-"Springfield" along with the page numbers.
+FormZilla -> Springfield checker
+--------------------------------
+For every Line of Business (Brand = Liberty Agency, State = IL):
+  1. Click Get Results
+  2. Read EVERY form number on EVERY results page (clicks Next until done)
+  3. Download each form's PDF and check if "Springfield" is in it
+  4. Write ALL form numbers to Excel with Found / Not found
+
+Excel columns:
+  Line of Business | Form Number | Springfield Found | Page Number | PDF URL | Remarks
+  (PDF URL and Page Number are "NA" when Springfield is not found)
 
 Install:
     pip install selenium requests pymupdf pandas openpyxl
-
 Run:
     python formzilla_springfield.py
 """
 
 import os
 import re
-import sys
 import time
 import requests
 import fitz  # PyMuPDF
 import pandas as pd
 from datetime import datetime
+from urllib.parse import urljoin
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
@@ -34,8 +41,8 @@ OUTPUT_XLSX = "springfield_forms.xlsx"
 PDF_FOLDER = "downloaded_pdfs"
 WAIT = 20
 
-# Optional: reuse your normal Edge profile so you stay auto-logged-in.
-# Close ALL Edge windows before running if you enable this.
+# Reuse your normal Edge profile (keeps your automatic login).
+# If you enable this, CLOSE ALL Edge windows before running.
 USE_MY_EDGE_PROFILE = False
 EDGE_USER_DATA_DIR = r"C:\Users\YOUR_NAME\AppData\Local\Microsoft\Edge\User Data"
 EDGE_PROFILE = "Default"
@@ -46,6 +53,11 @@ LINES_OF_BUSINESS = [
     "Renters", "Watercraft",
 ]
 
+# Results table: column 1 = Icon (pdf link), column 2 = Form Number
+ICON_COL = 0
+FORM_NUMBER_COL = 1
+
+# XPaths - adjust if needed (F12 > right-click element > Copy > Copy XPath)
 X_FORMZILLA_TAB = "//a[normalize-space()='FormZilla'] | //*[normalize-space(text())='FormZilla']"
 def x_select_button(label):
     return (f"(//*[contains(normalize-space(text()),'{label}')]"
@@ -55,14 +67,23 @@ def x_menu_item(text):
             f"and normalize-space(text())='{text}']")
 X_STATE_INPUT = ("(//*[contains(normalize-space(text()),'State')]"
                  "/following::input[1])")
-X_GET_RESULTS = "//*[self::button or self::input or self::a][contains(normalize-space(.),'Get Results') or @value='Get Results']"
-X_RESULT_ROWS = "//table//tbody/tr[.//a]"
-X_NEXT_PAGE = "//a[contains(@class,'next') or normalize-space(.)='Next' or normalize-space(.)='>']"
+X_GET_RESULTS = ("//*[self::button or self::input or self::a]"
+                 "[contains(normalize-space(.),'Get Results') or @value='Get Results']")
+X_RESULT_ROWS = "//table//tr[td]"
+
+# Possible "Next page" buttons (first visible, enabled one is used)
+X_NEXT_CANDIDATES = [
+    "//a[contains(@class,'next')]",
+    "//li[contains(@class,'next')]/a",
+    "//button[contains(@class,'next')]",
+    "//*[@aria-label='Next' or @title='Next' or @aria-label='Next page']",
+    "//a[normalize-space(.)='Next' or normalize-space(.)='Next >' or normalize-space(.)='>' or normalize-space(.)='›' or normalize-space(.)='»']",
+    "//button[normalize-space(.)='Next' or normalize-space(.)='>' or normalize-space(.)='›']",
+]
 # ---------------------------------------------------------------------------
 
 
 def log(msg=""):
-    """Print with timestamp and flush immediately so progress shows live."""
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
@@ -75,8 +96,8 @@ def wait_click(driver, xpath, timeout=WAIT):
     return el
 
 
+# ------------------------- Filters ------------------------------------------
 def apply_filters(driver, lob):
-    """Re-enter Brand / Line of Business / State every time (page resets)."""
     log("  Opening site...")
     driver.get(SITE_URL)
     log("  Clicking FormZilla tab")
@@ -106,6 +127,7 @@ def apply_filters(driver, lob):
     log("  Results loaded")
 
 
+# ------------------------- Reading results ----------------------------------
 def get_requests_session(driver):
     s = requests.Session()
     for c in driver.get_cookies():
@@ -114,74 +136,184 @@ def get_requests_session(driver):
     return s
 
 
-def collect_rows(driver):
+def get_pdf_url(driver, row, icon_cell):
+    """Find the PDF url for a row: href -> onclick -> click-and-capture."""
+    base = driver.current_url
+    anchors = icon_cell.find_elements(By.TAG_NAME, "a") or row.find_elements(By.TAG_NAME, "a")
+
+    for a in anchors:
+        href = (a.get_attribute("href") or "").strip()
+        if href and not href.lower().startswith(("javascript", "#")):
+            return urljoin(base, href)
+
+    for el in anchors + icon_cell.find_elements(By.XPATH, ".//*[@onclick]"):
+        oc = el.get_attribute("onclick") or ""
+        m = re.search(r"""['"]([^'"]+\.pdf[^'"]*|[^'"]*(?:download|view|pdf)[^'"]*)['"]""", oc, re.I)
+        if m:
+            return urljoin(base, m.group(1))
+
+    # Last resort: click the icon and capture the new tab's / current URL
+    target = anchors[0] if anchors else icon_cell
+    old_handles = driver.window_handles
+    old_url = driver.current_url
+    try:
+        driver.execute_script("arguments[0].click();", target)
+        time.sleep(2)
+        new_handles = [h for h in driver.window_handles if h not in old_handles]
+        if new_handles:
+            driver.switch_to.window(new_handles[0])
+            url = driver.current_url
+            driver.close()
+            driver.switch_to.window(old_handles[0])
+            return url
+        if driver.current_url != old_url:
+            url = driver.current_url
+            driver.back()
+            time.sleep(2)
+            return url
+    except Exception:
+        pass
+    return None
+
+
+def read_current_page(driver):
+    """Return list of {form_number, pdf_url} for rows on the current results page."""
     out = []
-    rows = driver.find_elements(By.XPATH, X_RESULT_ROWS)
-    for r in rows:
-        cells = r.find_elements(By.TAG_NAME, "td")
-        if len(cells) < 3:
-            continue
-        link = None
-        for a in r.find_elements(By.TAG_NAME, "a"):
-            href = a.get_attribute("href") or ""
-            if href and not href.startswith("javascript"):
-                link = href
-                break
-        if not link:
-            continue
-        out.append({
-            "form_number": cells[1].text.strip(),
-            "description": cells[2].text.strip(),
-            "pdf_url": link,
-        })
+    n_rows = len(driver.find_elements(By.XPATH, X_RESULT_ROWS))
+    for i in range(n_rows):
+        try:  # re-find each time to avoid stale elements
+            row = driver.find_elements(By.XPATH, X_RESULT_ROWS)[i]
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if len(cells) <= max(ICON_COL, FORM_NUMBER_COL):
+                continue
+            form_number = cells[FORM_NUMBER_COL].text.strip()
+            if not form_number:      # skips filter rows / blanks
+                continue
+            url = get_pdf_url(driver, row, cells[ICON_COL])
+            out.append({"form_number": form_number, "pdf_url": url})
+        except Exception as e:
+            log(f"    (skipped a row: {e})")
     return out
 
 
+def page_signature(driver):
+    rows = driver.find_elements(By.XPATH, X_RESULT_ROWS)
+    sig = []
+    for r in rows[:5]:
+        tds = r.find_elements(By.TAG_NAME, "td")
+        if len(tds) > FORM_NUMBER_COL:
+            sig.append(tds[FORM_NUMBER_COL].text.strip())
+    return "|".join(sig) + f"#{len(rows)}"
+
+
+def find_next_button(driver):
+    for xp in X_NEXT_CANDIDATES:
+        for el in driver.find_elements(By.XPATH, xp):
+            try:
+                if not el.is_displayed():
+                    continue
+                cls = (el.get_attribute("class") or "").lower()
+                parent_cls = (el.find_element(By.XPATH, "..").get_attribute("class") or "").lower()
+                if ("disabled" in cls or "disabled" in parent_cls
+                        or el.get_attribute("disabled")
+                        or el.get_attribute("aria-disabled") == "true"):
+                    continue
+                return el
+            except Exception:
+                continue
+    return None
+
+
+def go_next_page(driver):
+    """Click Next; return True only if the page content actually changed."""
+    before = page_signature(driver)
+    btn = find_next_button(driver)
+    if not btn:
+        return False
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+    try:
+        btn.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", btn)
+    for _ in range(20):          # wait up to ~10s for new rows
+        time.sleep(0.5)
+        try:
+            if page_signature(driver) != before:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def collect_all_pages(driver):
-    results, seen = [], set()
-    page_no = 1
+    results, seen, page_no = [], set(), 1
     while True:
-        rows = collect_rows(driver)
+        rows = read_current_page(driver)
         new = 0
-        for row in rows:
-            key = (row["form_number"], row["pdf_url"])
+        for r in rows:
+            key = (r["form_number"], r["pdf_url"])
             if key not in seen:
                 seen.add(key)
-                results.append(row)
+                results.append(r)
                 new += 1
-        log(f"  Results page {page_no}: {new} forms read (total {len(results)})")
-        nxt = driver.find_elements(By.XPATH, X_NEXT_PAGE)
-        nxt = [n for n in nxt if n.is_displayed() and "disabled" not in (n.get_attribute("class") or "")]
-        if not nxt:
+        log(f"  Results page {page_no}: {len(rows)} rows read, {new} new (total {len(results)})")
+        if not go_next_page(driver):
+            log("  No more pages")
             break
-        driver.execute_script("arguments[0].click();", nxt[0])
         page_no += 1
-        time.sleep(2)
     return results
 
 
-def search_pdf(session, url, form_number):
-    """Download PDF and return (page_count, matching page numbers)."""
+# ------------------------- PDF check ----------------------------------------
+def check_pdf(session, url, form_number):
+    """Download + scan. Returns (found: bool, pages: list, remark: str)."""
     safe = re.sub(r"[^\w\-]+", "_", form_number)
     path = os.path.join(PDF_FOLDER, f"{safe}.pdf")
     if not os.path.exists(path):
         log("      Downloading PDF...")
         resp = session.get(url, timeout=60)
         resp.raise_for_status()
+        if not resp.content.startswith(b"%PDF"):
+            raise ValueError("Downloaded file is not a PDF (login page / wrong link?)")
         with open(path, "wb") as f:
             f.write(resp.content)
     else:
-        log("      PDF already downloaded (using saved copy)")
-    pages = []
+        log("      Using saved PDF copy")
+
+    pages, total_text = [], 0
     with fitz.open(path) as doc:
         total = len(doc)
         log(f"      Scanning {total} page(s) for '{SEARCH_TEXT}'...")
         for i, page in enumerate(doc, start=1):
-            if SEARCH_TEXT.lower() in page.get_text().lower():
+            text = page.get_text()
+            total_text += len(text.strip())
+            if SEARCH_TEXT.lower() in text.lower():
                 pages.append(i)
-    return total, pages
+    remark = ""
+    if not pages and total_text == 0:
+        remark = "PDF has no text layer (scanned image) - needs OCR"
+    return bool(pages), pages, remark
 
 
+# ------------------------- Excel --------------------------------------------
+COLUMNS = ["Line of Business", "Form Number", "Springfield Found",
+           "Page Number", "PDF URL", "Remarks"]
+
+def save_excel(records):
+    df = pd.DataFrame(records, columns=COLUMNS)
+    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
+        df.to_excel(xw, sheet_name="Forms", index=False)
+        ws = xw.sheets["Forms"]
+        widths = {"A": 22, "B": 26, "C": 18, "D": 14, "E": 70, "F": 45}
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+        ws.freeze_panes = "A2"
+        from openpyxl.styles import Font
+        for c in ws[1]:
+            c.font = Font(bold=True)
+
+
+# ------------------------- Main ---------------------------------------------
 def main():
     log("Script started")
     os.makedirs(PDF_FOLDER, exist_ok=True)
@@ -194,78 +326,75 @@ def main():
     log("Opening Edge browser...")
     driver = webdriver.Edge(options=opts)
 
-    hits, errors = [], []
-    checked = {}
-    total_scanned = 0
-    n_lob = len(LINES_OF_BUSINESS)
+    records = []
+    cache = {}      # (form_number, url) -> (found, pages, remark)
+    scanned = 0
 
     try:
         for li, lob in enumerate(LINES_OF_BUSINESS, start=1):
             log("=" * 60)
-            log(f"LINE OF BUSINESS {li}/{n_lob}: {lob}")
+            log(f"LINE OF BUSINESS {li}/{len(LINES_OF_BUSINESS)}: {lob}")
             log("=" * 60)
             try:
                 apply_filters(driver, lob)
                 rows = collect_all_pages(driver)
             except TimeoutException:
-                log(f"  !! Could not apply filters / get results for {lob} (XPath not found?)")
-                errors.append({"line_of_business": lob, "form_number": "", "error": "filter/result timeout"})
+                log(f"  !! Could not apply filters / get results for {lob} (check XPaths)")
+                records.append({"Line of Business": lob, "Form Number": "",
+                                "Springfield Found": "Error", "Page Number": "NA",
+                                "PDF URL": "NA", "Remarks": "Filter/results step timed out"})
                 continue
 
             log(f"  {len(rows)} forms found for {lob}")
             session = get_requests_session(driver)
 
             for ri, row in enumerate(rows, start=1):
-                fn = row["form_number"]
+                fn, url = row["form_number"], row["pdf_url"]
                 log(f"  [{ri}/{len(rows)}] Form {fn}")
-                key = (fn, row["pdf_url"])
+                rec = {"Line of Business": lob, "Form Number": fn,
+                       "Springfield Found": "No", "Page Number": "NA",
+                       "PDF URL": "NA", "Remarks": ""}
+                if not url:
+                    rec["Springfield Found"] = "Error"
+                    rec["Remarks"] = "PDF link not found in row"
+                    log("      !! No PDF link found for this row")
+                    records.append(rec)
+                    continue
                 try:
-                    if key not in checked:
-                        checked[key] = search_pdf(session, row["pdf_url"], fn)
-                        total_scanned += 1
+                    key = (fn, url)
+                    if key not in cache:
+                        cache[key] = check_pdf(session, url, fn)
+                        scanned += 1
                     else:
-                        log("      Already scanned under another Line of Business")
-                    total, pages = checked[key]
-                    if pages:
-                        log(f"      >>> MATCH: '{SEARCH_TEXT}' on page(s) {pages}")
-                        hits.append({
-                            "line_of_business": lob,
-                            "form_number": fn,
-                            "description": row["description"],
-                            "pages_with_text": ", ".join(map(str, pages)),
-                            "pdf_url": row["pdf_url"],
-                        })
+                        log("      Already scanned earlier")
+                    found, pages, remark = cache[key]
+                    if found:
+                        rec["Springfield Found"] = "Yes"
+                        rec["Page Number"] = ", ".join(map(str, pages))
+                        rec["PDF URL"] = url
+                        log(f"      >>> FOUND on page(s) {pages}")
                     else:
-                        log(f"      No match")
-                    log(f"      Done. (PDFs scanned so far: {total_scanned} | matches so far: {len(hits)})")
+                        log("      Not found")
+                    rec["Remarks"] = remark
                 except Exception as e:
+                    rec["Springfield Found"] = "Error"
+                    rec["Remarks"] = str(e)[:200]
                     log(f"      !! ERROR: {e}")
-                    errors.append({"line_of_business": lob, "form_number": fn, "error": str(e)})
+                records.append(rec)
+                yes = sum(r["Springfield Found"] == "Yes" for r in records)
+                log(f"      Progress: {len(records)} forms done | {yes} with Springfield")
 
-            log(f"Finished {lob}. Matches so far: {len(hits)}")
+            save_excel(records)   # checkpoint after each Line of Business
+            log(f"Finished {lob} - Excel saved ({len(records)} rows so far)")
     finally:
         log("Closing browser...")
         driver.quit()
 
-    log(f"Saving Excel file: {OUTPUT_XLSX}")
-    # Final output: only Form Number + Page Number (one row per unique form)
-    final = {}
-    for h in hits:
-        final.setdefault(h["form_number"], h["pages_with_text"])
-    df = pd.DataFrame(
-        [{"Form Number": fn, "Page Number": pg} for fn, pg in final.items()],
-        columns=["Form Number", "Page Number"],
-    )
-    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
-        df.to_excel(xw, sheet_name="Springfield forms", index=False)
-        ws = xw.sheets["Springfield forms"]
-        ws.column_dimensions["A"].width = 28
-        ws.column_dimensions["B"].width = 18
-        if errors:
-            pd.DataFrame(errors).to_excel(xw, sheet_name="Errors", index=False)
-
+    save_excel(records)
+    yes = sum(r["Springfield Found"] == "Yes" for r in records)
+    err = sum(r["Springfield Found"] == "Error" for r in records)
     log("=" * 60)
-    log(f"ALL DONE. PDFs scanned: {total_scanned} | Unique forms with match: {len(final)} | Errors: {len(errors)}")
+    log(f"ALL DONE. Total forms: {len(records)} | Springfield found: {yes} | Errors: {err}")
     log(f"Output: {os.path.abspath(OUTPUT_XLSX)}")
 
 
