@@ -3,9 +3,9 @@ FormZilla -> Springfield checker
 ================================
 For EVERY Line of Business (Brand = Liberty Agency, State = IL):
   1. Click "Get Results"
-  2. On the current results page: open/download EVERY pdf, search it for
-     "Springfield" and note the page number(s)
-  3. THEN click Next page and repeat, until the last page
+  2. For each row on the current page: CLICK THE PDF ICON, let the PDF download,
+     open it and search for "Springfield" (records the page number(s))
+  3. THEN click the Next page button and repeat, until the last page
   4. Write one Excel sheet per Line of Business (+ a Summary sheet)
 
 Each Line-of-Business sheet has:
@@ -21,6 +21,7 @@ Run:
 import os
 import re
 import time
+import shutil
 import hashlib
 import requests
 import fitz  # PyMuPDF
@@ -37,9 +38,11 @@ BRAND = "Liberty Agency"
 STATE = "IL"
 SEARCH_TEXT = "Springfield"
 OUTPUT_XLSX = "springfield_forms.xlsx"
-PDF_FOLDER = "downloaded_pdfs"
+PDF_FOLDER = os.path.abspath("downloaded_pdfs")
+INCOMING = os.path.join(PDF_FOLDER, "_incoming")   # browser downloads land here first
 WAIT = 20                 # seconds to wait for a page element
 RESULTS_WAIT = 40         # seconds to wait for results table after Get Results
+DOWNLOAD_WAIT = 30        # seconds to wait for a PDF to download after clicking its icon
 LOB_ATTEMPTS = 2          # retry a Line of Business this many times if it fails
 
 # Reuse your normal Edge profile (keeps your automatic login).
@@ -54,7 +57,7 @@ LINES_OF_BUSINESS = [
     "Renters", "Watercraft",
 ]
 
-# Results table: column 1 = Icon (pdf link), column 2 = Form Number
+# Results table: column 1 = Icon (pdf), column 2 = Form Number
 ICON_COL = 0
 FORM_NUMBER_COL = 1
 
@@ -64,16 +67,9 @@ X_GET_RESULTS = ("//*[self::button or self::input or self::a]"
                  "[contains(normalize-space(.),'Get Results') or @value='Get Results']")
 X_RESULT_ROWS = "//table//tr[td]"
 
-X_NEXT_CANDIDATES = [
-    "//a[contains(@class,'next')]",
-    "//li[contains(@class,'next')]/a",
-    "//button[contains(@class,'next')]",
-    "//*[@aria-label='Next' or @title='Next' or @aria-label='Next page']",
-    "//a[normalize-space(.)='Next' or normalize-space(.)='Next >' or normalize-space(.)='>' or normalize-space(.)='›' or normalize-space(.)='»']",
-    "//button[normalize-space(.)='Next' or normalize-space(.)='>' or normalize-space(.)='›']",
-]
-X_CURRENT_PAGE_NUM = ("//li[contains(@class,'active')]/a | //li[contains(@class,'active')]/span | "
-                      "//a[contains(@class,'current')] | //span[contains(@class,'current')]")
+# If the Next button is NOT detected automatically, paste its XPath here, e.g.
+#   X_NEXT_OVERRIDE = "//button[@id='nextPage']"
+X_NEXT_OVERRIDE = ""
 # ---------------------------------------------------------------------------
 
 UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -136,12 +132,10 @@ def find_select_button(driver, label, timeout=WAIT):
 
 
 def click_menu_item(driver, text, timeout=WAIT):
-    """Click a dropdown item by its text (case-insensitive, visible only)."""
     t = text.lower()
     xp = ("//*[self::a or self::li or self::span or self::div or self::button or self::label or self::option]"
           f"[translate(normalize-space(text()),'{UPPER}','{LOWER}')='{t}']")
-    el = wait_visible(driver, xp, timeout)
-    click(driver, el)
+    click(driver, wait_visible(driver, xp, timeout))
 
 
 # ------------------------- Filters ------------------------------------------
@@ -188,9 +182,8 @@ def apply_filters(driver, lob):
     click_xpath(driver, X_GET_RESULTS)
 
 
-# ------------------------- Reading a results page ---------------------------
+# ------------------------- Results table ------------------------------------
 def valid_rows(driver):
-    """Visible table rows that have a non-empty Form Number cell."""
     out = []
     for r in driver.find_elements(By.XPATH, X_RESULT_ROWS):
         try:
@@ -205,7 +198,6 @@ def valid_rows(driver):
 
 
 def wait_for_results(driver, timeout=RESULTS_WAIT):
-    """Wait until the results table has rows and the row count is stable."""
     end, last, stable = time.time() + timeout, -1, 0
     while time.time() < end:
         n = len(valid_rows(driver))
@@ -230,90 +222,82 @@ def page_signature(driver):
     return hashlib.md5("|".join(nums).encode()).hexdigest() + f"#{len(nums)}"
 
 
-def get_pdf_url(driver, row, icon_cell):
-    """href -> onclick -> click-and-capture."""
-    base = driver.current_url
-    anchors = icon_cell.find_elements(By.TAG_NAME, "a") or row.find_elements(By.TAG_NAME, "a")
+# ------------------------- Pagination ---------------------------------------
+def _lc(expr):
+    return f"translate({expr},'{UPPER}','{LOWER}')"
 
-    for a in anchors:
-        href = (a.get_attribute("href") or "").strip()
-        if href and not href.lower().startswith(("javascript", "#")):
-            return urljoin(base, href)
 
-    for el in anchors + icon_cell.find_elements(By.XPATH, ".//*[@onclick]"):
-        oc = el.get_attribute("onclick") or ""
-        m = re.search(r"""['"]([^'"]+\.pdf[^'"]*|[^'"]*(?:download|view|pdf)[^'"]*)['"]""", oc, re.I)
-        if m:
-            return urljoin(base, m.group(1))
-
-    # Last resort: click the icon and capture the new tab / page url
-    target = anchors[0] if anchors else icon_cell
-    main_handle = driver.current_window_handle
-    old_handles, old_url = driver.window_handles, driver.current_url
+def _is_disabled(el):
     try:
-        driver.execute_script("arguments[0].click();", target)
-        time.sleep(2)
-        new = [h for h in driver.window_handles if h not in old_handles]
-        if new:
-            driver.switch_to.window(new[0])
-            url = driver.current_url
-            driver.close()
-            driver.switch_to.window(main_handle)
-            return url
-        if driver.current_url != old_url:
-            url = driver.current_url
-            driver.back()
-            time.sleep(2)
-            return url
+        cls = (el.get_attribute("class") or "").lower()
+        pcls = (el.find_element(By.XPATH, "..").get_attribute("class") or "").lower()
+        return bool("disabled" in cls or "disabled" in pcls or el.get_attribute("disabled")
+                    or el.get_attribute("aria-disabled") == "true")
     except Exception:
+        return False
+
+
+def _usable(el):
+    """Displayed, or at least has a real size (some pages report False inside scroll boxes)."""
+    if is_shown(el):
+        return True
+    try:
+        s = el.size
+        return s["width"] > 0 and s["height"] > 0
+    except Exception:
+        return False
+
+
+def log_next_diagnostics(driver):
+    xp = ("//*[self::a or self::button or self::li or self::span or self::input]"
+          f"[string-length(normalize-space(.))<=15 and ({_lc('normalize-space(.)')}='>' or "
+          f"contains({_lc('normalize-space(.)')},'next') or contains({_lc('normalize-space(.)')},'page') "
+          f"or contains({_lc('normalize-space(.)')},'prev') or normalize-space(.)='›' or normalize-space(.)='»')]")
+    found = driver.find_elements(By.XPATH, xp)[:10]
+    if not found:
+        log("    (no pagination-looking elements found at all - the Next button may be inside an "
+            "iframe or use an icon only. Right-click it > Inspect and send me the HTML.)")
+    for el in found:
         try:
-            driver.switch_to.window(main_handle)
+            log(f"    candidate: <{el.tag_name}> text='{el.text.strip()}' class='{el.get_attribute('class')}' "
+                f"id='{el.get_attribute('id')}' displayed={is_shown(el)}")
         except Exception:
             pass
-    return None
 
 
-def read_current_page(driver):
-    """Return [{form_number, pdf_url}] for every row on the current page."""
-    out = []
-    n = len(valid_rows(driver))
-    for i in range(n):
-        try:
-            rows = valid_rows(driver)
-            row = rows[i]
-            cells = row.find_elements(By.TAG_NAME, "td")
-            fn = cells[FORM_NUMBER_COL].text.strip()
-            url = get_pdf_url(driver, row, cells[ICON_COL])
-            out.append({"form_number": fn, "pdf_url": url})
-        except Exception as e:
-            log(f"    (row {i + 1} could not be read: {e})")
-            out.append({"form_number": f"(unreadable row {i + 1})", "pdf_url": None})
-    return out
-
-
-# ------------------------- Pagination ---------------------------------------
 def find_next_button(driver):
-    for xp in X_NEXT_CANDIDATES:
-        for el in visible(driver, xp):
-            try:
-                cls = (el.get_attribute("class") or "").lower()
-                pcls = (el.find_element(By.XPATH, "..").get_attribute("class") or "").lower()
-                if ("disabled" in cls or "disabled" in pcls or el.get_attribute("disabled")
-                        or el.get_attribute("aria-disabled") == "true"):
-                    continue
+    # Scroll to the bottom first - the Next button sits below the rows
+    try:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    if X_NEXT_OVERRIDE:
+        for el in driver.find_elements(By.XPATH, X_NEXT_OVERRIDE):
+            if _usable(el) and not _is_disabled(el):
                 return el
-            except Exception:
-                continue
-    return None
+        return None
+
+    xp = ("//*[self::a or self::button or self::input or self::li or self::span or self::div or self::i]"
+          "[string-length(normalize-space(.))<25 and ("
+          f"contains({_lc('normalize-space(text())')},'next') or "
+          f"contains({_lc('@value')},'next') or contains({_lc('@title')},'next') or "
+          f"contains({_lc('@aria-label')},'next') or contains({_lc('@class')},'next') or "
+          "normalize-space(text())='>' or normalize-space(text())='›' or normalize-space(text())='»')]")
+    rank = {"a": 0, "button": 0, "input": 0, "li": 1, "span": 2, "i": 2, "div": 3}
+    cands = [e for e in driver.find_elements(By.XPATH, xp) if _usable(e) and not _is_disabled(e)]
+    cands.sort(key=lambda e: rank.get(e.tag_name.lower(), 4))
+    return cands[0] if cands else None
 
 
-def wait_page_changed(driver, before, timeout=12):
+def wait_page_changed(driver, before, timeout=20):
     end = time.time() + timeout
     while time.time() < end:
         time.sleep(0.5)
         try:
             if page_signature(driver) != before:
-                time.sleep(1)
+                wait_for_results(driver, 15)       # let the new rows finish loading
                 return True
         except Exception:
             pass
@@ -321,29 +305,38 @@ def wait_page_changed(driver, before, timeout=12):
 
 
 def go_next_page(driver):
-    """Click Next (or the next page number). True only if the rows really changed."""
+    """Click Next. True only if the rows really changed."""
     before = page_signature(driver)
-
     btn = find_next_button(driver)
-    if btn:
-        click(driver, btn)
-        if wait_page_changed(driver, before):
-            return True
+    if not btn:
+        log("  Next button NOT found. Diagnostics:")
+        log_next_diagnostics(driver)
+        return False
 
-    # Fallback: numbered pagination (click current page number + 1)
-    for el in visible(driver, X_CURRENT_PAGE_NUM):
-        txt = el.text.strip()
-        if txt.isdigit():
-            nxt = visible(driver, f"//a[normalize-space(.)='{int(txt) + 1}']")
-            if nxt:
-                click(driver, nxt[0])
-                if wait_page_changed(driver, before):
-                    return True
-            break
-    return False
+    try:
+        log(f"  Clicking Next: <{btn.tag_name}> text='{btn.text.strip()}' class='{btn.get_attribute('class')}'")
+    except Exception:
+        pass
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+    except Exception:
+        pass
+    try:
+        btn.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", btn)
+
+    if wait_page_changed(driver, before):
+        return True
+    # one more try with a JS click in case the normal click was swallowed
+    try:
+        driver.execute_script("arguments[0].click();", btn)
+    except Exception:
+        return False
+    return wait_page_changed(driver, before, 12)
 
 
-# ------------------------- PDF check ----------------------------------------
+# ------------------------- Getting the PDF ----------------------------------
 def get_requests_session(driver):
     s = requests.Session()
     for c in driver.get_cookies():
@@ -352,30 +345,129 @@ def get_requests_session(driver):
     return s
 
 
-def download_pdf(session, url, form_number):
+def final_pdf_path(src_bytes_or_path, form_number):
+    """Move/save into PDF_FOLDER with a readable, unique name; return the path."""
     safe = re.sub(r"[^\w\-]+", "_", form_number)[:80]
-    h = hashlib.md5(url.encode()).hexdigest()[:8]
-    path = os.path.join(PDF_FOLDER, f"{safe}_{h}.pdf")
-    if os.path.exists(path):
-        log("      Using saved PDF copy")
-        return path
-    log("      Downloading PDF...")
-    last_err = None
-    for attempt in range(3):
+    if isinstance(src_bytes_or_path, bytes):
+        h = hashlib.md5(src_bytes_or_path).hexdigest()[:8]
+        dest = os.path.join(PDF_FOLDER, f"{safe}_{h}.pdf")
+        with open(dest, "wb") as f:
+            f.write(src_bytes_or_path)
+        return dest
+    with open(src_bytes_or_path, "rb") as f:
+        h = hashlib.md5(f.read()).hexdigest()[:8]
+    dest = os.path.join(PDF_FOLDER, f"{safe}_{h}.pdf")
+    os.replace(src_bytes_or_path, dest)
+    return dest
+
+
+def download_via_http(session, url, form_number):
+    resp = session.get(url, timeout=90)
+    resp.raise_for_status()
+    if b"%PDF" not in resp.content[:1024]:
+        raise ValueError("not a PDF")
+    return final_pdf_path(resp.content, form_number)
+
+
+def direct_href(driver, row, icon_cell):
+    base = driver.current_url
+    for a in icon_cell.find_elements(By.TAG_NAME, "a") or row.find_elements(By.TAG_NAME, "a"):
+        href = (a.get_attribute("href") or "").strip()
+        if href and not href.lower().startswith(("javascript", "#")):
+            return urljoin(base, href)
+    return None
+
+
+def pick_icon_element(icon_cell):
+    """The actual clickable icon inside the Icon cell (a/button/img/i/span/svg), else the cell."""
+    for xp in (".//a", ".//button", ".//img", ".//i", ".//*[name()='svg']", ".//span", ".//*"):
+        for el in icon_cell.find_elements(By.XPATH, xp):
+            if _usable(el):
+                return el
+    return icon_cell
+
+
+def zone_identifier_url(path):
+    """Windows stores the download's source URL in the Zone.Identifier stream."""
+    try:
+        with open(path + ":Zone.Identifier", "r", errors="ignore") as f:
+            txt = f.read()
+        m = re.search(r"HostUrl=(\S+)", txt) or re.search(r"ReferrerUrl=(\S+)", txt)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def click_icon_and_get_pdf(driver, session, icon_cell, form_number):
+    """Click the icon; PDF either downloads straight away or opens in a new tab (which we
+    force to download). Returns (local_path, url)."""
+    target = pick_icon_element(icon_cell)
+    before_files = set(os.listdir(INCOMING))
+    main = driver.current_window_handle
+    before_handles = set(driver.window_handles)
+
+    click(driver, target)
+
+    tab_url, new_file, last_size, end = None, None, -1, time.time() + DOWNLOAD_WAIT
+    while time.time() < end:
+        time.sleep(0.7)
+        # capture the url of any new tab that opened
+        for h in driver.window_handles:
+            if h not in before_handles:
+                try:
+                    driver.switch_to.window(h)
+                    u = driver.current_url
+                    if u and not u.startswith(("about:", "edge:", "chrome:", "data:")):
+                        tab_url = u
+                except Exception:
+                    pass
         try:
-            resp = session.get(url, timeout=90)
-            resp.raise_for_status()
-            if b"%PDF" not in resp.content[:1024]:
-                raise ValueError("Downloaded file is not a PDF (login page / wrong link?)")
-            with open(path, "wb") as f:
-                f.write(resp.content)
-            return path
+            driver.switch_to.window(main)
+        except Exception:
+            pass
+        # finished download?
+        cur = set(os.listdir(INCOMING)) - before_files
+        partial = [f for f in cur if f.lower().endswith((".crdownload", ".tmp", ".partial"))]
+        done = [f for f in cur if f not in partial]
+        if done and not partial:
+            p = os.path.join(INCOMING, done[0])
+            size = os.path.getsize(p)
+            if size == last_size and size > 0:
+                new_file = p
+                break
+            last_size = size
+
+    # close any extra tabs we opened
+    for h in list(driver.window_handles):
+        if h != main:
+            try:
+                driver.switch_to.window(h)
+                driver.close()
+            except Exception:
+                pass
+    driver.switch_to.window(main)
+
+    if new_file:
+        url = tab_url or zone_identifier_url(new_file) or "(downloaded by clicking icon)"
+        return final_pdf_path(new_file, form_number), url
+
+    # no file arrived - maybe the tab had a normal http url we can fetch ourselves
+    if tab_url and tab_url.lower().startswith("http"):
+        return download_via_http(session, tab_url, form_number), tab_url
+    raise RuntimeError("Clicked the icon but no PDF downloaded (check popup blocker / PDF setting)")
+
+
+def fetch_pdf(driver, session, row, icon_cell, form_number):
+    href = direct_href(driver, row, icon_cell)
+    if href:
+        try:
+            return download_via_http(session, href, form_number), href
         except Exception as e:
-            last_err = e
-            time.sleep(2)
-    raise last_err
+            log(f"      direct link failed ({e}) - trying icon click")
+    return click_icon_and_get_pdf(driver, session, icon_cell, form_number)
 
 
+# ------------------------- PDF search ---------------------------------------
 def scan_pdf(path):
     """Open the PDF and return (found, [page numbers], remark)."""
     pages, total_text = [], 0
@@ -414,8 +506,7 @@ def save_excel(results, summary):
     from openpyxl.styles import Font
     used = {"summary"}
     with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
-        sdf = pd.DataFrame(summary, columns=SUMMARY_COLS)
-        sdf.to_excel(xw, sheet_name="Summary", index=False)
+        pd.DataFrame(summary, columns=SUMMARY_COLS).to_excel(xw, sheet_name="Summary", index=False)
         ws = xw.sheets["Summary"]
         for col, w in zip("ABCDEFGH", [24, 24, 20, 14, 16, 16, 10, 40]):
             ws.column_dimensions[col].width = w
@@ -437,8 +528,8 @@ def save_excel(results, summary):
 
 
 # ------------------------- Per-LOB processing -------------------------------
-def process_lob(driver, lob, results_for_lob, cache):
-    """Returns (pages_read, status)."""
+def process_lob(driver, lob, out):
+    """Returns (pages_read, status). Appends one record per form to `out`."""
     apply_filters(driver, lob)
     n = wait_for_results(driver)
     if n == 0:
@@ -453,45 +544,46 @@ def process_lob(driver, lob, results_for_lob, cache):
             break
         seen_sigs.add(sig)
 
-        # 1) read all rows of THIS page
-        rows = read_current_page(driver)
-        log(f"  --- Results page {page_no}: {len(rows)} forms ---")
+        n_rows = len(valid_rows(driver))
+        log(f"  --- Results page {page_no}: {n_rows} forms ---")
         session = get_requests_session(driver)
 
-        # 2) check every PDF of this page
-        for ri, row in enumerate(rows, start=1):
-            fn, url = row["form_number"], row["pdf_url"]
-            log(f"  [page {page_no} | {ri}/{len(rows)}] Form {fn}")
-            rec = {"Form Number": fn, "Springfield Found": "No", "Page Number": "NA",
+        # check every PDF of THIS page (click icon -> download -> search)
+        for i in range(n_rows):
+            rec = {"Form Number": "", "Springfield Found": "No", "Page Number": "NA",
                    "PDF URL": "NA", "Results Page": page_no, "Remarks": ""}
-            if not url:
+            try:
+                rows = valid_rows(driver)
+                row = rows[i]
+                cells = row.find_elements(By.TAG_NAME, "td")
+                fn = cells[FORM_NUMBER_COL].text.strip()
+                rec["Form Number"] = fn
+                log(f"  [page {page_no} | {i + 1}/{n_rows}] Form {fn}")
+                log("      Clicking PDF icon...")
+                path, url = fetch_pdf(driver, session, row, cells[ICON_COL], fn)
+                log("      PDF downloaded")
+                found, pages, remark = scan_pdf(path)
+                rec["Remarks"] = remark
+                if found:
+                    rec["Springfield Found"] = "Yes"
+                    rec["Page Number"] = ", ".join(map(str, pages))
+                    rec["PDF URL"] = url
+                    log(f"      >>> '{SEARCH_TEXT}' FOUND on page(s) {pages}")
+                else:
+                    log(f"      '{SEARCH_TEXT}' not found")
+            except Exception as e:
                 rec["Springfield Found"] = "Error"
-                rec["Remarks"] = "PDF link not found in row"
-                log("      !! No PDF link found for this row")
-            else:
-                try:
-                    if url not in cache:
-                        path = download_pdf(session, url, fn)
-                        cache[url] = scan_pdf(path)
-                    else:
-                        log("      Already scanned earlier - reusing result")
-                    found, pages, remark = cache[url]
-                    rec["Remarks"] = remark
-                    if found:
-                        rec["Springfield Found"] = "Yes"
-                        rec["Page Number"] = ", ".join(map(str, pages))
-                        rec["PDF URL"] = url
-                        log(f"      >>> '{SEARCH_TEXT}' FOUND on page(s) {pages}")
-                    else:
-                        log(f"      '{SEARCH_TEXT}' not found")
-                except Exception as e:
-                    rec["Springfield Found"] = "Error"
-                    rec["Remarks"] = str(e)[:200]
-                    log(f"      !! ERROR: {e}")
-            results_for_lob.append(rec)
+                rec["Remarks"] = str(e)[:200]
+                if not rec["Form Number"]:
+                    rec["Form Number"] = f"(row {i + 1} unreadable)"
+                log(f"      !! ERROR: {e}")
+                try:   # make sure we are back on the main tab
+                    driver.switch_to.window(driver.window_handles[0])
+                except Exception:
+                    pass
+            out.append(rec)
 
-        # 3) only now go to the next page
-        log(f"  Finished page {page_no}. Looking for Next page...")
+        log(f"  Finished page {page_no}. Looking for Next page button...")
         if not go_next_page(driver):
             log("  No more pages")
             break
@@ -502,19 +594,24 @@ def process_lob(driver, lob, results_for_lob, cache):
 # ------------------------- Main ---------------------------------------------
 def main():
     log("Script started")
-    os.makedirs(PDF_FOLDER, exist_ok=True)
+    os.makedirs(INCOMING, exist_ok=True)
 
     opts = Options()
     opts.add_argument("--start-maximized")
+    opts.add_experimental_option("prefs", {
+        "download.default_directory": INCOMING,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "plugins.always_open_pdf_externally": True,   # download PDFs instead of showing the viewer
+        "profile.default_content_settings.popups": 0,
+    })
     if USE_MY_EDGE_PROFILE:
         opts.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
         opts.add_argument(f"--profile-directory={EDGE_PROFILE}")
     log("Opening Edge browser...")
     driver = webdriver.Edge(options=opts)
 
-    results, summary, cache = {}, [], {}
-    used_names = set()
-
+    results, summary, used_names = {}, [], set()
     try:
         for li, lob in enumerate(LINES_OF_BUSINESS, start=1):
             log("=" * 64)
@@ -523,17 +620,19 @@ def main():
 
             status, pages_read = "FAILED", 0
             for attempt in range(1, LOB_ATTEMPTS + 1):
-                results[lob] = []          # start clean on each attempt
+                results[lob] = []
                 try:
-                    pages_read, status = process_lob(driver, lob, results[lob], cache)
+                    pages_read, status = process_lob(driver, lob, results[lob])
                     if status == "OK" or attempt == LOB_ATTEMPTS:
                         break
                     log(f"  {status} - retrying ({attempt}/{LOB_ATTEMPTS})...")
                 except Exception as e:
                     status = f"FAILED: {str(e)[:150]}"
                     log(f"  !! {lob} failed on attempt {attempt}: {e}")
-                    if attempt < LOB_ATTEMPTS:
-                        log("  Retrying...")
+                    try:
+                        driver.switch_to.window(driver.window_handles[0])
+                    except Exception:
+                        pass
 
             recs = results[lob]
             summary.append({
@@ -546,7 +645,7 @@ def main():
                 "Errors": sum(r["Springfield Found"] == "Error" for r in recs),
                 "Status": status,
             })
-            save_excel(results, summary)    # checkpoint after every Line of Business
+            save_excel(results, summary)
             s = summary[-1]
             log(f"Finished {lob}: {s['Forms Found']} forms | Yes {s['Springfield Yes']} | "
                 f"No {s['Springfield No']} | Errors {s['Errors']} | {status}")
