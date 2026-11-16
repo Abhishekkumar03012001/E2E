@@ -8,15 +8,16 @@ Install:
 
 Run:
     python formzilla_springfield.py
-(Log in manually in the browser window when asked, then press Enter.)
 """
 
 import os
 import re
+import sys
 import time
 import requests
 import fitz  # PyMuPDF
 import pandas as pd
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
@@ -33,17 +34,19 @@ OUTPUT_XLSX = "springfield_forms.xlsx"
 PDF_FOLDER = "downloaded_pdfs"
 WAIT = 20
 
-# Line of Business options (from your screenshot). Set to None to auto-read.
+# Optional: reuse your normal Edge profile so you stay auto-logged-in.
+# Close ALL Edge windows before running if you enable this.
+USE_MY_EDGE_PROFILE = False
+EDGE_USER_DATA_DIR = r"C:\Users\YOUR_NAME\AppData\Local\Microsoft\Edge\User Data"
+EDGE_PROFILE = "Default"
+
 LINES_OF_BUSINESS = [
     "Condo", "Dwelling fire", "Earthquake", "Homeowners", "Motorcycle",
     "Personal auto", "Personal umbrella", "Recreational vehicle",
     "Renters", "Watercraft",
 ]
 
-# XPaths - adjust if the page structure differs. Press F12 > right-click
-# element > Copy > Copy XPath to get exact ones.
 X_FORMZILLA_TAB = "//a[normalize-space()='FormZilla'] | //*[normalize-space(text())='FormZilla']"
-# The "Select" button next to a label (label text -> following Select button)
 def x_select_button(label):
     return (f"(//*[contains(normalize-space(text()),'{label}')]"
             f"/following::*[normalize-space(text())='Select'][1])")
@@ -58,6 +61,11 @@ X_NEXT_PAGE = "//a[contains(@class,'next') or normalize-space(.)='Next' or norma
 # ---------------------------------------------------------------------------
 
 
+def log(msg=""):
+    """Print with timestamp and flush immediately so progress shows live."""
+    print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
+
+
 def wait_click(driver, xpath, timeout=WAIT):
     el = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, xpath)))
     try:
@@ -69,30 +77,33 @@ def wait_click(driver, xpath, timeout=WAIT):
 
 def apply_filters(driver, lob):
     """Re-enter Brand / Line of Business / State every time (page resets)."""
+    log("  Opening site...")
     driver.get(SITE_URL)
+    log("  Clicking FormZilla tab")
     wait_click(driver, X_FORMZILLA_TAB)
     time.sleep(1.5)
 
-    # Brand
+    log(f"  Selecting Brand = {BRAND}")
     wait_click(driver, x_select_button("Brand"))
     wait_click(driver, x_menu_item(BRAND))
     time.sleep(1)
 
-    # Line of Business
+    log(f"  Selecting Line of Business = {lob}")
     wait_click(driver, x_select_button("Line of Business"))
     wait_click(driver, x_menu_item(lob))
     time.sleep(1)
 
-    # State
+    log(f"  Entering State = {STATE}")
     st = WebDriverWait(driver, WAIT).until(
         EC.element_to_be_clickable((By.XPATH, X_STATE_INPUT)))
     st.clear()
     st.send_keys(STATE)
     time.sleep(0.5)
 
-    # Get Results
+    log("  Clicking Get Results...")
     wait_click(driver, X_GET_RESULTS)
     time.sleep(3)
+    log("  Results loaded")
 
 
 def get_requests_session(driver):
@@ -104,7 +115,6 @@ def get_requests_session(driver):
 
 
 def collect_rows(driver):
-    """Return list of dicts: form_number, description, pdf_url for current page."""
     out = []
     rows = driver.find_elements(By.XPATH, X_RESULT_ROWS)
     for r in rows:
@@ -129,93 +139,134 @@ def collect_rows(driver):
 
 def collect_all_pages(driver):
     results, seen = [], set()
+    page_no = 1
     while True:
-        for row in collect_rows(driver):
+        rows = collect_rows(driver)
+        new = 0
+        for row in rows:
             key = (row["form_number"], row["pdf_url"])
             if key not in seen:
                 seen.add(key)
                 results.append(row)
+                new += 1
+        log(f"  Results page {page_no}: {new} forms read (total {len(results)})")
         nxt = driver.find_elements(By.XPATH, X_NEXT_PAGE)
         nxt = [n for n in nxt if n.is_displayed() and "disabled" not in (n.get_attribute("class") or "")]
         if not nxt:
             break
         driver.execute_script("arguments[0].click();", nxt[0])
+        page_no += 1
         time.sleep(2)
     return results
 
 
 def search_pdf(session, url, form_number):
-    """Download PDF and return sorted 1-indexed page numbers containing SEARCH_TEXT."""
+    """Download PDF and return (page_count, matching page numbers)."""
     safe = re.sub(r"[^\w\-]+", "_", form_number)
     path = os.path.join(PDF_FOLDER, f"{safe}.pdf")
     if not os.path.exists(path):
+        log("      Downloading PDF...")
         resp = session.get(url, timeout=60)
         resp.raise_for_status()
         with open(path, "wb") as f:
             f.write(resp.content)
+    else:
+        log("      PDF already downloaded (using saved copy)")
     pages = []
     with fitz.open(path) as doc:
+        total = len(doc)
+        log(f"      Scanning {total} page(s) for '{SEARCH_TEXT}'...")
         for i, page in enumerate(doc, start=1):
             if SEARCH_TEXT.lower() in page.get_text().lower():
                 pages.append(i)
-    return pages
+    return total, pages
 
 
 def main():
+    log("Script started")
     os.makedirs(PDF_FOLDER, exist_ok=True)
+
     opts = Options()
     opts.add_argument("--start-maximized")
+    if USE_MY_EDGE_PROFILE:
+        opts.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
+        opts.add_argument(f"--profile-directory={EDGE_PROFILE}")
+    log("Opening Edge browser...")
     driver = webdriver.Edge(options=opts)
 
-    driver.get(SITE_URL)
-    input("Log in in the browser window if required, then press Enter here... ")
-
     hits, errors = [], []
-    checked = {}  # (form_number, url) -> pages, avoids re-downloading duplicates
+    checked = {}
+    total_scanned = 0
+    n_lob = len(LINES_OF_BUSINESS)
 
     try:
-        for lob in LINES_OF_BUSINESS:
-            print(f"\n=== {lob} ===")
+        for li, lob in enumerate(LINES_OF_BUSINESS, start=1):
+            log("=" * 60)
+            log(f"LINE OF BUSINESS {li}/{n_lob}: {lob}")
+            log("=" * 60)
             try:
                 apply_filters(driver, lob)
                 rows = collect_all_pages(driver)
             except TimeoutException:
-                print(f"  Could not apply filters/get results for {lob}")
+                log(f"  !! Could not apply filters / get results for {lob} (XPath not found?)")
                 errors.append({"line_of_business": lob, "form_number": "", "error": "filter/result timeout"})
                 continue
 
-            print(f"  {len(rows)} forms found")
+            log(f"  {len(rows)} forms found for {lob}")
             session = get_requests_session(driver)
 
-            for row in rows:
-                key = (row["form_number"], row["pdf_url"])
+            for ri, row in enumerate(rows, start=1):
+                fn = row["form_number"]
+                log(f"  [{ri}/{len(rows)}] Form {fn}")
+                key = (fn, row["pdf_url"])
                 try:
                     if key not in checked:
-                        checked[key] = search_pdf(session, row["pdf_url"], row["form_number"])
-                    pages = checked[key]
+                        checked[key] = search_pdf(session, row["pdf_url"], fn)
+                        total_scanned += 1
+                    else:
+                        log("      Already scanned under another Line of Business")
+                    total, pages = checked[key]
                     if pages:
-                        print(f"  MATCH {row['form_number']}  pages {pages}")
+                        log(f"      >>> MATCH: '{SEARCH_TEXT}' on page(s) {pages}")
                         hits.append({
                             "line_of_business": lob,
-                            "form_number": row["form_number"],
+                            "form_number": fn,
                             "description": row["description"],
                             "pages_with_text": ", ".join(map(str, pages)),
                             "pdf_url": row["pdf_url"],
                         })
+                    else:
+                        log(f"      No match")
+                    log(f"      Done. (PDFs scanned so far: {total_scanned} | matches so far: {len(hits)})")
                 except Exception as e:
-                    print(f"  ERROR {row['form_number']}: {e}")
-                    errors.append({"line_of_business": lob,
-                                   "form_number": row["form_number"], "error": str(e)})
+                    log(f"      !! ERROR: {e}")
+                    errors.append({"line_of_business": lob, "form_number": fn, "error": str(e)})
+
+            log(f"Finished {lob}. Matches so far: {len(hits)}")
     finally:
+        log("Closing browser...")
         driver.quit()
 
+    log(f"Saving Excel file: {OUTPUT_XLSX}")
+    # Final output: only Form Number + Page Number (one row per unique form)
+    final = {}
+    for h in hits:
+        final.setdefault(h["form_number"], h["pages_with_text"])
+    df = pd.DataFrame(
+        [{"Form Number": fn, "Page Number": pg} for fn, pg in final.items()],
+        columns=["Form Number", "Page Number"],
+    )
     with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xw:
-        pd.DataFrame(hits, columns=["line_of_business", "form_number", "description",
-                                    "pages_with_text", "pdf_url"]).to_excel(
-            xw, sheet_name="Springfield forms", index=False)
+        df.to_excel(xw, sheet_name="Springfield forms", index=False)
+        ws = xw.sheets["Springfield forms"]
+        ws.column_dimensions["A"].width = 28
+        ws.column_dimensions["B"].width = 18
         if errors:
             pd.DataFrame(errors).to_excel(xw, sheet_name="Errors", index=False)
-    print(f"\nDone. {len(hits)} matching forms saved to {OUTPUT_XLSX}")
+
+    log("=" * 60)
+    log(f"ALL DONE. PDFs scanned: {total_scanned} | Unique forms with match: {len(final)} | Errors: {len(errors)}")
+    log(f"Output: {os.path.abspath(OUTPUT_XLSX)}")
 
 
 if __name__ == "__main__":
