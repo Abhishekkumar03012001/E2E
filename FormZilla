@@ -47,8 +47,8 @@ RESUME = True             # True = skip PDFs already downloaded in an earlier ru
 WAIT = 20                 # seconds to wait for a page element
 RESULTS_WAIT = 40         # seconds to wait for the results table
 DOWNLOAD_WAIT = 30        # seconds to wait for a PDF after clicking its icon
-PDF_RETRIES = 3          # tries per PDF before it is marked "Error" (not downloaded)
-LOB_ATTEMPTS = 3          # retry a Line of Business this many times if it fails
+PDF_RETRIES = 2          # tries per PDF (2 = one retry) before it is marked "Error"
+LOB_ATTEMPTS = 1          # passes per Line of Business (1 = every PDF tried max 2 times; re-run Part 1 later to retry failures only)
 
 # Reuse your normal Edge profile (keeps your automatic login).
 # If you enable this, CLOSE ALL Edge windows before running.
@@ -537,12 +537,122 @@ def fetch_pdf(driver, session, row, icon_cell, form_number, dest_dir):
     raise last
 
 
+# ------------------------- Browser + recovery -------------------------------
+class Browser:
+    """Holds the Edge driver so it can be restarted if it gets stuck."""
+    def __init__(self):
+        self.driver = None
+        self.main = None
+
+    def start(self):
+        opts = Options()
+        opts.add_argument("--start-maximized")
+        opts.add_experimental_option("prefs", {
+            "download.default_directory": INCOMING,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "plugins.always_open_pdf_externally": False,   # PDF opens in a tab; we fetch it ourselves
+            "profile.default_content_settings.popups": 0,
+            "safebrowsing.enabled": False,
+            "safebrowsing.disable_download_protection": True,
+        })
+        if USE_MY_EDGE_PROFILE:
+            opts.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
+            opts.add_argument(f"--profile-directory={EDGE_PROFILE}")
+        log("Opening Edge browser...")
+        self.driver = webdriver.Edge(options=opts)
+        self.driver.set_page_load_timeout(60)
+        self.main = self.driver.current_window_handle
+
+    def alive(self):
+        try:
+            _ = self.driver.window_handles
+            return True
+        except Exception:
+            return False
+
+    def stop(self):
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            pass
+        self.driver = None
+
+    def restart(self):
+        log("  >> Restarting the Edge browser...")
+        self.stop()
+        time.sleep(2)
+        self.start()
+
+
+def light_reset(browser):
+    """Close stray tabs/dialogs, go back to the main tab, empty the incoming folder."""
+    d = browser.driver
+    try:
+        d.switch_to.alert.dismiss()
+    except Exception:
+        pass
+    handles = d.window_handles
+    if browser.main not in handles:
+        browser.main = handles[0]
+    for h in handles:
+        if h != browser.main:
+            try:
+                d.switch_to.window(h)
+                d.close()
+            except Exception:
+                pass
+    d.switch_to.window(browser.main)
+    try:
+        d.set_script_timeout(30)
+    except Exception:
+        pass
+    clear_incoming()
+
+
+def restore_position(browser, lob, page_no, sig, hard=False):
+    """After a failure, put the browser back on results page `page_no` in a clean state.
+    1) light clean-up (close tabs)  2) if the page is not as before -> re-open the site,
+    re-apply filters, go to the page  3) last resort -> restart Edge and do the same."""
+    if not hard and browser.alive():
+        try:
+            light_reset(browser)
+            wait_for_results(browser.driver, 10)
+            if page_signature(browser.driver) == sig:
+                log("  (browser cleaned - still on the same results page)")
+                return
+        except Exception as e:
+            log(f"  (light clean-up not enough: {str(e)[:80]})")
+
+    for attempt in (1, 2):
+        try:
+            if attempt == 2 or not browser.alive():
+                browser.restart()
+            else:
+                try:
+                    light_reset(browser)
+                except Exception:
+                    pass
+            log(f"  >> Re-opening results (attempt {attempt}/2), going back to page {page_no}...")
+            apply_filters(browser.driver, lob)
+            if wait_for_results(browser.driver) == 0:
+                raise RuntimeError("results table did not load")
+            for _ in range(page_no - 1):
+                if not go_next_page(browser.driver):
+                    raise RuntimeError("could not reach the results page again")
+            return
+        except Exception as e:
+            log(f"  !! recovery attempt {attempt} failed: {str(e)[:120]}")
+    raise RuntimeError("browser could not be recovered")
+
+
 # ------------------------- Per-LOB download ---------------------------------
 def save_manifest(path, recs):
     pd.DataFrame(recs, columns=MANIFEST_COLS).to_csv(path, index=False, encoding="utf-8-sig")
 
 
-def process_lob_download(driver, lob, recs):
+def process_lob_download(browser, lob, recs):
     """Download every PDF of one Line of Business. Fills `recs`. Returns (pages_read, status)."""
     lob_dir = lob_folder(lob)
     manifest_path = os.path.join(lob_dir, MANIFEST_NAME)
@@ -556,6 +666,7 @@ def process_lob_download(driver, lob, recs):
         except Exception as e:
             log(f"  (could not read old manifest: {e})")
 
+    driver = browser.driver
     apply_filters(driver, lob)
     n = wait_for_results(driver)
     if n == 0:
@@ -563,8 +674,9 @@ def process_lob_download(driver, lob, recs):
     log(f"  Results loaded ({n} rows on first page)")
 
     merged = dict(old)                       # keep earlier results; update them as we go
-    occ, page_no, seen_sigs = {}, 1, set()
+    occ, page_no, seen_sigs, fails_in_row = {}, 1, set(), 0
     while True:
+        driver = browser.driver
         sig = page_signature(driver)
         if sig in seen_sigs:
             log("  Same page seen again - stopping")
@@ -573,9 +685,10 @@ def process_lob_download(driver, lob, recs):
 
         n_rows = len(valid_rows(driver))
         log(f"  --- Results page {page_no}: {n_rows} forms ---")
-        session = get_requests_session(driver)
 
         for i in range(n_rows):
+            driver = browser.driver
+            session = get_requests_session(driver)          # fresh cookies for every PDF
             rec = {"Key": "", "Form Number": "", "PDF File": "", "PDF URL": "",
                    "Results Page": page_no, "Download Status": "Downloaded", "Remarks": ""}
             try:
@@ -596,22 +709,27 @@ def process_lob_download(driver, lob, recs):
                     path, url = fetch_pdf(driver, session, row, cells[ICON_COL], fn, lob_dir)
                     rec["PDF File"], rec["PDF URL"] = os.path.basename(path), url
                     log(f"      saved -> {os.path.join(os.path.basename(lob_dir), rec['PDF File'])}")
+                fails_in_row = 0
             except Exception as e:
                 rec["Download Status"] = "Error"
                 rec["Remarks"] = str(e)[:200]
                 if not rec["Form Number"]:
                     rec["Form Number"] = f"(row {i + 1} unreadable)"
                 log(f"      !! ERROR: {e}")
-                try:
-                    driver.switch_to.window(driver.window_handles[0])
-                except Exception:
-                    pass
+                fails_in_row += 1
+                recs.append(rec)
+                merged[rec["Key"] or f"row{page_no}-{i + 1}"] = rec
+                save_manifest(manifest_path, list(merged.values()))
+                # >>> WAY OUT: never carry a broken browser state into the next PDF
+                log("      Resetting the browser so the next PDF is not affected...")
+                restore_position(browser, lob, page_no, sig, hard=(fails_in_row >= 2))
+                continue
             recs.append(rec)
             merged[rec["Key"] or f"row{page_no}-{i + 1}"] = rec
             save_manifest(manifest_path, list(merged.values()))
 
         log(f"  Finished page {page_no}.")
-        if not go_next_page(driver):
+        if not go_next_page(browser.driver):
             break
         page_no += 1
     return page_no, "OK"
@@ -622,22 +740,8 @@ def run_part1():
     log(f"PDFs will be saved under: {BASE_FOLDER}")
     os.makedirs(INCOMING, exist_ok=True)
 
-    opts = Options()
-    opts.add_argument("--start-maximized")
-    opts.add_experimental_option("prefs", {
-        "download.default_directory": INCOMING,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": False,   # PDF opens in a tab; we fetch it ourselves
-        "profile.default_content_settings.popups": 0,
-        "safebrowsing.enabled": False,
-        "safebrowsing.disable_download_protection": True,
-    })
-    if USE_MY_EDGE_PROFILE:
-        opts.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
-        opts.add_argument(f"--profile-directory={EDGE_PROFILE}")
-    log("Opening Edge browser...")
-    driver = webdriver.Edge(options=opts)
+    browser = Browser()
+    browser.start()
 
     summary, failed = [], []
     try:
@@ -649,7 +753,7 @@ def run_part1():
             for attempt in range(1, LOB_ATTEMPTS + 1):
                 recs = []
                 try:
-                    pages, status = process_lob_download(driver, lob, recs)
+                    pages, status = process_lob_download(browser, lob, recs)
                     n_err = sum(r["Download Status"] != "Downloaded" for r in recs)
                     if (status == "OK" and n_err == 0) or attempt == LOB_ATTEMPTS:
                         break
@@ -658,10 +762,8 @@ def run_part1():
                 except Exception as e:
                     status = f"FAILED: {str(e)[:150]}"
                     log(f"  !! {lob} failed on attempt {attempt}: {e}")
-                    try:
-                        driver.switch_to.window(driver.window_handles[0])
-                    except Exception:
-                        pass
+                    if not browser.alive():
+                        browser.restart()
             ok = sum(r["Download Status"] == "Downloaded" for r in recs)
             failed += [{"Line of Business": lob, "Form Number": r["Form Number"], "Remarks": r["Remarks"]}
                        for r in recs if r["Download Status"] != "Downloaded"]
@@ -671,7 +773,7 @@ def run_part1():
             log(f"Finished {lob}: {len(recs)} forms | downloaded {ok} | errors {len(recs) - ok} | {status}")
     finally:
         log("Closing browser...")
-        driver.quit()
+        browser.stop()
         shutil.rmtree(INCOMING, ignore_errors=True)       # nothing is left behind
 
     pd.DataFrame(summary).to_csv(os.path.join(BASE_FOLDER, "_download_summary.csv"),
