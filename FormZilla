@@ -1,799 +1,128 @@
-# =============================================================================
-# PART 1 - DOWNLOAD ALL PDFs  (one folder per Line of Business)
-# =============================================================================
-# For each Line of Business (Brand = Liberty Agency, State = IL):
-#   Get Results -> click each PDF icon on the page -> PDF is saved ->
-#   click Next page -> repeat until the last page.
-#
-# Output:
-#   downloaded_pdfs/<Line of Business>/<FormNumber>.pdf
-#   downloaded_pdfs/<Line of Business>/_manifest.csv   (Form Number -> pdf file, url, status)
-#
-# Install once:  pip install selenium requests pandas
-# =============================================================================
-import os
-import re
-import time
-import base64
-import hashlib
-import shutil
-import tempfile
-import requests
-import pandas as pd
-from datetime import datetime
-from urllib.parse import urljoin
-from selenium import webdriver
-from selenium.webdriver.edge.options import Options
-from selenium.webdriver.common.by import By
+"""
+Scan all PDFs in a folder for the word "SpringField" (case-insensitive)
+and write the results to an Excel file.
 
-# ----------------------------- CONFIG ---------------------------------------
-SITE_URL = "https://doczilla.libertyec.com"   # <- put your exact link here
-BRAND = "Liberty Agency"
-STATE = "IL"
+Install requirements:
+    pip install pdfplumber openpyxl
 
-# >>> Add more Lines of Business here, e.g. ["Homeowners", "Condo", "Renters"]
-#     Available: Condo, Dwelling fire, Earthquake, Homeowners, Motorcycle, Personal auto,
-#                Personal umbrella, Recreational vehicle, Renters, Watercraft
-LINES_OF_BUSINESS = [
-    "Homeowners",
-]
+Usage:
+    python pdf_springfield_checker.py "C:/path/to/pdf_folder"
+    python pdf_springfield_checker.py "C:/path/to/pdf_folder" -o results.xlsx -s SpringField
+"""
 
-BASE_FOLDER = os.path.abspath("downloaded_pdfs")      # must be the same in Part 2
-# Temporary browser-download folder. Kept on your LOCAL disk on purpose: downloading straight into a
-# network share (NAS) is a common cause of "Couldn't download - virus scan failed".
-INCOMING = os.path.join(tempfile.gettempdir(), "formzilla_incoming")
-MANIFEST_NAME = "_manifest.csv"
-RESUME = True             # True = skip PDFs already downloaded in an earlier run
-WAIT = 20                 # seconds to wait for a page element
-RESULTS_WAIT = 40         # seconds to wait for the results table
-DOWNLOAD_WAIT = 30        # seconds to wait for a PDF after clicking its icon
-PDF_RETRIES = 2          # tries per PDF (2 = one retry) before it is marked "Error"
-LOB_ATTEMPTS = 1          # passes per Line of Business (1 = every PDF tried max 2 times; re-run Part 1 later to retry failures only)
+import argparse
+import sys
+from pathlib import Path
 
-# Reuse your normal Edge profile (keeps your automatic login).
-# If you enable this, CLOSE ALL Edge windows before running.
-USE_MY_EDGE_PROFILE = False
-EDGE_USER_DATA_DIR = r"C:\Users\YOUR_NAME\AppData\Local\Microsoft\Edge\User Data"
-EDGE_PROFILE = "Default"
-
-# Results table: column 1 = Icon (pdf), column 2 = Form Number
-ICON_COL = 0
-FORM_NUMBER_COL = 1
-
-# XPaths (adjust if needed: F12 > right-click element > Copy > Copy XPath)
-X_FORMZILLA_TAB = "//*[self::a or self::button or self::li or self::div or self::span][normalize-space(text())='FormZilla']"
-X_GET_RESULTS = ("//*[self::button or self::input or self::a]"
-                 "[contains(normalize-space(.),'Get Results') or @value='Get Results']")
-X_RESULT_ROWS = "//table//tr[td]"
-X_NEXT = "//button[@id='tableNext']"      # from your Inspect screenshot
-# ---------------------------------------------------------------------------
-
-UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-LOWER = "abcdefghijklmnopqrstuvwxyz"
-MANIFEST_COLS = ["Key", "Form Number", "PDF File", "PDF URL", "Results Page",
-                 "Download Status", "Remarks"]
+import pdfplumber
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 
-def log(msg=""):
-    print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
-
-
-def lob_folder(lob):
-    name = re.sub(r'[\\/*?:"<>|]', "_", lob).strip() or "Unnamed"
-    path = os.path.join(BASE_FOLDER, name)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-# ------------------------- Selenium helpers ---------------------------------
-def is_shown(el):
+def find_pages(pdf_path: Path, search_text: str):
+    """Return (list_of_page_numbers, error_message) for the search text in one PDF."""
+    pages_found = []
+    needle = search_text.lower()
     try:
-        return el.is_displayed()
-    except Exception:
-        return False
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_no, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
+                if needle in text.lower():
+                    pages_found.append(page_no)
+    except Exception as exc:  # corrupted / password protected PDFs
+        return [], str(exc)
+    return pages_found, None
 
 
-def visible(driver, xpath):
-    return [e for e in driver.find_elements(By.XPATH, xpath) if is_shown(e)]
+def write_excel(rows, output_file: Path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Results"
+
+    headers = ["PDF Name", "SpringField Found (Yes/No)", "Page Number(s)"]
+    ws.append(headers)
+
+    # Header styling
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    thin = Side(style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+    ws.row_dimensions[1].height = 26
+
+    # Data rows
+    for row in rows:
+        ws.append(row)
+
+    for r in range(2, ws.max_row + 1):
+        for c in range(1, 4):
+            cell = ws.cell(row=r, column=c)
+            cell.border = border
+            cell.alignment = Alignment(
+                horizontal="left" if c == 1 else "center", vertical="center", wrap_text=True
+            )
+        found_cell = ws.cell(row=r, column=2)
+        if found_cell.value == "Yes":
+            found_cell.font = Font(bold=True, color="006100")
+            found_cell.fill = PatternFill("solid", fgColor="C6EFCE")
+        elif found_cell.value == "No":
+            found_cell.font = Font(bold=True, color="9C0006")
+            found_cell.fill = PatternFill("solid", fgColor="FFC7CE")
+
+    # Filters, frozen header, column widths
+    ws.auto_filter.ref = f"A1:C{ws.max_row}"
+    ws.freeze_panes = "A2"
+    for col in range(1, 4):
+        letter = get_column_letter(col)
+        longest = max(len(str(c.value)) if c.value is not None else 0 for c in ws[letter])
+        ws.column_dimensions[letter].width = min(max(longest + 4, 18), 60)
+
+    wb.save(output_file)
 
 
-def wait_visible(driver, xpath, timeout=WAIT):
-    end = time.time() + timeout
-    while time.time() < end:
-        v = visible(driver, xpath)
-        if v:
-            return v[0]
-        time.sleep(0.4)
-    raise TimeoutError(f"Element not found/visible: {xpath}")
+def main():
+    parser = argparse.ArgumentParser(description="Check PDFs for a keyword and export to Excel.")
+    parser.add_argument("folder", nargs="?", help="Folder containing PDF files")
+    parser.add_argument("-o", "--output", default="springfield_results.xlsx", help="Output Excel file")
+    parser.add_argument("-s", "--search", default="SpringField", help="Text to search (case-insensitive)")
+    args = parser.parse_args()
 
+    folder_str = args.folder or input("Enter folder path containing PDFs: ").strip().strip('"')
+    folder = Path(folder_str)
+    if not folder.is_dir():
+        sys.exit(f"Error: '{folder}' is not a valid folder.")
 
-def click(driver, el):
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-    except Exception:
-        pass
-    try:
-        el.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", el)
+    pdf_files = sorted(
+        p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"
+    )
+    if not pdf_files:
+        sys.exit("No PDF files found in the folder.")
 
-
-def click_xpath(driver, xpath, timeout=WAIT):
-    el = wait_visible(driver, xpath, timeout)
-    click(driver, el)
-    return el
-
-
-def find_select_button(driver, label, timeout=WAIT):
-    """The VISIBLE 'Select' button that follows the VISIBLE label (ignores hidden tabs)."""
-    end = time.time() + timeout
-    while time.time() < end:
-        for lab in visible(driver, f"//*[contains(normalize-space(text()),'{label}')]"):
-            for b in lab.find_elements(By.XPATH, "following::*[normalize-space(text())='Select']"):
-                if is_shown(b):
-                    return b
-        time.sleep(0.4)
-    raise TimeoutError(f"'Select' button for '{label}' not found")
-
-
-def click_menu_item(driver, text, timeout=WAIT):
-    t = text.lower()
-    xp = ("//*[self::a or self::li or self::span or self::div or self::button or self::label or self::option]"
-          f"[translate(normalize-space(text()),'{UPPER}','{LOWER}')='{t}']")
-    click(driver, wait_visible(driver, xp, timeout))
-
-
-# ------------------------- Filters ------------------------------------------
-def set_state(driver):
-    try:
-        for lab in visible(driver, "//*[normalize-space(text())='State' or starts-with(normalize-space(text()),'State ')]"):
-            for inp in lab.find_elements(By.XPATH, "following::input[1]"):
-                if is_shown(inp):
-                    cur = (inp.get_attribute("value") or "").strip().upper()
-                    if cur == STATE.upper():
-                        log(f"  State already = {STATE}")
-                        return
-                    inp.clear()
-                    inp.send_keys(STATE)
-                    log(f"  Entered State = {STATE}")
-                    return
-        log("  (State field not found - it may already be pre-filled)")
-    except Exception as e:
-        log(f"  (State step skipped: {e})")
-
-
-def apply_filters(driver, lob):
-    log("  Opening site...")
-    driver.get(SITE_URL)
-    log("  Clicking FormZilla tab")
-    click_xpath(driver, X_FORMZILLA_TAB)
-    time.sleep(1.5)
-
-    log(f"  Selecting Brand = {BRAND}")
-    click(driver, find_select_button(driver, "Brand"))
-    click_menu_item(driver, BRAND)
-    time.sleep(1.5)
-
-    log(f"  Selecting Line of Business = {lob}")
-    click(driver, find_select_button(driver, "Line of Business"))
-    time.sleep(0.5)
-    click_menu_item(driver, lob)
-    time.sleep(1)
-
-    set_state(driver)
-    time.sleep(0.5)
-
-    log("  Clicking Get Results...")
-    click_xpath(driver, X_GET_RESULTS)
-
-
-# ------------------------- Results table ------------------------------------
-def valid_rows(driver):
-    out = []
-    for r in driver.find_elements(By.XPATH, X_RESULT_ROWS):
-        try:
-            if not r.is_displayed():
-                continue
-            tds = r.find_elements(By.TAG_NAME, "td")
-            if len(tds) > max(ICON_COL, FORM_NUMBER_COL) and tds[FORM_NUMBER_COL].text.strip():
-                out.append(r)
-        except Exception:
-            continue
-    return out
-
-
-def wait_for_results(driver, timeout=RESULTS_WAIT):
-    end, last, stable = time.time() + timeout, -1, 0
-    while time.time() < end:
-        n = len(valid_rows(driver))
-        if n > 0 and n == last:
-            stable += 1
-            if stable >= 2:
-                return n
+    rows = []
+    for i, pdf in enumerate(pdf_files, start=1):
+        print(f"[{i}/{len(pdf_files)}] Scanning {pdf.name} ...")
+        pages, error = find_pages(pdf, args.search)
+        if error:
+            print(f"    Could not read file: {error}")
+            rows.append([pdf.name, "No", "NA"])
+        elif pages:
+            rows.append([pdf.name, "Yes", ", ".join(map(str, pages))])
         else:
-            stable = 0
-        last = n
-        time.sleep(1)
-    return max(last, 0)
+            rows.append([pdf.name, "No", "NA"])
 
+    output_file = Path(args.output)
+    if not output_file.is_absolute():
+        output_file = folder / output_file  # save next to the PDFs
+    write_excel(rows, output_file)
+    print(f"\nDone. Results saved to: {output_file}")
 
-def page_signature(driver):
-    nums = []
-    for r in valid_rows(driver):
-        try:
-            nums.append(r.find_elements(By.TAG_NAME, "td")[FORM_NUMBER_COL].text.strip())
-        except Exception:
-            pass
-    return hashlib.md5("|".join(nums).encode()).hexdigest() + f"#{len(nums)}"
 
-
-# ------------------------- Pagination ---------------------------------------
-def _is_disabled(el):
-    try:
-        cls = (el.get_attribute("class") or "").lower()
-        return bool("disabled" in cls or el.get_attribute("disabled")
-                    or el.get_attribute("aria-disabled") == "true")
-    except Exception:
-        return False
-
-
-def wait_page_changed(driver, before, timeout=20):
-    end = time.time() + timeout
-    while time.time() < end:
-        time.sleep(0.5)
-        try:
-            if page_signature(driver) != before:
-                wait_for_results(driver, 15)       # let the new rows finish loading
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def go_next_page(driver):
-    """Click the Next button. True only if the rows really changed."""
-    try:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(0.5)
-    except Exception:
-        pass
-    buttons = driver.find_elements(By.XPATH, X_NEXT)
-    if not buttons:
-        log("  Next button NOT found (check X_NEXT)")
-        return False
-    btn = buttons[0]
-    if _is_disabled(btn):
-        log("  Next button is disabled - this is the last page")
-        return False
-
-    before = page_signature(driver)
-    log("  Clicking Next page...")
-    click(driver, btn)
-    if wait_page_changed(driver, before):
-        return True
-    try:                                            # one more try with a JS click
-        driver.execute_script("arguments[0].click();", btn)
-    except Exception:
-        return False
-    return wait_page_changed(driver, before, 12)
-
-
-# ------------------------- Getting each PDF ---------------------------------
-def get_requests_session(driver):
-    s = requests.Session()
-    for c in driver.get_cookies():
-        s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
-    s.headers["User-Agent"] = driver.execute_script("return navigator.userAgent;")
-    return s
-
-
-def safe_file_name(form_number):
-    """Form number -> a valid Windows file name (only illegal characters are replaced)."""
-    name = re.sub(r'[\\/*?:"<>|\r\n\t]+', "_", form_number).strip(" .")
-    return (name or "form")[:120]
-
-
-def unique_path(dest_dir, form_number):
-    """<FormNumber>.pdf ; if that name is taken by another form -> <FormNumber>_2.pdf ..."""
-    base = safe_file_name(form_number)
-    path, n = os.path.join(dest_dir, base + ".pdf"), 2
-    while os.path.exists(path):
-        path = os.path.join(dest_dir, f"{base}_{n}.pdf")
-        n += 1
-    return path
-
-
-def save_pdf(src, form_number, dest_dir):
-    """src = bytes or a temp file path. Saves as <FormNumber>.pdf directly in dest_dir."""
-    dest = unique_path(dest_dir, form_number)
-    if isinstance(src, bytes):
-        with open(dest, "wb") as f:
-            f.write(src)
-        return dest
-    shutil.move(src, dest)
-    return dest
-
-
-def download_via_http(session, url, form_number, dest_dir):
-    resp = session.get(url, timeout=90)
-    resp.raise_for_status()
-    if b"%PDF" not in resp.content[:1024]:
-        raise ValueError("not a PDF")
-    return save_pdf(resp.content, form_number, dest_dir)
-
-
-def direct_href(driver, row, icon_cell):
-    base = driver.current_url
-    for a in icon_cell.find_elements(By.TAG_NAME, "a") or row.find_elements(By.TAG_NAME, "a"):
-        href = (a.get_attribute("href") or "").strip()
-        if href and not href.lower().startswith(("javascript", "#")):
-            return urljoin(base, href)
-    return None
-
-
-def pick_icon_element(icon_cell):
-    for xp in (".//a", ".//button", ".//img", ".//i", ".//*[name()='svg']", ".//span", ".//*"):
-        for el in icon_cell.find_elements(By.XPATH, xp):
-            if is_shown(el):
-                return el
-    return icon_cell
-
-
-def zone_identifier_url(path):
-    """Windows keeps the download's source URL in the Zone.Identifier stream."""
-    try:
-        with open(path + ":Zone.Identifier", "r", errors="ignore") as f:
-            txt = f.read()
-        m = re.search(r"HostUrl=(\S+)", txt) or re.search(r"ReferrerUrl=(\S+)", txt)
-        return m.group(1) if m else None
-    except Exception:
-        return None
-
-
-
-# ------------------- Browser-download handling (no leftovers in _incoming) --------
-def clear_incoming():
-    for f in os.listdir(INCOMING):
-        try:
-            os.remove(os.path.join(INCOMING, f))
-        except Exception:
-            pass
-
-
-def grab_browser_download(wait=0):
-    """If the browser itself downloaded a PDF into INCOMING, return its path (else None)."""
-    end = time.time() + wait
-    while True:
-        files = os.listdir(INCOMING)
-        partial = [f for f in files if f.lower().endswith((".crdownload", ".tmp", ".partial"))]
-        done = [f for f in files if f not in partial]
-        for f in done:
-            fp = os.path.join(INCOMING, f)
-            try:
-                s1 = os.path.getsize(fp)
-                time.sleep(0.6)
-                if s1 > 0 and s1 == os.path.getsize(fp):
-                    with open(fp, "rb") as fh:
-                        if b"%PDF" in fh.read(1024):
-                            return fp
-            except Exception:
-                pass
-        if time.time() >= end:
-            return None
-        time.sleep(0.7)
-
-# JavaScript helpers (run inside the page)
-JS_PATCH = """
-window.__fzOpened = window.__fzOpened || [];
-if (!window.__fzPatched) {
-  window.__fzPatched = true;
-  const o = window.open;
-  window.open = function(u) { try { window.__fzOpened.push(String(u)); } catch(e) {} return o.apply(this, arguments); };
-}
-return performance.getEntriesByType('resource').length;
-"""
-JS_READ = """
-const start = arguments[0];
-return {opened: window.__fzOpened || [],
-        res: performance.getEntriesByType('resource').slice(start).map(e => e.name)};
-"""
-JS_FETCH = """
-const url = arguments[0]; const cb = arguments[arguments.length - 1];
-fetch(url, {credentials: 'include'})
-  .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
-  .then(buf => { const b = new Uint8Array(buf); let s = ''; const n = 0x8000;
-     for (let i = 0; i < b.length; i += n) { s += String.fromCharCode.apply(null, b.subarray(i, i + n)); }
-     cb({ok: true, b64: btoa(s)}); })
-  .catch(e => cb({ok: false, err: String(e)}));
-"""
-PDFISH = re.compile(r"pdf|download|document|file|view|form", re.I)
-
-
-def fetch_bytes(driver, session, url):
-    """Get the PDF bytes straight from the URL - no browser download, so no 'virus scan' step."""
-    errs = []
-    if url.lower().startswith("http"):
-        try:
-            r = session.get(url, timeout=90)
-            r.raise_for_status()
-            if b"%PDF" in r.content[:1024]:
-                return r.content
-            errs.append("http: not a PDF")
-        except Exception as e:
-            errs.append(f"http: {e}")
-    try:                                    # fetch inside the page (uses the browser's own login)
-        driver.set_script_timeout(90)
-        res = driver.execute_async_script(JS_FETCH, url)
-        if res and res.get("ok"):
-            data = base64.b64decode(res["b64"])
-            if b"%PDF" in data[:1024]:
-                return data
-            errs.append("browser fetch: not a PDF")
-        else:
-            errs.append("browser fetch: " + str((res or {}).get("err", "")))
-    except Exception as e:
-        errs.append(f"browser fetch: {e}")
-    raise RuntimeError("; ".join(errs))
-
-
-def click_icon_and_get_pdf(driver, session, icon_cell, form_number, dest_dir):
-    """Click the icon, find the PDF's address (new tab / window.open / network request) and fetch
-    the bytes ourselves. Falls back to a normal browser download only if that fails."""
-    target = pick_icon_element(icon_cell)
-    clear_incoming()
-    main = driver.current_window_handle
-    before_handles = set(driver.window_handles)
-    try:
-        n_res = int(driver.execute_script(JS_PATCH) or 0)
-    except Exception:
-        n_res = 0
-    base = driver.current_url
-
-    click(driver, target)
-
-    tried, last_err, end = set(), None, time.time() + DOWNLOAD_WAIT
-    try:
-        while time.time() < end:
-            time.sleep(0.8)
-            cands = []
-            for h in driver.window_handles:                     # a new tab opened?
-                if h not in before_handles:
-                    try:
-                        driver.switch_to.window(h)
-                        u = driver.current_url
-                        if u and not u.startswith(("about:", "edge:", "chrome:", "data:")):
-                            cands.append(u)
-                    except Exception:
-                        pass
-            try:
-                driver.switch_to.window(main)
-                info = driver.execute_script(JS_READ, n_res) or {}
-                for u in info.get("opened", []):
-                    if u and u != "undefined":
-                        cands.append(urljoin(base, u))
-                cands += [u for u in info.get("res", [])
-                          if u.startswith(("http", "blob:")) and PDFISH.search(u)]
-            except Exception:
-                pass
-
-            for u in cands:
-                if u in tried or len(tried) >= 6:
-                    continue
-                tried.add(u)
-                try:
-                    driver.switch_to.window(main)
-                    data = fetch_bytes(driver, session, u)
-                    return save_pdf(data, form_number, dest_dir), u
-                except Exception as e:
-                    last_err = e
-
-            # fallback: the browser itself downloaded the PDF -> move it out of INCOMING
-            fp = grab_browser_download()
-            if fp:
-                url = zone_identifier_url(fp) or "(downloaded by the browser)"
-                return save_pdf(fp, form_number, dest_dir), url
-    finally:
-        for h in list(driver.window_handles):                   # close any tabs we opened
-            if h != main:
-                try:
-                    driver.switch_to.window(h)
-                    driver.close()
-                except Exception:
-                    pass
-        try:
-            driver.switch_to.window(main)
-        except Exception:
-            pass
-
-    fp = grab_browser_download(wait=6)                    # last chance: slow browser download
-    if fp:
-        return save_pdf(fp, form_number, dest_dir), (zone_identifier_url(fp) or "(downloaded by the browser)")
-    raise RuntimeError("No PDF received after clicking the icon" + (f" ({last_err})" if last_err else ""))
-
-
-def click_icon_and_get_pdf_clean(driver, session, icon_cell, form_number, dest_dir):
-    try:
-        return click_icon_and_get_pdf(driver, session, icon_cell, form_number, dest_dir)
-    finally:
-        time.sleep(1.5)            # let a late duplicate browser download land, then delete it
-        clear_incoming()
-
-
-def fetch_pdf(driver, session, row, icon_cell, form_number, dest_dir):
-    href = direct_href(driver, row, icon_cell)
-    if href:
-        try:
-            return download_via_http(session, href, form_number, dest_dir), href
-        except Exception as e:
-            log(f"      direct link failed ({e}) - trying icon click")
-    last = None
-    for attempt in range(1, PDF_RETRIES + 1):
-        try:
-            return click_icon_and_get_pdf_clean(driver, session, icon_cell, form_number, dest_dir)
-        except Exception as e:
-            last = e
-            log(f"      attempt {attempt}/{PDF_RETRIES} failed: {e}")
-            time.sleep(2)
-    raise last
-
-
-# ------------------------- Browser + recovery -------------------------------
-class Browser:
-    """Holds the Edge driver so it can be restarted if it gets stuck."""
-    def __init__(self):
-        self.driver = None
-        self.main = None
-
-    def start(self):
-        opts = Options()
-        opts.add_argument("--start-maximized")
-        opts.add_experimental_option("prefs", {
-            "download.default_directory": INCOMING,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "plugins.always_open_pdf_externally": False,   # PDF opens in a tab; we fetch it ourselves
-            "profile.default_content_settings.popups": 0,
-            "safebrowsing.enabled": False,
-            "safebrowsing.disable_download_protection": True,
-        })
-        if USE_MY_EDGE_PROFILE:
-            opts.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
-            opts.add_argument(f"--profile-directory={EDGE_PROFILE}")
-        log("Opening Edge browser...")
-        self.driver = webdriver.Edge(options=opts)
-        self.driver.set_page_load_timeout(60)
-        self.main = self.driver.current_window_handle
-
-    def alive(self):
-        try:
-            _ = self.driver.window_handles
-            return True
-        except Exception:
-            return False
-
-    def stop(self):
-        try:
-            if self.driver:
-                self.driver.quit()
-        except Exception:
-            pass
-        self.driver = None
-
-    def restart(self):
-        log("  >> Restarting the Edge browser...")
-        self.stop()
-        time.sleep(2)
-        self.start()
-
-
-def light_reset(browser):
-    """Close stray tabs/dialogs, go back to the main tab, empty the incoming folder."""
-    d = browser.driver
-    try:
-        d.switch_to.alert.dismiss()
-    except Exception:
-        pass
-    handles = d.window_handles
-    if browser.main not in handles:
-        browser.main = handles[0]
-    for h in handles:
-        if h != browser.main:
-            try:
-                d.switch_to.window(h)
-                d.close()
-            except Exception:
-                pass
-    d.switch_to.window(browser.main)
-    try:
-        d.set_script_timeout(30)
-    except Exception:
-        pass
-    clear_incoming()
-
-
-def restore_position(browser, lob, page_no, sig, hard=False):
-    """After a failure, put the browser back on results page `page_no` in a clean state.
-    1) light clean-up (close tabs)  2) if the page is not as before -> re-open the site,
-    re-apply filters, go to the page  3) last resort -> restart Edge and do the same."""
-    if not hard and browser.alive():
-        try:
-            light_reset(browser)
-            wait_for_results(browser.driver, 10)
-            if page_signature(browser.driver) == sig:
-                log("  (browser cleaned - still on the same results page)")
-                return
-        except Exception as e:
-            log(f"  (light clean-up not enough: {str(e)[:80]})")
-
-    for attempt in (1, 2):
-        try:
-            if attempt == 2 or not browser.alive():
-                browser.restart()
-            else:
-                try:
-                    light_reset(browser)
-                except Exception:
-                    pass
-            log(f"  >> Re-opening results (attempt {attempt}/2), going back to page {page_no}...")
-            apply_filters(browser.driver, lob)
-            if wait_for_results(browser.driver) == 0:
-                raise RuntimeError("results table did not load")
-            for _ in range(page_no - 1):
-                if not go_next_page(browser.driver):
-                    raise RuntimeError("could not reach the results page again")
-            return
-        except Exception as e:
-            log(f"  !! recovery attempt {attempt} failed: {str(e)[:120]}")
-    raise RuntimeError("browser could not be recovered")
-
-
-# ------------------------- Per-LOB download ---------------------------------
-def save_manifest(path, recs):
-    pd.DataFrame(recs, columns=MANIFEST_COLS).to_csv(path, index=False, encoding="utf-8-sig")
-
-
-def process_lob_download(browser, lob, recs):
-    """Download every PDF of one Line of Business. Fills `recs`. Returns (pages_read, status)."""
-    lob_dir = lob_folder(lob)
-    manifest_path = os.path.join(lob_dir, MANIFEST_NAME)
-
-    old = {}
-    if RESUME and os.path.exists(manifest_path):
-        try:
-            for r in pd.read_csv(manifest_path, dtype=str, keep_default_na=False).to_dict("records"):
-                old[r["Key"]] = r
-            log(f"  Resume: {len(old)} forms listed in the previous manifest")
-        except Exception as e:
-            log(f"  (could not read old manifest: {e})")
-
-    driver = browser.driver
-    apply_filters(driver, lob)
-    n = wait_for_results(driver)
-    if n == 0:
-        return 0, "No forms returned (table empty or not found)"
-    log(f"  Results loaded ({n} rows on first page)")
-
-    merged = dict(old)                       # keep earlier results; update them as we go
-    occ, page_no, seen_sigs, fails_in_row = {}, 1, set(), 0
-    while True:
-        driver = browser.driver
-        sig = page_signature(driver)
-        if sig in seen_sigs:
-            log("  Same page seen again - stopping")
-            break
-        seen_sigs.add(sig)
-
-        n_rows = len(valid_rows(driver))
-        log(f"  --- Results page {page_no}: {n_rows} forms ---")
-
-        for i in range(n_rows):
-            driver = browser.driver
-            session = get_requests_session(driver)          # fresh cookies for every PDF
-            rec = {"Key": "", "Form Number": "", "PDF File": "", "PDF URL": "",
-                   "Results Page": page_no, "Download Status": "Downloaded", "Remarks": ""}
-            try:
-                row = valid_rows(driver)[i]
-                cells = row.find_elements(By.TAG_NAME, "td")
-                fn = cells[FORM_NUMBER_COL].text.strip()
-                occ[fn] = occ.get(fn, 0) + 1
-                rec["Key"], rec["Form Number"] = f"{fn}#{occ[fn]}", fn
-                log(f"  [page {page_no} | {i + 1}/{n_rows}] Form {fn}")
-
-                prev = old.get(rec["Key"])
-                if (prev and prev.get("Download Status") == "Downloaded"
-                        and os.path.exists(os.path.join(lob_dir, prev.get("PDF File", "")))):
-                    rec["PDF File"], rec["PDF URL"] = prev["PDF File"], prev.get("PDF URL", "")
-                    log("      already downloaded - skipping")
-                else:
-                    log("      Clicking PDF icon...")
-                    path, url = fetch_pdf(driver, session, row, cells[ICON_COL], fn, lob_dir)
-                    rec["PDF File"], rec["PDF URL"] = os.path.basename(path), url
-                    log(f"      saved -> {os.path.join(os.path.basename(lob_dir), rec['PDF File'])}")
-                fails_in_row = 0
-            except Exception as e:
-                rec["Download Status"] = "Error"
-                rec["Remarks"] = str(e)[:200]
-                if not rec["Form Number"]:
-                    rec["Form Number"] = f"(row {i + 1} unreadable)"
-                log(f"      !! ERROR: {e}")
-                fails_in_row += 1
-                recs.append(rec)
-                merged[rec["Key"] or f"row{page_no}-{i + 1}"] = rec
-                save_manifest(manifest_path, list(merged.values()))
-                # >>> WAY OUT: never carry a broken browser state into the next PDF
-                log("      Resetting the browser so the next PDF is not affected...")
-                restore_position(browser, lob, page_no, sig, hard=(fails_in_row >= 2))
-                continue
-            recs.append(rec)
-            merged[rec["Key"] or f"row{page_no}-{i + 1}"] = rec
-            save_manifest(manifest_path, list(merged.values()))
-
-        log(f"  Finished page {page_no}.")
-        if not go_next_page(browser.driver):
-            break
-        page_no += 1
-    return page_no, "OK"
-
-
-def run_part1():
-    log("PART 1 started - downloading PDFs")
-    log(f"PDFs will be saved under: {BASE_FOLDER}")
-    os.makedirs(INCOMING, exist_ok=True)
-
-    browser = Browser()
-    browser.start()
-
-    summary, failed = [], []
-    try:
-        for li, lob in enumerate(LINES_OF_BUSINESS, start=1):
-            log("=" * 64)
-            log(f"LINE OF BUSINESS {li}/{len(LINES_OF_BUSINESS)}: {lob}")
-            log("=" * 64)
-            recs, status, pages = [], "FAILED", 0
-            for attempt in range(1, LOB_ATTEMPTS + 1):
-                recs = []
-                try:
-                    pages, status = process_lob_download(browser, lob, recs)
-                    n_err = sum(r["Download Status"] != "Downloaded" for r in recs)
-                    if (status == "OK" and n_err == 0) or attempt == LOB_ATTEMPTS:
-                        break
-                    log(f"  {status} / {n_err} PDF(s) failed - retrying only those "
-                        f"(pass {attempt + 1}/{LOB_ATTEMPTS})...")
-                except Exception as e:
-                    status = f"FAILED: {str(e)[:150]}"
-                    log(f"  !! {lob} failed on attempt {attempt}: {e}")
-                    if not browser.alive():
-                        browser.restart()
-            ok = sum(r["Download Status"] == "Downloaded" for r in recs)
-            failed += [{"Line of Business": lob, "Form Number": r["Form Number"], "Remarks": r["Remarks"]}
-                       for r in recs if r["Download Status"] != "Downloaded"]
-            summary.append({"Line of Business": lob, "Folder": lob_folder(lob),
-                            "Pages Read": pages, "Forms Found": len(recs),
-                            "Downloaded": ok, "Errors": len(recs) - ok, "Status": status})
-            log(f"Finished {lob}: {len(recs)} forms | downloaded {ok} | errors {len(recs) - ok} | {status}")
-    finally:
-        log("Closing browser...")
-        browser.stop()
-        shutil.rmtree(INCOMING, ignore_errors=True)       # nothing is left behind
-
-    pd.DataFrame(summary).to_csv(os.path.join(BASE_FOLDER, "_download_summary.csv"),
-                                 index=False, encoding="utf-8-sig")
-    log("=" * 64)
-    log("PART 1 DONE")
-    for s in summary:
-        log(f"  {s['Line of Business']:<22} forms={s['Forms Found']:<4} downloaded={s['Downloaded']:<4} "
-            f"errors={s['Errors']:<3} {s['Status']}")
-    if failed:
-        pd.DataFrame(failed).to_csv(os.path.join(BASE_FOLDER, "_not_downloaded.csv"),
-                                    index=False, encoding="utf-8-sig")
-        log("")
-        log(f"!!! {len(failed)} PDF(s) COULD NOT BE DOWNLOADED (listed in _not_downloaded.csv):")
-        for f in failed[:40]:
-            log(f"!!!   [{f['Line of Business']}] {f['Form Number']}  -  {f['Remarks'][:90]}")
-        log("!!! Run PART 1 again - already-downloaded PDFs are skipped and only these are retried.")
-    else:
-        log("All PDFs downloaded successfully.")
-    log("Now run PART 2 to search the downloaded PDFs for 'Springfield'.")
-
-
-run_part1()
+if __name__ == "__main__":
+    main()
