@@ -6,11 +6,10 @@ Install requirements:
     pip install pdfplumber openpyxl
 
 Usage:
-    python pdf_springfield_checker.py "C:/path/to/pdf_folder"
-    python pdf_springfield_checker.py "C:/path/to/pdf_folder" -o results.xlsx -s SpringField
+    1. Set FOLDER_PATH below.
+    2. Run:  python pdf_springfield_checker.py
 """
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -18,6 +17,12 @@ import pdfplumber
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+# ============================ EDIT HERE ============================
+FOLDER_PATH = r"C:\path\to\your\pdf_folder"   # <-- put your folder path here
+SEARCH_TEXT = "SpringField"                       # text to look for (case-insensitive)
+OUTPUT_FILE = "springfield_results.xlsx"          # saved inside FOLDER_PATH
+# ===================================================================
 
 
 def find_pages(pdf_path: Path, search_text: str):
@@ -88,16 +93,9 @@ def write_excel(rows, output_file: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check PDFs for a keyword and export to Excel.")
-    parser.add_argument("folder", nargs="?", help="Folder containing PDF files")
-    parser.add_argument("-o", "--output", default="springfield_results.xlsx", help="Output Excel file")
-    parser.add_argument("-s", "--search", default="SpringField", help="Text to search (case-insensitive)")
-    args = parser.parse_args()
-
-    folder_str = args.folder or input("Enter folder path containing PDFs: ").strip().strip('"')
-    folder = Path(folder_str)
+    folder = Path(FOLDER_PATH.strip().strip('"'))
     if not folder.is_dir():
-        sys.exit(f"Error: '{folder}' is not a valid folder.")
+        sys.exit(f"Error: '{folder}' is not a valid folder. Check FOLDER_PATH at the top of the script.")
 
     pdf_files = sorted(
         p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"
@@ -108,7 +106,7 @@ def main():
     rows = []
     for i, pdf in enumerate(pdf_files, start=1):
         print(f"[{i}/{len(pdf_files)}] Scanning {pdf.name} ...")
-        pages, error = find_pages(pdf, args.search)
+        pages, error = find_pages(pdf, SEARCH_TEXT)
         if error:
             print(f"    Could not read file: {error}")
             rows.append([pdf.name, "No", "NA"])
@@ -117,9 +115,7 @@ def main():
         else:
             rows.append([pdf.name, "No", "NA"])
 
-    output_file = Path(args.output)
-    if not output_file.is_absolute():
-        output_file = folder / output_file  # save next to the PDFs
+    output_file = folder / OUTPUT_FILE
     write_excel(rows, output_file)
     print(f"\nDone. Results saved to: {output_file}")
 
