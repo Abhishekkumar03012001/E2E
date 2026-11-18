@@ -1,19 +1,14 @@
-Dim wsPaths As Worksheet
+Hi Karina,
 
-'Look for Paths sheet in the TOOL workbook
+Hope you are doing well.
 
-On Error Resume Next
-Set wsPaths = ThisWorkbook.Worksheets("Paths")
-On Error GoTo CleanFail
+We have completed the processing of PDFs across the different LOBs to identify the documents containing Springfield.
 
-If wsPaths Is Nothing Then
-    Set wsPaths = ThisWorkbook.Worksheets.Add( _
-        After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    wsPaths.Name = "Paths"
-End If
+However, during the final NCQC, we noticed that a few PDFs had been updated. I have attached screenshots highlighting these updates for your reference.
 
-wsPaths.Range("B2").Value = newFilePath
-wsPaths.Visible = xlSheetVeryHidden
+We are currently rerunning our tool to incorporate the latest updates and will share the revised report with you tomorrow morning before login.
 
-ThisWorkbook.Protect Password:="YOUR_PASSWORD", Structure:=True
-ThisWorkbook.Save
+Please let us know if this works for you.
+
+Thanks,
+Abhishek
