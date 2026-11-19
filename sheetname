@@ -1,14 +1,16 @@
 Hi Karina,
 
-Hope you are doing well.
+Good morning!
 
-We have completed the processing of PDFs across the different LOBs to identify the documents containing Springfield.
+We have completed locating the forms with addresses for IL across all LOBs.
 
-However, during the final NCQC, we noticed that a few PDFs had been updated. I have attached screenshots highlighting these updates for your reference.
+All the folders extracted from Doczilla are available in the **Extracted PDFs** folder. The PDFs containing references to Springfield have been placed in their respective LOB folders under the **Springfield Found** folder, with each occurrence of the word "Springfield" highlighted in the respective PDFs.
 
-We are currently rerunning our tool to incorporate the latest updates and will share the revised report with you tomorrow morning before login.
+Additionally, we have prepared a **Summary Report.xlsx** file providing a consolidated summary across all LOBs, indicating the folders in which Springfield was found.
 
-Please let us know if this works for you.
+**Folder Path:**  
+[Insert shared folder path here]
 
-Thanks,
-Abhishek
+Please let us know if any further changes are required.
+
+Thank you!
