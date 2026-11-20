@@ -1,15 +1,14 @@
-
 import os
 import pandas as pd
 from openpyxl import Workbook
 
-# Get the folder where this Python script is saved
+# Paste your input Excel file path here
+input_file = r"C:\Users\YourName\Desktop\Input.xlsx"
+
+# Get the folder where Python script is saved
 script_folder = os.path.dirname(os.path.abspath(__file__))
 
-# Input Excel file path
-input_file = input("Enter the full path of your Excel file: ").strip('"')
-
-# Read all sheet names
+# Read and sort sheet names alphabetically
 excel_file = pd.ExcelFile(input_file)
 sheet_names = sorted(excel_file.sheet_names, key=str.lower)
 
@@ -18,20 +17,17 @@ wb = Workbook()
 ws = wb.active
 ws.title = "Sheet Names"
 
-# Add heading
 ws["A1"] = "Sheet Names"
 
-# Write sorted sheet names
 for row, sheet_name in enumerate(sheet_names, start=2):
     ws.cell(row=row, column=1, value=sheet_name)
 
-# Adjust column width
 ws.column_dimensions["A"].width = 35
 
 # Save output in Python script's folder
 output_file = os.path.join(script_folder, "Sheet_Names.xlsx")
 wb.save(output_file)
 
-print(f"\nSuccessfully completed!")
-print(f"Total sheets found: {len(sheet_names)}")
+print("Successfully completed!")
+print(f"Total sheets: {len(sheet_names)}")
 print(f"Output saved at: {output_file}")
