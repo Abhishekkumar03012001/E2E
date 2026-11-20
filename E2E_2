@@ -33,6 +33,9 @@ KEY BEHAVIOURS (please confirm / correct once real files are tested):
    read_df_first_table() below, used only for the EQ file.
 4. Radar column matching uses the hardcoded synonym list in
    RADAR_COLUMN_SYNONYM_PAIRS below (in addition to exact-name matches).
+   FIX: the Radar loop now has its try/except PER SHEET, so one failing
+   sheet no longer aborts the remaining sheets (sheet order in the Radar
+   file is arbitrary).
 5. Territory: reads the main Territory file (Inputs!D57) and a
    supplemental "CAT" file (Inputs!D56), and builds a single in-memory
    "buffer" export sheet from them before comparing against Config's
@@ -1093,9 +1096,9 @@ def filter_low_coverage_rows(df, column_name=WATER_BACKUP_COVERAGE_COLUMN, thres
 
 
 def apply_conditional_column_drops(config_df, export_df, config_tab_name):
-    """For tabs configured in CONDITIONAL_COLUMN_DROPS: if the named column
-    exists in the Config tab and EVERY value in it equals `all_values_equal`
-    (compared as trimmed strings, e.g. "1"), drop that column entirely from
+    """For tabs configured in CONDITIONAL_COLUMN_DROPS: if the named
+    column exists in the Config tab and EVERY value in it equals
+    `all_values_equal` (compared as trimmed strings, e.g. "1"), drop that column entirely from
     BOTH the config and export dataframes -- it's simply ignored, never
     matched, never flagged red, never shown. Column lookup is case/space/
     punctuation-insensitive on both sides.
@@ -1580,9 +1583,20 @@ def main(input_file):
     ga_zone_tabs_clean = {clean_col(TERRITORY_ZONE_CONFIG_TAB), clean_col(ZONE_CONFIG_TAB)}
 
     # ---------------- Radar ----------------
+    # FIX: the try/except is now PER SHEET (inside the loop). Previously one
+    # failing sheet aborted the whole loop, so every later sheet in the Radar
+    # file was never read -- and since sheet order is arbitrary, it looked
+    # like matching-name sheets were randomly ignored.
     try:
         radar_wb = load_workbook(paths["radar_file"], data_only=True)
-        for sheet_name in radar_wb.sheetnames:
+        radar_sheet_names = list(radar_wb.sheetnames)
+    except Exception as e:
+        radar_wb = None
+        radar_sheet_names = []
+        print(f"WARNING: Radar file could not be opened: {e}")
+
+    for sheet_name in radar_sheet_names:
+        try:
             if is_excluded_tab(sheet_name):
                 continue
             resolved_cfg = resolve_name(sheet_name, config_tabs)
@@ -1595,14 +1609,13 @@ def main(input_file):
                 continue
             if zone_checks_active and resolved_cfg and clean_col(resolved_cfg) in ga_zone_tabs_clean:
                 continue
+
             if resolved_cfg:
                 config_df = read_df(paths["config_file"], resolved_cfg, 1)
                 export_df = read_df(paths["radar_file"], sheet_name, 1)
 
-                # NEW: conditional per-tab column drops (e.g.
-                # R_C_AOIRel_AOPDedAOI's "WaterNonWinter" column, dropped
-                # from both sides -- never matched/shown -- whenever every
-                # Config value in it is "1").
+                # Conditional per-tab column drops (e.g. R_C_AOIRel_AOPDedAOI's
+                # "WaterNonWinter" when every Config value is "1").
                 config_df, export_df = apply_conditional_column_drops(config_df, export_df, resolved_cfg)
 
                 # Water Backup tabs: optionally skip rows with a low
@@ -1620,8 +1633,21 @@ def main(input_file):
                     detail_sheets[resolved_cfg] = res
             else:
                 summary_rows.append(missing_row(export_tab=sheet_name, result=MISSING_IN_CONFIG))
-    except Exception as e:
-        print(f"WARNING: Radar file processing failed: {e}")
+        except Exception as e:
+            print(f"WARNING: Radar sheet '{sheet_name}' failed and was skipped: {e}")
+            # Make the failure visible in the Summary instead of silently
+            # dropping the tab, and keep it from also being reported as
+            # "Factor Tab not Found in export".
+            failed_cfg = resolve_name(sheet_name, config_tabs)
+            if failed_cfg:
+                matched_config_tabs.add(failed_cfg)
+            summary_rows.append(
+                missing_row(
+                    config_tab=failed_cfg or "NA",
+                    export_tab=sheet_name,
+                    result=MANUAL_VALIDATION,
+                )
+            )
 
     # ---------------- EQ ----------------
     try:
