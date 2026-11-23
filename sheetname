@@ -1,18 +1,30 @@
-Update:
+Hi Jess, hope you're doing well.
 
-The shared summary report, along with the respective forms containing the required text highlighted in the PDFs, can be found here: [Insert folder link].
+We have completed the run for the GA Config Builder QC. Please find below the highlighted tabs and the corresponding observations that require further review:
 
-Please let us know if any further information is required.
+**1. R_C_Coverage A:**
+There is an additional row with a liability limit of **1000000**.
 
+**2. R_P_Basement:**
+The data type for Basement Finish differs between the Radar export and the config.
 
+**3. R_Z_Air Build Zone:**
+Reinsurance and Capital are labelled as NA for some rows, which is causing an error.
 
+**4. R_O_Service Line and R_O_Equipment Break:**
+The config contains more rows with "Yes" values compared to the Radar export.
 
+**5. Factor Mismatches:**
+The factors do not match between the Radar export and the config in the following tabs:
+- R_L_Territory
+- R_O_Roof Limit
+- [Add remaining tab names]
 
+**6. Tabs Missing from Radar Export:**
+We were unable to locate the following tabs in the Radar export, although they are present in the config:
+- [Add tab names]
 
-Hi Karina,
+**7. Coverage D Rate per Thousand:**
+This tab is present in the Radar export but is missing from the config.
 
-We have added the relevant files to the ticket, including the summary report and the respective PDFs with the required text highlighted.
-
-Please let us know if you face any issues accessing the files.
-
-Thank you!
+Please review these observations and let us know if any further details are required.
