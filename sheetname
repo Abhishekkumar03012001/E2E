@@ -1,34 +1,18 @@
+Update:
 
-import os
-import pandas as pd
-from openpyxl import Workbook
+The shared summary report, along with the respective forms containing the required text highlighted in the PDFs, can be found here: [Insert folder link].
 
-# Input Excel file path
-input_file = r"\\PDC-SAS-DATA.LM.LNTG.COM\USCM_SAS_Prod_LocalAccess_NAS_T3_PROD01\YourFile.xlsx"
+Please let us know if any further information is required.
 
-# Get current notebook working directory
-script_folder = os.getcwd()
 
-# Read and sort sheet names alphabetically
-excel_file = pd.ExcelFile(input_file)
-sheet_names = sorted(excel_file.sheet_names, key=str.lower)
 
-# Create output workbook
-wb = Workbook()
-ws = wb.active
-ws.title = "Sheet Names"
 
-ws["A1"] = "Sheet Names"
 
-for row, sheet_name in enumerate(sheet_names, start=2):
-    ws.cell(row=row, column=1, value=sheet_name)
 
-ws.column_dimensions["A"].width = 40
+Hi Karina,
 
-# Save output
-output_file = os.path.join(script_folder, "Sheet_Names.xlsx")
-wb.save(output_file)
+We have added the relevant files to the ticket, including the summary report and the respective PDFs with the required text highlighted.
 
-print("Successfully completed!")
-print(f"Total sheets found: {len(sheet_names)}")
-print(f"Output saved at: {output_file}")
+Please let us know if you face any issues accessing the files.
+
+Thank you!
