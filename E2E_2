@@ -181,9 +181,10 @@ Run:
 import os
 import re
 import itertools
+import traceback
 from collections import Counter
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation, localcontext
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -663,8 +664,17 @@ def round_half_up(value, decimals):
         d = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return value
+    if not d.is_finite():
+        return value
     quant = Decimal("1").scaleb(-decimals) if decimals > 0 else Decimal("1")
-    return float(d.quantize(quant, rounding=ROUND_HALF_UP))
+    try:
+        # High-precision context so very large numbers (e.g. 1E+25) don't
+        # raise InvalidOperation from Decimal's default 28-digit limit.
+        with localcontext() as ctx:
+            ctx.prec = 200
+            return float(d.quantize(quant, rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ArithmeticError, ValueError):
+        return value
 
 
 def normalize_value(v, decimal_places=None, value_synonym_groups=None):
@@ -685,12 +695,47 @@ def normalize_value(v, decimal_places=None, value_synonym_groups=None):
     dp = decimal_places if decimal_places is not None else DEFAULT_COMPARISON_DECIMAL_PLACES
     try:
         f = float(s)
+        if f != f or f in (float("inf"), float("-inf")):
+            return s.lower()  # nan / inf -- treat as plain text
         f = round_half_up(f, dp)
         if f == int(f):
             return str(int(f))
         return f"{f:.{dp}f}".rstrip("0").rstrip(".")
-    except ValueError:
+    except (ValueError, OverflowError):
         return s.lower()
+
+
+# ------------------------------------------------------------------
+# OUTPUT display formatting: any value written to the report that has
+# MORE than DISPLAY_MAX_DECIMALS decimal places (e.g. 0.1230000000009) is
+# rounded (half up) to DISPLAY_MAX_DECIMALS places and trailing zeros are
+# trimmed. Values with 5 or fewer decimals are written exactly as-is.
+# This only affects what is written to the report -- never the comparison.
+# ------------------------------------------------------------------
+DISPLAY_MAX_DECIMALS = 5
+_PLAIN_DECIMAL_RE = re.compile(r"([+-]?\d*)\.(\d+)")
+
+
+def format_output_value(v):
+    if not isinstance(v, str):
+        return v
+    m = _PLAIN_DECIMAL_RE.fullmatch(v.strip())
+    if not m or len(m.group(2)) <= DISPLAY_MAX_DECIMALS:
+        return v
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 200
+            d = Decimal(v.strip()).quantize(
+                Decimal("1").scaleb(-DISPLAY_MAX_DECIMALS), rounding=ROUND_HALF_UP
+            )
+        out = format(d, "f")
+        if "." in out:
+            out = out.rstrip("0").rstrip(".")
+        if out in ("-0", ""):
+            out = "0"
+        return out
+    except (InvalidOperation, ArithmeticError, ValueError):
+        return v
 
 
 def find_header_index(headers, target):
@@ -1057,8 +1102,9 @@ def process_pair(config_df, export_df, config_tab, export_tab, synonym_groups=No
     }
 
 
-def missing_row(config_tab="NA", export_tab="NA", result=""):
+def missing_row(config_tab="NA", export_tab="NA", result="", comment=""):
     return {
+        "comment": comment,
         "config_tab": config_tab,
         "export_tab": export_tab,
         "result": result,
@@ -1407,7 +1453,7 @@ def write_summary_sheet(ws, summary_rows):
             r.get("config_unmatched_rows", "NA"),
             r.get("export_unmatched_rows", "NA"),
             r.get("col_mismatch", "NA"),
-            "",  # Analyst Comment -- left blank for manual entry
+            r.get("comment", ""),  # Analyst Comment -- blank unless a sheet failed to process
         ]
         ws.append(row_values)
         result_row = ws.max_row
@@ -1462,7 +1508,7 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
     if cfg_df is not None and not cfg_df.empty:
         for i, row in enumerate(cfg_df.itertuples(index=False), start=3):
             for j, val in enumerate(row, start=1):
-                cell = dsheet.cell(row=i, column=j, value=val)
+                cell = dsheet.cell(row=i, column=j, value=format_output_value(val))
                 style_data_cell(cell)
 
     # ---- Right table: Export source ----
@@ -1488,7 +1534,7 @@ def write_detail_sheet(wb, sheet_name, config_tab, export_tab, cfg_df, exp_df, e
     if exp_df is not None and not exp_df.empty:
         for i, row in enumerate(exp_df.itertuples(index=False), start=3):
             for j, val in enumerate(row, start=start_col_right):
-                cell = dsheet.cell(row=i, column=j, value=val)
+                cell = dsheet.cell(row=i, column=j, value=format_output_value(val))
                 style_data_cell(cell)
 
     dsheet.freeze_panes = "A3"
@@ -1635,6 +1681,7 @@ def main(input_file):
                 summary_rows.append(missing_row(export_tab=sheet_name, result=MISSING_IN_CONFIG))
         except Exception as e:
             print(f"WARNING: Radar sheet '{sheet_name}' failed and was skipped: {e}")
+            traceback.print_exc()
             # Make the failure visible in the Summary instead of silently
             # dropping the tab, and keep it from also being reported as
             # "Factor Tab not Found in export".
@@ -1646,6 +1693,7 @@ def main(input_file):
                     config_tab=failed_cfg or "NA",
                     export_tab=sheet_name,
                     result=MANUAL_VALIDATION,
+                    comment=f"Processing error (not a data mismatch): {type(e).__name__}: {e}",
                 )
             )
 
