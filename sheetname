@@ -1,15 +1,9 @@
-R_C_CovE: Additional row with a liability limit of 1,000,000.
+Hi Jess, hope you're doing well.
 
-R_P_Basement: Basement Finish data type mismatch between Radar export and config.
+We have completed the GA Config Builder QC run. Please find the attached QC report for your reference.
 
-R_Z_YearBuildZone: Reinsurance and Capital marked as "NA" in some export rows.
+For the sheets flagged with **Manual Validation Required**, we have added the relevant comments in the **Analyst Comments** column to highlight the items requiring manual validation.
 
-R_O_SerLine & R_O_EquipBreak: More "Yes" values in config than in Radar export.
+Please review and let us know if any further validation is required.
 
-Factor Mismatches: R_L_Territory, R_O_RoofLimit, R_D_AdvancedQuote and R_O_WaterBackup_Listed.
-
-Missing from Radar Export: R_D_Loyalty, R_D_Welcome, R_D_WindExclusion, R_K_PolicyEval, R_O_FixedExp, R_O_Mold, R_O_NonResLocExtLiab, R_O_OtherStrucOffPrem, T_K_OriginalProgram, T_P_HouseShapeComplexity and T_P_RoofFacetComplexity (present in config).
-
-Coverage D Rate per $1000: Present in Radar export but missing from config.
-
-Please review and let us know if any clarification is required.
+Thank you!
