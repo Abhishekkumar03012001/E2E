@@ -1,30 +1,15 @@
-Hi Jess, hope you're doing well.
+R_C_CovE: Additional row with a liability limit of 1,000,000.
 
-We have completed the run for the GA Config Builder QC. Please find below the highlighted tabs and the corresponding observations that require further review:
+R_P_Basement: Basement Finish data type mismatch between Radar export and config.
 
-**1. R_C_Coverage A:**
-There is an additional row with a liability limit of **1000000**.
+R_Z_YearBuildZone: Reinsurance and Capital marked as "NA" in some export rows.
 
-**2. R_P_Basement:**
-The data type for Basement Finish differs between the Radar export and the config.
+R_O_SerLine & R_O_EquipBreak: More "Yes" values in config than in Radar export.
 
-**3. R_Z_Air Build Zone:**
-Reinsurance and Capital are labelled as NA for some rows, which is causing an error.
+Factor Mismatches: R_L_Territory, R_O_RoofLimit, R_D_AdvancedQuote and R_O_WaterBackup_Listed.
 
-**4. R_O_Service Line and R_O_Equipment Break:**
-The config contains more rows with "Yes" values compared to the Radar export.
+Missing from Radar Export: R_D_Loyalty, R_D_Welcome, R_D_WindExclusion, R_K_PolicyEval, R_O_FixedExp, R_O_Mold, R_O_NonResLocExtLiab, R_O_OtherStrucOffPrem, T_K_OriginalProgram, T_P_HouseShapeComplexity and T_P_RoofFacetComplexity (present in config).
 
-**5. Factor Mismatches:**
-The factors do not match between the Radar export and the config in the following tabs:
-- R_L_Territory
-- R_O_Roof Limit
-- [Add remaining tab names]
+Coverage D Rate per $1000: Present in Radar export but missing from config.
 
-**6. Tabs Missing from Radar Export:**
-We were unable to locate the following tabs in the Radar export, although they are present in the config:
-- [Add tab names]
-
-**7. Coverage D Rate per Thousand:**
-This tab is present in the Radar export but is missing from the config.
-
-Please review these observations and let us know if any further details are required.
+Please review and let us know if any clarification is required.
