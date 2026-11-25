@@ -1,81 +1,112 @@
 /* ==================================================================
-   Average of all numeric columns in all sheets of an Excel file
-   Runs in SAS Viya (SAS Studio) using PROC PYTHON.
-
-   Output:
-     1) Excel file with a "Summary" sheet + one "Avg_<sheet>" sheet
-        per input sheet
-     2) SAS table WORK.COLUMN_AVERAGES (same data as Summary)
+   Average of all numeric columns in all sheets of an Excel file.
+   Creates a NEW Excel output file. SAS Viya / PROC PYTHON.
    ================================================================== */
 
-/* ---- 1. SET YOUR PATHS HERE (paths on the Viya server) ---- */
-%let input_path  = /path/to/your/input_file.xlsx;
-%let output_path = /path/to/your/output_averages.xlsx;
-
-
-/* ---- 2. PYTHON PART ---- */
 proc python;
 submit;
 
 import os
-import pandas as pd
+import sys
+import traceback
 
-# Read the macro variables defined above
-input_path  = SAS.symget("input_path")
-output_path = SAS.symget("output_path")
+# ---------------- 1. SET YOUR PATHS HERE (server paths) -------------
+input_path  = "/path/to/your/input_file.xlsx"        # <-- change this
+output_path = "/path/to/your/output_averages.xlsx"   # <-- change this
+# --------------------------------------------------------------------
 
-if not os.path.exists(input_path):
-    raise FileNotFoundError("Input file not found: " + input_path)
+try:
+    import pandas as pd
 
-# Read ALL sheets -> dict {sheet_name: DataFrame}
-all_sheets = pd.read_excel(input_path, sheet_name=None, engine="openpyxl")
+    print("Python version :", sys.version.split()[0])
+    print("pandas version :", pd.__version__)
+    print("Input file     :", input_path)
+    print("Output file    :", output_path)
 
-summary_rows = []
-per_sheet = {}
+    # --- checks -------------------------------------------------------
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(
+            "Input file not found on the server: " + input_path +
+            "  (use a path on the Viya server, not on your PC)")
 
-for sheet_name, df in all_sheets.items():
-    # Only numeric columns can be averaged
-    numeric_df = df.select_dtypes(include="number")
+    try:
+        import openpyxl
+    except ImportError:
+        raise ImportError("openpyxl is not installed in this Python environment. "
+                          "Ask your admin to install it.")
 
-    if numeric_df.empty:
-        print("Sheet '" + str(sheet_name) + "': no numeric columns, skipped.")
-        continue
+    # Writer engine: openpyxl, or xlsxwriter if available
+    writer_engine = "openpyxl"
 
-    averages = numeric_df.mean(skipna=True)
+    # Make sure the output folder exists
+    out_dir = os.path.dirname(output_path)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
 
-    per_sheet[sheet_name] = pd.DataFrame({
-        "Column": averages.index,
-        "Average": averages.values
-    })
+    # --- read all sheets ----------------------------------------------
+    all_sheets = pd.read_excel(input_path, sheet_name=None, engine="openpyxl")
+    print("Sheets found   :", list(all_sheets.keys()))
 
-    for col, avg in averages.items():
-        summary_rows.append({
-            "Sheet": str(sheet_name),
-            "Column": str(col),
-            "Average": float(avg)
+    # --- calculate averages -------------------------------------------
+    summary_rows = []
+    per_sheet = {}
+
+    for sheet_name, df in all_sheets.items():
+        numeric_df = df.select_dtypes(include="number")
+
+        if numeric_df.empty:
+            print("Sheet '" + str(sheet_name) + "': no numeric columns, skipped.")
+            continue
+
+        averages = numeric_df.mean(skipna=True)
+
+        per_sheet[str(sheet_name)] = pd.DataFrame({
+            "Column": [str(c) for c in averages.index],
+            "Average": [float(v) for v in averages.values]
         })
 
-if not summary_rows:
-    raise ValueError("No numeric columns found in any sheet.")
+        for col, avg in averages.items():
+            summary_rows.append({
+                "Sheet": str(sheet_name),
+                "Column": str(col),
+                "Average": float(avg)
+            })
 
-summary_df = pd.DataFrame(summary_rows)
+    if not summary_rows:
+        raise ValueError("No numeric columns found in any sheet.")
 
-# Write the output Excel file
-with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-    summary_df.to_excel(writer, sheet_name="Summary", index=False)
-    for sheet_name, avg_df in per_sheet.items():
-        safe_name = ("Avg_" + str(sheet_name))[:31]   # Excel limit: 31 chars
-        avg_df.to_excel(writer, sheet_name=safe_name, index=False)
+    summary_df = pd.DataFrame(summary_rows)
 
-# Also send the summary back to SAS as a table
-SAS.df2sd(summary_df, "work.column_averages")
+    # --- write NEW Excel file ----------------------------------------
+    with pd.ExcelWriter(output_path, engine=writer_engine) as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        for sheet_name, avg_df in per_sheet.items():
+            safe_name = ("Avg_" + sheet_name)[:31]
+            avg_df.to_excel(writer, sheet_name=safe_name, index=False)
 
-print("Done. Averages saved to: " + output_path)
+    print("SUCCESS: Excel file created ->", output_path)
+    print(summary_df.to_string(index=False))
+
+    # --- optional: also create a SAS table (failure here is harmless) -
+    try:
+        SAS.df2sd(summary_df, "work.column_averages")
+        print("SAS table WORK.COLUMN_AVERAGES created.")
+    except Exception as e:
+        print("Note: could not create SAS table (Excel file is fine):", e)
+
+except Exception:
+    print("=========== PYTHON ERROR ===========")
+    print(traceback.format_exc())
 
 endsubmit;
 run;
 
 
-/* ---- 3. OPTIONAL: view the result in SAS ---- */
-proc print data=work.column_averages noobs;
-run;
+/* Only print the SAS table if it was actually created */
+%macro show_result;
+  %if %sysfunc(exist(work.column_averages)) %then %do;
+    proc print data=work.column_averages noobs;
+    run;
+  %end;
+%mend show_result;
+%show_result;
