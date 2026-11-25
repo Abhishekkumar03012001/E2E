@@ -1,0 +1,81 @@
+/* ==================================================================
+   Average of all numeric columns in all sheets of an Excel file
+   Runs in SAS Viya (SAS Studio) using PROC PYTHON.
+
+   Output:
+     1) Excel file with a "Summary" sheet + one "Avg_<sheet>" sheet
+        per input sheet
+     2) SAS table WORK.COLUMN_AVERAGES (same data as Summary)
+   ================================================================== */
+
+/* ---- 1. SET YOUR PATHS HERE (paths on the Viya server) ---- */
+%let input_path  = /path/to/your/input_file.xlsx;
+%let output_path = /path/to/your/output_averages.xlsx;
+
+
+/* ---- 2. PYTHON PART ---- */
+proc python;
+submit;
+
+import os
+import pandas as pd
+
+# Read the macro variables defined above
+input_path  = SAS.symget("input_path")
+output_path = SAS.symget("output_path")
+
+if not os.path.exists(input_path):
+    raise FileNotFoundError("Input file not found: " + input_path)
+
+# Read ALL sheets -> dict {sheet_name: DataFrame}
+all_sheets = pd.read_excel(input_path, sheet_name=None, engine="openpyxl")
+
+summary_rows = []
+per_sheet = {}
+
+for sheet_name, df in all_sheets.items():
+    # Only numeric columns can be averaged
+    numeric_df = df.select_dtypes(include="number")
+
+    if numeric_df.empty:
+        print("Sheet '" + str(sheet_name) + "': no numeric columns, skipped.")
+        continue
+
+    averages = numeric_df.mean(skipna=True)
+
+    per_sheet[sheet_name] = pd.DataFrame({
+        "Column": averages.index,
+        "Average": averages.values
+    })
+
+    for col, avg in averages.items():
+        summary_rows.append({
+            "Sheet": str(sheet_name),
+            "Column": str(col),
+            "Average": float(avg)
+        })
+
+if not summary_rows:
+    raise ValueError("No numeric columns found in any sheet.")
+
+summary_df = pd.DataFrame(summary_rows)
+
+# Write the output Excel file
+with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+    summary_df.to_excel(writer, sheet_name="Summary", index=False)
+    for sheet_name, avg_df in per_sheet.items():
+        safe_name = ("Avg_" + str(sheet_name))[:31]   # Excel limit: 31 chars
+        avg_df.to_excel(writer, sheet_name=safe_name, index=False)
+
+# Also send the summary back to SAS as a table
+SAS.df2sd(summary_df, "work.column_averages")
+
+print("Done. Averages saved to: " + output_path)
+
+endsubmit;
+run;
+
+
+/* ---- 3. OPTIONAL: view the result in SAS ---- */
+proc print data=work.column_averages noobs;
+run;
