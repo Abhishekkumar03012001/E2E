@@ -1,497 +1,496 @@
-/*====================================================================
-  Fire and water PDF report generator  -  PURE SAS (no Python needed)   v2
+import pandas as pd
+import os
+import re
+import io
+import shutil
+import tempfile
+from pypdf import PdfReader, PdfWriter
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, PageBreak, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
-  Reads : input.xlsx  (sheet Filing_tabs)  and  config2.xlsx (1 sheet per memname)
-  Writes: <output_folder>/Proffs/
-            "<pdf_names> page N of M.pdf"   (merged per Group_Val, max size limit)
-            PDF_Mapping.xlsx   (Group_Val, SRT_TAB_ID, MemName, PDF Name, PDF Part)
-                               memnames whose sheet is missing are skipped and
-                               shown in RED with "NOT CREATED - ..." in PDF Name
+styles = getSampleStyleSheet()
+normal_style = ParagraphStyle(name="NormalSmall", parent=styles["Normal"], fontSize=8, leading=9, alignment=1)
+header_style = ParagraphStyle(name="HeaderSmall", parent=styles["Normal"], fontSize=8, leading=9, alignment=1)
 
-  REQUIREMENTS
-  - SAS Viya compute server with SAS/ACCESS Interface to PC Files (LIBNAME XLSX).
-  - Paths are SERVER paths (Linux style).
-  - Titles / footnotes in the input sheet should not contain & % or " characters.
-====================================================================*/
+width, height = letter
 
-/* ------------------------- USER SETTINGS ------------------------- */
-%let input_file    = /your/server/path/input.xlsx;
-%let config_file   = /your/server/path/config2.xlsx;
-%let output_folder = /your/server/path/output;
-%let pdf_names     = Fire and water;   /* base name of all PDFs               */
-%let max_size_mb   = 3;                /* maximum size of one PDF             */
-%let rows_per_page = 45;               /* table rows on one PDF page          */
-/* ----------------------------------------------------------------- */
+# =====================================================================
+# USER SETTINGS
+# =====================================================================
+# Base name for ALL final PDFs. Files are numbered continuously across all
+# groups, e.g. "Fire and water page 1 of 6.pdf" ... "Fire and water page 6 of 6.pdf"
+PDF_NAMES = "Fire and water"
 
-options validvarname=any validmemname=extend dlcreatedir nodate nonumber
-        papersize=letter orientation=portrait
-        topmargin=0.45in bottommargin=0.45in leftmargin=0.55in rightmargin=0.55in;
+MAX_PDF_SIZE_MB = 3
+OUTPUT_SUBFOLDER = "Proffs"
+MAPPING_EXCEL_NAME = "PDF_Mapping.xlsx"
 
-%let base   = &pdf_names;
-%let tmpdir = %sysfunc(pathname(work));
-%let rc     = %sysfunc(dcreate(Proffs, &output_folder));
-%let proffs = &output_folder/Proffs;
 
-libname inx xlsx "&input_file";
-libname cfg xlsx "&config_file";
+# ===== HELPERS =====
+def clean_text(x):
+    if pd.isna(x):
+        return ""
+    return " ".join(str(x).strip().lower().split())
 
-/* ---------- helper: character expression for any input column ---------- */
-%macro cexpr(ds, var);
-  %local dsid vnum typ rc;
-  %let dsid = %sysfunc(open(&ds));
-  %let vnum = %sysfunc(varnum(&dsid, &var));
-  %if &vnum = 0 %then %let typ = X;
-  %else %let typ = %sysfunc(vartype(&dsid, &vnum));
-  %let rc = %sysfunc(close(&dsid));
-  %if &typ = N %then %do;
-    ifc(missing(&var), "", strip(put(&var, best32.)))
-  %end;
-  %else %if &typ = C %then %do;
-    strip(&var)
-  %end;
-  %else %do;
-    ""
-  %end;
-%mend cexpr;
 
-/* ---------- helper: date statement (mm/dd/yyyy) ---------- */
-%macro dstmt(ds, var, out);
-  %local dsid vnum typ rc;
-  %let dsid = %sysfunc(open(&ds));
-  %let vnum = %sysfunc(varnum(&dsid, &var));
-  %if &vnum = 0 %then %let typ = X;
-  %else %let typ = %sysfunc(vartype(&dsid, &vnum));
-  %let rc = %sysfunc(close(&dsid));
-  %if &typ = N %then %do;
-    if missing(&var) then &out = ""; else &out = put(&var, mmddyy10.);
-  %end;
-  %else %if &typ = C %then %do;
-    d__ = inputn(strip(&var), "anydtdte32.");
-    if strip(&var) = "" then &out = "";
-    else if missing(d__) then &out = strip(&var);
-    else &out = put(d__, mmddyy10.);
-  %end;
-  %else %do;
-    &out = "";
-  %end;
-%mend dstmt;
+def get_fixed_columns(df):
+    for i, col in enumerate(df.columns):
+        if str(col).strip().lower() in ["fire", "risk"]:
+            return list(df.columns[:i])
+    return [df.columns[0]]
 
-/* ---------- read the input sheet ---------- */
-data work.input_raw;
-  set inx.Filing_tabs;
-run;
 
-data work.meta;
-  set work.input_raw;
-  length m_mem m_grp m_srt $256 m_t1-m_t4 m_fc m_fr m_pct m_foot $512 m_eff $64;
-  retain rx_c rx_r;
-  if _n_ = 1 then do;
-    rx_c = prxparse('/center\s*"([^"]*)"/');
-    rx_r = prxparse('/right\s*"([^"]*)"/');
-  end;
+def format_value(val):
+    try:
+        return f"{float(val):.4f}"
+    except:
+        return str(val)
 
-  m_mem  = %cexpr(work.input_raw, memname);
-  if m_mem = "" then delete;
-  m_grp  = %cexpr(work.input_raw, group_val);
-  if m_grp = "" then m_grp = m_mem;          /* no group value -> own group */
-  m_srt  = %cexpr(work.input_raw, srt_tab_id);
-  m_t1   = %cexpr(work.input_raw, title1);
-  m_t2   = %cexpr(work.input_raw, title2);
-  m_t3   = %cexpr(work.input_raw, title3);
-  m_t4   = %cexpr(work.input_raw, title4);
-  m_pct  = %cexpr(work.input_raw, page_cnt_title);
-  m_foot = %cexpr(work.input_raw, footnote1);
-  %dstmt(work.input_raw, version_current, m_eff)
 
-  if prxmatch(rx_c, m_foot) then m_fc = strip(prxposn(rx_c, 1, m_foot)); else m_fc = "";
-  if prxmatch(rx_r, m_foot) then m_fr = strip(prxposn(rx_r, 1, m_foot)); else m_fr = "";
+def transform_display(val):
+    try:
+        int_val = int(float(val))
+        if int_val < -10:
+            return "No information"
+        if int_val >= 1000:
+            return ">1000"
+        return str(int_val)
+    except:
+        return str(val)
 
-  idx + 1;
-  keep idx m_mem m_grp m_srt m_t1-m_t4 m_pct m_eff m_fc m_fr;
-run;
 
-proc sql noprint;
-  select count(*) into :nmem trimmed from work.meta;
-quit;
+def format_date(val):
+    try:
+        return pd.to_datetime(val).strftime("%m/%d/%Y")
+    except:
+        return str(val)
 
-/* writes one line of generated code (variable LINE) to the code file */
-%macro pl;
-  len = lengthn(line);
-  put line $varying1500. len;
-%mend pl;
 
-/* ---------- prepare the display table of one memname ----------
-   The data step code is GENERATED by a data step (not by macro text), so
-   column headers with ( ) % & ' etc. can never break the macro processor. */
-%macro prep(idx);
-  %local nv nf found dsid nobs;
-  %let nv = 0;
-  %let nf = 1;
-  %global ok_&idx nv_&idx nf_&idx nobs_&idx;
+def safe_para(val):
+    val = str(val).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return Paragraph(val, normal_style)
 
-  /* find the sheet, case-insensitive */
-  proc sql noprint;
-    create table work.sheet_ as
-      select a.memname as sheetname length=256
-      from dictionary.tables a, work.meta b
-      where a.libname = 'CFG' and b.idx = &idx
-        and upcase(strip(a.memname)) = upcase(strip(b.m_mem));
-  quit;
-  data work.sheet_;
-    set work.sheet_(obs=1);
-  run;
 
-  %let dsid  = %sysfunc(open(work.sheet_));
-  %let found = %sysfunc(attrn(&dsid, nlobs));
-  %let dsid  = %sysfunc(close(&dsid));
+def header_para(text):
+    return Paragraph(f"<b>{text}</b>", header_style)
 
-  %if &found > 0 %then %do;
-    proc sql noprint;
-      create table work.cols_ as
-        select a.name, a.type, a.varnum
-        from dictionary.columns a, work.sheet_ b
-        where a.libname = 'CFG' and a.memname = b.sheetname
-        order by a.varnum;
-    quit;
-    %let nv = &sqlobs;
-  %end;
 
-  %if &found = 0 or &nv = 0 %then %do;
-    data _null_;
-      set work.meta;
-      where idx = &idx;
-      putlog "WARNING: Sheet for memname " m_mem " not found in config file - SKIPPED.";
-    run;
-    %let ok_&idx   = 0;
-    %let nv_&idx   = 0;
-    %let nf_&idx   = 0;
-    %let nobs_&idx = 0;
-  %end;
-  %else %do;
-    /* number of fixed columns = columns before first 'fire' / 'risk' column */
-    data _null_;
-      retain nf 0 found 0;
-      set work.cols_ end=eof;
-      if not found and lowcase(strip(name)) in ('fire', 'risk') then do;
-        found = 1;
-        nf = _n_ - 1;
-      end;
-      if eof then do;
-        if not found then nf = 1;
-        call symputx('nf', nf, 'L');
-      end;
-    run;
+def parse_footnote(text):
+    left   = re.search(r'left\s*"([^"]*)"',   text)
+    center = re.search(r'center\s*"([^"]*)"', text)
+    right  = re.search(r'right\s*"([^"]*)"',  text)
+    return (
+        left.group(1).strip()   if left   else "",
+        center.group(1).strip() if center else "",
+        right.group(1).strip()  if right  else ""
+    )
 
-    /* generate the data step code */
-    filename gen_ clear;
-    filename gen_ temp lrecl=2000;
 
-    data _null_;
-      length shq $400 nmq $400 nlit $410 line $1500;
-      file gen_;
-      if _n_ = 1 then do;
-        set work.sheet_;
-        shq  = tranwrd(strip(sheetname), "'", "''");
-        line = "data work.d_&idx;";                    %pl
-        line = cats("set cfg.'", shq, "'n;");          %pl
-        line = "length col__1-col__&nv $400 t__ $400;"; %pl
-        line = "row__ = _n_;";                         %pl
-      end;
-      set work.cols_ end=eof;
-      i    = _n_;
-      nmq  = tranwrd(strip(name), "'", "''");
-      nlit = cats("'", nmq, "'n");
+def find_sheet_name_ci(excel_path, target_name):
+    """
+    Return the actual sheet name inside excel_path that matches target_name
+    case-insensitively (and ignoring surrounding whitespace).
+    Raises ValueError if no match is found.
+    """
+    xl = pd.ExcelFile(excel_path)
+    target_clean = str(target_name).strip().lower()
+    for sheet in xl.sheet_names:
+        if str(sheet).strip().lower() == target_clean:
+            return sheet
+    raise ValueError(
+        f"No sheet matching '{target_name}' (case-insensitive) found in {excel_path}. "
+        f"Available sheets: {xl.sheet_names}"
+    )
 
-      line = cats("label col__", i, "='", nmq, "';");  %pl
 
-      if lowcase(type) = 'num' then do;
-        line = cats("if missing(", nlit, ") then col__", i, "=''; else do; n__=", nlit, ";");
-        %pl
-        if i <= &nf then
-          line = cats("i__=int(n__); if i__<-10 then col__", i, "='No information'; else if i__>=1000 then col__", i, "='>1000'; else col__", i, "=strip(put(i__,best12.));");
-        else
-          line = cats("col__", i, "=strip(put(n__,32.4));");
-        %pl
-        line = "end;";  %pl
-      end;
-      else do;
-        line = cats("t__=lowcase(strip(prxchange('s/\s+/ /',-1,strip(", nlit, "))));");
-        %pl
-        line = cats("if t__='' then col__", i, "=''; else do; n__=input(t__,?? best32.); if not missing(n__) then do;");
-        %pl
-        if i <= &nf then
-          line = cats("i__=int(n__); if i__<-10 then col__", i, "='No information'; else if i__>=1000 then col__", i, "='>1000'; else col__", i, "=strip(put(i__,best12.));");
-        else
-          line = cats("col__", i, "=strip(put(n__,32.4));");
-        %pl
-        line = cats("end; else col__", i, "=t__; end;");
-        %pl
-      end;
+def normalize_group(val):
+    """Turn Group_Val into a clean text key (1, 1.0, ' 1 ' -> '1')."""
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    try:
+        f = float(s)
+        if f == int(f):
+            return str(int(f))
+    except:
+        pass
+    return s
 
-      if eof then do;
-        line = "keep row__ col__1-col__&nv;";  %pl
-        line = "run;";                         %pl
-      end;
-    run;
 
-    %include gen_;
-    filename gen_ clear;
+def safe_filename(name):
+    name = re.sub(r'[<>:"/\\|?*]', "_", str(name)).strip()
+    return name or "unnamed"
 
-    %let dsid = %sysfunc(open(work.d_&idx));
-    %let nobs = %sysfunc(attrn(&dsid, nlobs));
-    %let dsid = %sysfunc(close(&dsid));
 
-    %let ok_&idx   = 1;
-    %let nv_&idx   = &nv;
-    %let nf_&idx   = &nf;
-    %let nobs_&idx = &nobs;
-  %end;
+# ===== HEADER / FOOTER =====
+def make_page_drawer(titles, version_text, footer_center, footer_right, page_cnt_title):
 
-  /* remember the status of this memname */
-  data work.s1_;
-    idx = &idx;
-    ok  = &&ok_&idx;
-  run;
-  proc append base=work.status data=work.s1_; run;
-%mend prep;
+    page_counter = {"count": 0}
 
-/* ---------- draw all pages of one memname into the open ODS PDF ---------- */
-%macro render(idx);
-  %local rt1 rt2 rt3 rt4 reff rfc rfr rpct k t pg nv nf nobs per nscroll nchunk
-         nslice s c lo hi from to m w tw cols j;
+    def draw_page(canvas, doc):
+        page_counter["count"] += 1
 
-  data _null_;
-    set work.meta;
-    where idx = &idx;
-    call symputx('rt1',  m_t1,  'L');
-    call symputx('rt2',  m_t2,  'L');
-    call symputx('rt3',  m_t3,  'L');
-    call symputx('rt4',  m_t4,  'L');
-    call symputx('reff', m_eff, 'L');
-    call symputx('rfc',  m_fc,  'L');
-    call symputx('rfr',  m_fr,  'L');
-    call symputx('rpct', m_pct, 'L');
-  run;
+        canvas.setFont("Helvetica-Bold", 10)
+        y = height - 30
+        for t in titles:
+            if t:
+                canvas.drawCentredString(width / 2, y, str(t))
+                y -= 13
 
-  %let nv   = &&nv_&idx;
-  %let nf   = &&nf_&idx;
-  %let nobs = &&nobs_&idx;
+        canvas.setFont("Helvetica", 8)
+        text = f"Effective: {format_date(version_text)}"
+        canvas.drawString(40, 35, text)
 
-  %let per = %eval(8 - &nf);
-  %if &per < 1 %then %let per = 1;
-  %let nscroll = %eval(&nv - &nf);
-  %let nchunk  = %sysfunc(ceil(%sysevalf(&nscroll / &per)));
-  %let nslice  = %sysfunc(ceil(%sysevalf(&nobs / &rows_per_page)));
+        canvas.drawCentredString(width / 2, 35, footer_center or "")
+        canvas.drawRightString(width - 40, 35, footer_right)
 
-  /* titles: only non-empty ones, centered, bold */
-  title;
-  %let k = 0;
-  %do t = 1 %to 4;
-    %if %length(%superq(rt&t)) %then %do;
-      %let k = %eval(&k + 1);
-      title&k font=Helvetica bold height=10pt j=c "&&rt&t";
-    %end;
-  %end;
+        page_text = f"{page_cnt_title} {page_counter['count']}"
+        canvas.drawRightString(width - 40, 20, page_text)
 
-  %let pg = 0;
-  %do s = 1 %to &nslice;
-    %let lo = %eval((&s - 1) * &rows_per_page + 1);
-    %let hi = %eval(&s * &rows_per_page);
+    return draw_page
 
-    %do c = 1 %to &nchunk;
-      %let pg   = %eval(&pg + 1);
-      %let from = %eval(&nf + 1 + (&c - 1) * &per);
-      %let to   = %sysfunc(min(&nv, %eval(&from + &per - 1)));
-      %let m    = %eval(&nf + &to - &from + 1);
-      %if &m < 5 %then %let w = 70;
-      %else %let w = %sysevalf(532 / &m);
-      %let tw   = %sysevalf(&w * &m);
 
-      %let cols = ;
-      %do j = 1 %to &nf;
-        %let cols = &cols col__&j;
-      %end;
-      %do j = &from %to &to;
-        %let cols = &cols col__&j;
-      %end;
+# ===== PDF BUILDER (single memname) =====
+def build_pdf(df, path, drawer, fixed_cols):
 
-      footnote1 font=Helvetica height=8pt j=l "Effective: &reff" j=c "&rfc" j=r "&rfr";
-      footnote2 font=Helvetica height=8pt j=r "&rpct &pg";
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=letter,
+        leftMargin=40, rightMargin=40,
+        topMargin=110,
+        bottomMargin=55
+    )
 
-      proc report data=work.d_&idx(where=(row__ between &lo and &hi)) nowd missing
-        style(report)={rules=all frame=box cellspacing=0 cellpadding=2pt
-                       bordercolor=black borderwidth=1pt just=l width=&tw.pt}
-        style(header)={font_face=Helvetica font_size=8pt font_weight=bold just=c
-                       background=white foreground=black}
-        style(column)={font_face=Helvetica font_size=8pt just=c vjust=m cellwidth=&w.pt};
-        columns &cols;
-        %do j = 1 %to &nf;
-          define col__&j / display;
-        %end;
-        %do j = &from %to &to;
-          define col__&j / display;
-        %end;
-      run;
-    %end;
-  %end;
-%mend render;
+    elements = []
+    max_cols = 8
 
-%macro odsopen(file);
-  ods _all_ close;
-  ods noproctitle;
-  ods pdf file="&file" notoc style=minimal bookmarkgen=no;
-%mend odsopen;
+    display_cols = list(df.columns)
+    fixed_cols   = [c for c in fixed_cols if c in display_cols]
+    scrollable_cols = [c for c in display_cols if c not in fixed_cols]
 
-/* =========================== MAIN =========================== */
-%macro main;
-  %local i f k ids nfiles;
-  %let nfiles = 0;
+    SAFETY = 15
+    usable_height = doc.height - SAFETY
 
-  data work.status;
-    length idx ok 8;
-    stop;
-  run;
+    def get_para(df, row_idx, col):
+        val = df.iloc[row_idx][col]
+        if isinstance(val, Paragraph):
+            return Paragraph(val.text, val.style)
+        val = transform_display(val) if col in fixed_cols else format_value(val)
+        return safe_para(val)
 
-  /* 1) prepare every memname (missing sheets are skipped) */
-  %do i = 1 %to &nmem;
-    %put NOTE: Preparing memname &i of &nmem;
-    %prep(&i)
-  %end;
+    def make_table(col_chunk, row_start, row_end):
+        col_widths = (
+            [70] * len(col_chunk)
+            if len(col_chunk) < 5
+            else [doc.width / len(col_chunk)] * len(col_chunk)
+        )
+        data = [[header_para(c) for c in col_chunk]]
+        for idx in range(row_start, row_end):
+            data.append([get_para(df, idx, col) for col in col_chunk])
 
-  /* 2) draw one temporary PDF per memname to measure its size */
-  data work.sizes;
-    length idx sz 8;
-    stop;
-  run;
+        t = Table(data, colWidths=col_widths, splitByRow=1, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("GRID",          (0, 0), (-1, -1), 1, colors.black),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        return t, col_widths
 
-  %do i = 1 %to &nmem;
-    %if &&ok_&i = 1 %then %do;
-      %odsopen(&tmpdir/m_&i..pdf)
-      %render(&i)
-      ods pdf close;
+    def measure_row_end(col_chunk, row_start):
+        col_widths = (
+            [70] * len(col_chunk)
+            if len(col_chunk) < 5
+            else [doc.width / len(col_chunk)] * len(col_chunk)
+        )
+        table_width = sum(col_widths)
 
-      data work.one_;
-        idx = &i;
-        rc  = filename('f', "&tmpdir/m_&i..pdf");
-        fid = fopen('f', 'i', 1, 'b');
-        sz  = input(finfo(fid, 'File Size (bytes)'), best32.);
-        rc  = fclose(fid);
-        rc  = filename('f');
-        keep idx sz;
-      run;
-      proc append base=work.sizes data=work.one_; run;
-    %end;
-  %end;
+        row_end = row_start
+        for probe_i in range(row_start, len(df)):
+            t, _ = make_table(col_chunk, row_start, probe_i + 1)
+            _, h = t.wrap(table_width, usable_height)
+            if h > usable_height:
+                break
+            row_end = probe_i + 1
+        return row_end
 
-  /* 3) plan: which memnames go into which PDF (same group, size limit) */
-  proc sql;
-    create table work.gmin as
-      select m_grp, min(idx) as gfirst from work.meta group by m_grp;
-    create table work.plan0 as
-      select a.*, b.gfirst, s.sz
-      from work.meta a
-           join work.gmin  b on a.m_grp = b.m_grp
-           join work.sizes s on a.idx   = s.idx
-      order by b.gfirst, a.idx;
-    create table work.miss as
-      select m.idx, m.m_grp, m.m_srt, m.m_mem
-      from work.meta m, work.status s
-      where m.idx = s.idx and s.ok = 0;
-  quit;
+    row_start = 0
+    while row_start < len(df):
 
-  data work.plan;
-    set work.plan0;
-    by gfirst;
-    retain fileno 0 cum 0;
-    maxb = &max_size_mb * 1024 * 1024;
-    if first.gfirst then do;
-      fileno + 1;
-      cum = sz;
-    end;
-    else if cum + sz <= maxb then cum = cum + sz;
-    else do;
-      fileno + 1;
-      cum = sz;
-    end;
-    if sz > maxb then putlog "WARNING: " m_mem "alone is larger than the size limit.";
-  run;
+        # Build column chunks
+        all_chunks = []
+        col_start = 0
+        while col_start < len(scrollable_cols):
+            col_end = min(col_start + (max_cols - len(fixed_cols)), len(scrollable_cols))
+            all_chunks.append(fixed_cols + scrollable_cols[col_start:col_end])
+            col_start = col_end
 
-  data _null_;
-    retain mx 0;
-    set work.plan end=eof;
-    mx = max(mx, fileno);
-    if eof then call symputx('nfiles', mx, 'L');
-  run;
+        # Find minimum row_end across all chunks
+        row_end = len(df)
+        for chunk in all_chunks:
+            row_end = min(row_end, measure_row_end(chunk, row_start))
 
-  /* 4) final PDFs, numbered across all groups */
-  %do f = 1 %to &nfiles;
-    proc sql noprint;
-      select idx into :ids separated by ' '
-      from work.plan where fileno = &f order by idx;
-    quit;
+        if row_end <= row_start:
+            row_end = row_start + 1
 
-    %odsopen(&proffs/&base page &f of &nfiles..pdf)
-    %do k = 1 %to %sysfunc(countw(&ids));
-      %render(%scan(&ids, &k))
-    %end;
-    ods pdf close;
-    %put NOTE: Saved &proffs/&base page &f of &nfiles..pdf;
-  %end;
+        # Render all chunks for this row slice
+        for columns in all_chunks:
+            col_widths = (
+                [70] * len(columns)
+                if len(columns) < 5
+                else [doc.width / len(columns)] * len(columns)
+            )
 
-  /* 5) mapping Excel sheet (skipped memnames highlighted in red) */
-  data work.map;
-    set work.plan(in=a keep=fileno idx m_grp m_srt m_mem)
-        work.miss(in=b keep=idx m_grp m_srt m_mem);
-    length PDF_Name $400 PDF_Part $40;
-    if a then do;
-      PDF_Name = catx(" ", "&base", "page", fileno, "of", "&nfiles") || ".pdf";
-      PDF_Part = catx(" ", fileno, "of", "&nfiles");
-      flag = 0;
-      ord  = fileno;
-    end;
-    else do;
-      PDF_Name = "NOT CREATED - sheet not found in config file";
-      PDF_Part = "";
-      flag = 1;
-      ord  = 1e9;
-    end;
-  run;
-  proc sort data=work.map; by ord idx; run;
+            data = [[header_para(c) for c in columns]]
+            for idx in range(row_start, row_end):
+                data.append([get_para(df, idx, col) for col in columns])
 
-  ods _all_ close;
-  ods excel file="&proffs/PDF_Mapping.xlsx"
-            options(sheet_name="Mapping" frozen_headers="yes");
-  proc report data=work.map nowd missing
-    style(header)={background=#FFD966 font_weight=bold just=c
-                   bordercolor=black borderwidth=1pt};
-    columns m_grp m_srt m_mem PDF_Name PDF_Part flag;
-    define m_grp    / display "Group_Val";
-    define m_srt    / display "SRT_TAB_ID";
-    define m_mem    / display "MemName";
-    define PDF_Name / display "PDF Name";
-    define PDF_Part / display "PDF Part";
-    define flag     / display noprint;
-    compute flag;
-      if flag = 1 then
-        call define(_row_, "style", "style={background=#F8CBAD font_weight=bold}");
-    endcomp;
-  run;
-  ods excel close;
+            table = Table(data, colWidths=col_widths, hAlign="LEFT", splitByRow=1, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("GRID",          (0, 0), (-1, -1), 1, colors.black),
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+                ("TOPPADDING",    (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]))
 
-  /* 6) remove temporary PDFs */
-  data _null_;
-    set work.sizes;
-    rc = filename('f', cats("&tmpdir/m_", idx, ".pdf"));
-    rc = fdelete('f');
-    rc = filename('f');
-  run;
+            elements.append(table)
+            elements.append(PageBreak())
 
-  title;
-  footnote;
-  %put NOTE: DONE - files are in &proffs;
-%mend main;
+        row_start = row_end
 
-%main
+    doc.build(elements, onFirstPage=drawer, onLaterPages=drawer)
 
-libname inx clear;
-libname cfg clear;
+
+# ===== MERGING WITH SIZE LIMIT =====
+# A "segment" is (memname, pdf_path, [page indexes]).
+def _build_writer(segments):
+    writer = PdfWriter()
+    for _, path, pages in segments:
+        reader = PdfReader(path)
+        for p in pages:
+            writer.add_page(reader.pages[p])
+    return writer
+
+
+def _size_of(segments):
+    writer = _build_writer(segments)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.tell()
+
+
+def split_into_parts(items, max_bytes):
+    """
+    items: list of (memname, pdf_path) in order.
+    Returns a list of parts; each part is a list of segments that together
+    stay within max_bytes. Whole memname PDFs are kept together whenever
+    possible; a single memname PDF larger than the limit is split by pages.
+    """
+    parts = []
+    current = []
+
+    for memname, path in items:
+        n_pages = len(PdfReader(path).pages)
+        seg = (memname, path, list(range(n_pages)))
+
+        # fits into the current part
+        if _size_of(current + [seg]) <= max_bytes:
+            current.append(seg)
+            continue
+
+        # start a new part
+        if current:
+            parts.append(current)
+            current = []
+
+        # fits alone
+        if _size_of([seg]) <= max_bytes:
+            current = [seg]
+            continue
+
+        # too big even alone -> split by pages
+        idx = 0
+        chunks = []
+        while idx < n_pages:
+            take = n_pages - idx
+            while take > 1 and _size_of([(memname, path, list(range(idx, idx + take)))]) > max_bytes:
+                take = max(1, int(take * 0.8)) if take > 5 else take - 1
+            chunks.append((memname, path, list(range(idx, idx + take))))
+            idx += take
+        for c in chunks[:-1]:
+            parts.append([c])
+        current = [chunks[-1]]
+
+    if current:
+        parts.append(current)
+    return parts
+
+
+def merge_group(group_val, items, out_folder, max_bytes):
+    """
+    Merge all memname PDFs of one group into one or more PDFs (each <= max_bytes).
+    Files are written with temporary names; final names are given later.
+    Returns list of (temp_pdf_path, [memnames]).
+    """
+    parts = split_into_parts(items, max_bytes)
+    results = []
+
+    for i, segs in enumerate(parts, start=1):
+        out_path = os.path.join(out_folder, f"group_{safe_filename(group_val)}_part_{i}.pdf")
+        writer = _build_writer(segs)
+        with open(out_path, "wb") as f:
+            writer.write(f)
+
+        memnames = []
+        for m, _, _ in segs:
+            if m not in memnames:
+                memnames.append(m)
+        results.append((out_path, memnames))
+
+    return results
+
+
+# ===== MAPPING EXCEL (highlighted header + autofit) =====
+MAPPING_COLUMNS = ["Group_Val", "SRT_TAB_ID", "MemName", "PDF Name", "PDF Part"]
+
+
+def save_mapping_excel(rows, path):
+    df = pd.DataFrame(rows, columns=MAPPING_COLUMNS)
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Mapping")
+        ws = writer.sheets["Mapping"]
+
+        thin = Side(style="thin", color="000000")
+        header_fill = PatternFill("solid", start_color="FFD966", end_color="FFD966")
+
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        # autofit column widths
+        for idx, col_cells in enumerate(ws.columns, start=1):
+            longest = max(len(str(c.value)) if c.value is not None else 0 for c in col_cells)
+            ws.column_dimensions[get_column_letter(idx)].width = longest + 4
+
+        ws.freeze_panes = "A2"
+
+
+# ===== MAIN FUNCTION =====
+def generate_single_reports(input_file, config_file, output_folder,
+                            pdf_names=PDF_NAMES, max_size_mb=MAX_PDF_SIZE_MB):
+
+    base_name = safe_filename(pdf_names)
+    max_bytes = int(max_size_mb * 1024 * 1024)
+
+    final_folder = os.path.join(output_folder, OUTPUT_SUBFOLDER)
+    os.makedirs(final_folder, exist_ok=True)
+
+    temp_folder = tempfile.mkdtemp(prefix="memname_pdfs_")
+    merged_folder = tempfile.mkdtemp(prefix="merged_parts_")
+
+    input_df = pd.read_excel(input_file, sheet_name="Filing_tabs")
+    input_df.columns = input_df.columns.str.strip().str.lower()
+
+    if "group_val" not in input_df.columns:
+        raise ValueError(f"'Group_Val' column not found in Filing_tabs. Columns: {list(input_df.columns)}")
+
+    # group_val -> list of (memname, temp_pdf_path), order of first appearance kept
+    groups = {}
+    memname_srt = {}  # memname -> SRT_TAB_ID from input sheet
+
+    try:
+        # ---------- Step 1: build one temp PDF per memname ----------
+        for _, row in input_df.iterrows():
+
+            memname = str(row.get("memname", "")).strip()
+            if not memname or memname.lower() == "nan":
+                continue
+
+            memname_srt[memname] = normalize_group(row.get("srt_tab_id", ""))
+            group_val = normalize_group(row.get("group_val", ""))
+            if group_val == "":
+                group_val = memname  # no group value -> its own group
+
+            print(f" Processing: {memname}  (Group_Val = {group_val})")
+
+            # Case-insensitive sheet name lookup
+            sheet_name = find_sheet_name_ci(config_file, memname)
+
+            df = pd.read_excel(config_file, sheet_name=sheet_name).fillna("")
+            df = df.map(clean_text) if hasattr(df, "map") else df.applymap(clean_text)
+
+            fixed_cols = get_fixed_columns(df)
+
+            titles         = [str(row.get(f"title{i}", "")) for i in range(1, 5)]
+            version        = str(row.get("version_current", ""))
+            page_cnt_title = str(row.get("page_cnt_title", ""))
+            _, center, right = parse_footnote(str(row.get("footnote1", "")))
+
+            drawer = make_page_drawer(titles, version, center, right, page_cnt_title)
+
+            tmp_pdf = os.path.join(temp_folder, f"{safe_filename(memname)}.pdf")
+            build_pdf(df, tmp_pdf, drawer, fixed_cols)
+
+            groups.setdefault(group_val, []).append((memname, tmp_pdf))
+
+        # ---------- Step 2: merge per group (max size enforced) ----------
+        all_parts = []  # (group_val, temp_path, memnames) in final order
+
+        for group_val, items in groups.items():
+            print(f"\n Merging Group_Val = {group_val} ({len(items)} memname(s))")
+            for tmp_path, memnames in merge_group(group_val, items, merged_folder, max_bytes):
+                all_parts.append((group_val, tmp_path, memnames))
+
+        # ---------- Step 2b: final names, numbered across ALL groups ----------
+        total_files = len(all_parts)
+        mapping_rows = []
+        all_pdfs = []
+
+        for file_no, (group_val, tmp_path, memnames) in enumerate(all_parts, start=1):
+            pdf_name = f"{base_name} page {file_no} of {total_files}.pdf"
+            final_path = os.path.join(final_folder, pdf_name)
+            shutil.move(tmp_path, final_path)
+            all_pdfs.append(final_path)
+            print(f"    Saved: {final_path}  ({os.path.getsize(final_path) / 1024 / 1024:.2f} MB)")
+
+            for m in memnames:
+                mapping_rows.append({
+                    "Group_Val":  group_val,
+                    "SRT_TAB_ID": memname_srt.get(m, ""),
+                    "MemName":    m,
+                    "PDF Name":  pdf_name,
+                    "PDF Part":  f"{file_no} of {total_files}",
+                })
+
+        # ---------- Step 3: mapping Excel ----------
+        mapping_path = os.path.join(final_folder, MAPPING_EXCEL_NAME)
+        save_mapping_excel(mapping_rows, mapping_path)
+        print(f"\n Mapping sheet saved: {mapping_path}")
+
+    finally:
+        shutil.rmtree(temp_folder, ignore_errors=True)
+        shutil.rmtree(merged_folder, ignore_errors=True)
+
+    print(" DONE")
+    return all_pdfs
+
+
+if __name__ == "__main__":
+    generate_single_reports(
+        input_file=r"D:\filling_input_exl\input.xlsx",
+        config_file=r"D:\filling_input_exl\config2.xlsx",
+        output_folder=r"D:\filling_input_exl",   # "Proffs" folder is created inside this
+        pdf_names=PDF_NAMES,
+        max_size_mb=MAX_PDF_SIZE_MB,
+    )
