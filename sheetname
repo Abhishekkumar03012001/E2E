@@ -1,1 +1,411 @@
-VBA based tool to import modeling factors into the config and run QC.
+/*====================================================================
+  Fire and water PDF report generator  -  PURE SAS (no Python needed)
+
+  Reads : input.xlsx  (sheet Filing_tabs)  and  config2.xlsx (1 sheet per memname)
+  Writes: <output_folder>/Proffs/
+            "<pdf_names> page N of M.pdf"   (merged per Group_Val, max size limit)
+            PDF_Mapping.xlsx                (Group_Val, SRT_TAB_ID, MemName, PDF Name, PDF Part)
+
+  REQUIREMENTS
+  - SAS Viya compute server with SAS/ACCESS Interface to PC Files
+    (needed for LIBNAME XLSX).  Paths are SERVER paths (Linux style).
+  - Titles / footnotes in the input sheet should not contain & % or " characters.
+====================================================================*/
+
+/* ------------------------- USER SETTINGS ------------------------- */
+%let input_file    = /your/server/path/input.xlsx;
+%let config_file   = /your/server/path/config2.xlsx;
+%let output_folder = /your/server/path/output;
+%let pdf_names     = Fire and water;   /* base name of all PDFs               */
+%let max_size_mb   = 3;                /* maximum size of one PDF             */
+%let rows_per_page = 45;               /* table rows on one PDF page          */
+/* ----------------------------------------------------------------- */
+
+options validvarname=any validmemname=extend dlcreatedir nodate nonumber
+        papersize=letter orientation=portrait
+        topmargin=0.45in bottommargin=0.45in leftmargin=0.55in rightmargin=0.55in;
+
+%let base   = &pdf_names;
+%let tmpdir = %sysfunc(pathname(work));
+%let rc     = %sysfunc(dcreate(Proffs, &output_folder));
+%let proffs = &output_folder/Proffs;
+
+libname inx xlsx "&input_file";
+libname cfg xlsx "&config_file";
+
+/* ---------- helper: character expression for any input column ---------- */
+%macro cexpr(ds, var);
+  %local dsid vnum typ rc;
+  %let dsid = %sysfunc(open(&ds));
+  %let vnum = %sysfunc(varnum(&dsid, &var));
+  %if &vnum = 0 %then %let typ = X;
+  %else %let typ = %sysfunc(vartype(&dsid, &vnum));
+  %let rc = %sysfunc(close(&dsid));
+  %if &typ = N %then %do;
+    ifc(missing(&var), "", strip(put(&var, best32.)))
+  %end;
+  %else %if &typ = C %then %do;
+    strip(&var)
+  %end;
+  %else %do;
+    ""
+  %end;
+%mend cexpr;
+
+/* ---------- helper: date statement (mm/dd/yyyy) ---------- */
+%macro dstmt(ds, var, out);
+  %local dsid vnum typ rc;
+  %let dsid = %sysfunc(open(&ds));
+  %let vnum = %sysfunc(varnum(&dsid, &var));
+  %if &vnum = 0 %then %let typ = X;
+  %else %let typ = %sysfunc(vartype(&dsid, &vnum));
+  %let rc = %sysfunc(close(&dsid));
+  %if &typ = N %then %do;
+    if missing(&var) then &out = ""; else &out = put(&var, mmddyy10.);
+  %end;
+  %else %if &typ = C %then %do;
+    d__ = inputn(strip(&var), "anydtdte32.");
+    if strip(&var) = "" then &out = "";
+    else if missing(d__) then &out = strip(&var);
+    else &out = put(d__, mmddyy10.);
+  %end;
+  %else %do;
+    &out = "";
+  %end;
+%mend dstmt;
+
+/* ---------- read the input sheet ---------- */
+data work.input_raw;
+  set inx.Filing_tabs;
+run;
+
+data work.meta;
+  set work.input_raw;
+  length m_mem m_grp m_srt $256 m_t1-m_t4 m_fc m_fr m_pct m_foot $512 m_eff $64;
+  retain rx_c rx_r;
+  if _n_ = 1 then do;
+    rx_c = prxparse('/center\s*"([^"]*)"/');
+    rx_r = prxparse('/right\s*"([^"]*)"/');
+  end;
+
+  m_mem  = %cexpr(work.input_raw, memname);
+  if m_mem = "" then delete;
+  m_grp  = %cexpr(work.input_raw, group_val);
+  if m_grp = "" then m_grp = m_mem;          /* no group value -> own group */
+  m_srt  = %cexpr(work.input_raw, srt_tab_id);
+  m_t1   = %cexpr(work.input_raw, title1);
+  m_t2   = %cexpr(work.input_raw, title2);
+  m_t3   = %cexpr(work.input_raw, title3);
+  m_t4   = %cexpr(work.input_raw, title4);
+  m_pct  = %cexpr(work.input_raw, page_cnt_title);
+  m_foot = %cexpr(work.input_raw, footnote1);
+  %dstmt(work.input_raw, version_current, m_eff)
+
+  if prxmatch(rx_c, m_foot) then m_fc = strip(prxposn(rx_c, 1, m_foot)); else m_fc = "";
+  if prxmatch(rx_r, m_foot) then m_fr = strip(prxposn(rx_r, 1, m_foot)); else m_fr = "";
+
+  idx + 1;
+  keep idx m_mem m_grp m_srt m_t1-m_t4 m_pct m_eff m_fc m_fr;
+run;
+
+proc sql noprint;
+  select count(*) into :nmem trimmed from work.meta;
+quit;
+
+/* ---------- display rule for one cell (uses n__) ---------- */
+%macro disp(i, nf);
+  %if &i <= &nf %then %do;
+    i__ = int(n__);
+    if i__ < -10 then col__&i = "No information";
+    else if i__ >= 1000 then col__&i = ">1000";
+    else col__&i = strip(put(i__, best12.));
+  %end;
+  %else %do;
+    col__&i = strip(put(n__, 32.4));
+  %end;
+%mend disp;
+
+/* ---------- prepare the display table of one memname ---------- */
+%macro prep(idx);
+  %local mem actual nv nf i dsid nobs;
+
+  data _null_;
+    set work.meta;
+    where idx = &idx;
+    call symputx('mem', m_mem, 'L');
+  run;
+
+  proc sql noprint;
+    select memname into :actual trimmed
+    from dictionary.tables
+    where libname = "CFG" and upcase(memname) = upcase("&mem");
+  quit;
+  %if &sqlobs = 0 %then %do;
+    %put ERROR: No sheet matching "&mem" (case-insensitive) found in &config_file;
+    %abort cancel;
+  %end;
+
+  proc contents data=cfg."&actual"n out=work.cont_ noprint; run;
+  proc sort data=work.cont_; by varnum; run;
+
+  data _null_;
+    retain nf 0 found 0;
+    set work.cont_ end=eof;
+    call symputx(cats('nm', _n_), name, 'L');
+    call symputx(cats('ty', _n_), type, 'L');
+    if not found and lowcase(strip(name)) in ('fire', 'risk') then do;
+      found = 1;
+      nf = _n_ - 1;
+    end;
+    if eof then do;
+      if not found then nf = 1;
+      call symputx('nv', _n_, 'L');
+      call symputx('nf', nf, 'L');
+    end;
+  run;
+
+  data work.d_&idx;
+    set cfg."&actual"n;
+    length col__1-col__&nv $400 t__ $400;
+    row__ = _n_;
+    %do i = 1 %to &nv;
+      label col__&i = %sysfunc(quote(&&nm&i));
+      %if &&ty&i = 1 %then %do;
+        if missing("&&nm&i"n) then col__&i = "";
+        else do;
+          n__ = "&&nm&i"n;
+          %disp(&i, &nf)
+        end;
+      %end;
+      %else %do;
+        t__ = lowcase(strip(prxchange('s/\s+/ /', -1, strip("&&nm&i"n))));
+        if t__ = "" then col__&i = "";
+        else do;
+          n__ = input(t__, ?? best32.);
+          if not missing(n__) then do;
+            %disp(&i, &nf)
+          end;
+          else col__&i = t__;
+        end;
+      %end;
+    %end;
+    keep row__ col__1-col__&nv;
+  run;
+
+  %let dsid = %sysfunc(open(work.d_&idx));
+  %let nobs = %sysfunc(attrn(&dsid, nlobs));
+  %let dsid = %sysfunc(close(&dsid));
+
+  %global nv_&idx nf_&idx nobs_&idx;
+  %let nv_&idx   = &nv;
+  %let nf_&idx   = &nf;
+  %let nobs_&idx = &nobs;
+%mend prep;
+
+/* ---------- draw all pages of one memname into the open ODS PDF ---------- */
+%macro render(idx);
+  %local rt1 rt2 rt3 rt4 reff rfc rfr rpct k t pg nv nf nobs per nscroll nchunk
+         nslice s c lo hi from to m w tw cols j;
+
+  data _null_;
+    set work.meta;
+    where idx = &idx;
+    call symputx('rt1',  m_t1,  'L');
+    call symputx('rt2',  m_t2,  'L');
+    call symputx('rt3',  m_t3,  'L');
+    call symputx('rt4',  m_t4,  'L');
+    call symputx('reff', m_eff, 'L');
+    call symputx('rfc',  m_fc,  'L');
+    call symputx('rfr',  m_fr,  'L');
+    call symputx('rpct', m_pct, 'L');
+  run;
+
+  %let nv   = &&nv_&idx;
+  %let nf   = &&nf_&idx;
+  %let nobs = &&nobs_&idx;
+
+  %let per = %eval(8 - &nf);
+  %if &per < 1 %then %let per = 1;
+  %let nscroll = %eval(&nv - &nf);
+  %let nchunk  = %sysfunc(ceil(%sysevalf(&nscroll / &per)));
+  %let nslice  = %sysfunc(ceil(%sysevalf(&nobs / &rows_per_page)));
+
+  /* titles: only non-empty ones, centered, bold */
+  title;
+  %let k = 0;
+  %do t = 1 %to 4;
+    %if %length(%superq(rt&t)) %then %do;
+      %let k = %eval(&k + 1);
+      title&k font=Helvetica bold height=10pt j=c "&&rt&t";
+    %end;
+  %end;
+
+  %let pg = 0;
+  %do s = 1 %to &nslice;
+    %let lo = %eval((&s - 1) * &rows_per_page + 1);
+    %let hi = %eval(&s * &rows_per_page);
+
+    %do c = 1 %to &nchunk;
+      %let pg   = %eval(&pg + 1);
+      %let from = %eval(&nf + 1 + (&c - 1) * &per);
+      %let to   = %sysfunc(min(&nv, %eval(&from + &per - 1)));
+      %let m    = %eval(&nf + &to - &from + 1);
+      %if &m < 5 %then %let w = 70;
+      %else %let w = %sysevalf(532 / &m);
+      %let tw   = %sysevalf(&w * &m);
+
+      %let cols = ;
+      %do j = 1 %to &nf;
+        %let cols = &cols col__&j;
+      %end;
+      %do j = &from %to &to;
+        %let cols = &cols col__&j;
+      %end;
+
+      footnote1 font=Helvetica height=8pt j=l "Effective: &reff" j=c "&rfc" j=r "&rfr";
+      footnote2 font=Helvetica height=8pt j=r "&rpct &pg";
+
+      proc report data=work.d_&idx(where=(row__ between &lo and &hi)) nowd missing
+        style(report)={rules=all frame=box cellspacing=0 cellpadding=2pt
+                       bordercolor=black borderwidth=1pt just=l width=&tw.pt}
+        style(header)={font_face=Helvetica font_size=8pt font_weight=bold just=c
+                       background=white foreground=black}
+        style(column)={font_face=Helvetica font_size=8pt just=c vjust=m cellwidth=&w.pt};
+        columns &cols;
+        %do j = 1 %to &nf;
+          define col__&j / display;
+        %end;
+        %do j = &from %to &to;
+          define col__&j / display;
+        %end;
+      run;
+    %end;
+  %end;
+%mend render;
+
+%macro odsopen(file);
+  ods _all_ close;
+  ods noproctitle;
+  ods pdf file="&file" notoc style=minimal bookmarkgen=no;
+%mend odsopen;
+
+/* =========================== MAIN =========================== */
+%macro main;
+  %local i f k ids nfiles;
+
+  /* 1) prepare every memname */
+  %do i = 1 %to &nmem;
+    %put NOTE: Preparing memname &i of &nmem;
+    %prep(&i)
+  %end;
+
+  /* 2) draw one temporary PDF per memname to measure its size */
+  data work.sizes;
+    length idx sz 8;
+    stop;
+  run;
+
+  %do i = 1 %to &nmem;
+    %odsopen(&tmpdir/m_&i..pdf)
+    %render(&i)
+    ods pdf close;
+
+    data work.one_;
+      idx = &i;
+      rc  = filename('f', "&tmpdir/m_&i..pdf");
+      fid = fopen('f', 'i', 1, 'b');
+      sz  = input(finfo(fid, 'File Size (bytes)'), best32.);
+      rc  = fclose(fid);
+      rc  = filename('f');
+      keep idx sz;
+    run;
+    proc append base=work.sizes data=work.one_; run;
+  %end;
+
+  /* 3) plan: which memnames go into which PDF (same group, size limit) */
+  proc sql;
+    create table work.gmin as
+      select m_grp, min(idx) as gfirst from work.meta group by m_grp;
+    create table work.plan0 as
+      select a.*, b.gfirst, s.sz
+      from work.meta a
+           join work.gmin  b on a.m_grp = b.m_grp
+           join work.sizes s on a.idx   = s.idx
+      order by b.gfirst, a.idx;
+  quit;
+
+  data work.plan;
+    set work.plan0;
+    by gfirst;
+    retain fileno 0 cum 0;
+    maxb = &max_size_mb * 1024 * 1024;
+    if first.gfirst then do;
+      fileno + 1;
+      cum = sz;
+    end;
+    else if cum + sz <= maxb then cum = cum + sz;
+    else do;
+      fileno + 1;
+      cum = sz;
+    end;
+    if sz > maxb then putlog "WARNING: " m_mem "alone is larger than the size limit.";
+  run;
+
+  proc sql noprint;
+    select max(fileno) into :nfiles trimmed from work.plan;
+  quit;
+
+  /* 4) final PDFs, numbered across all groups */
+  %do f = 1 %to &nfiles;
+    proc sql noprint;
+      select idx into :ids separated by ' '
+      from work.plan where fileno = &f order by idx;
+    quit;
+
+    %odsopen(&proffs/&base page &f of &nfiles..pdf)
+    %do k = 1 %to %sysfunc(countw(&ids));
+      %render(%scan(&ids, &k))
+    %end;
+    ods pdf close;
+    %put NOTE: Saved &proffs/&base page &f of &nfiles..pdf;
+  %end;
+
+  /* 5) mapping Excel sheet */
+  proc sort data=work.plan; by fileno idx; run;
+
+  data work.map;
+    set work.plan;
+    length PDF_Name $400 PDF_Part $40;
+    PDF_Name = catx(" ", "&base", "page", fileno, "of", "&nfiles") || ".pdf";
+    PDF_Part = catx(" ", fileno, "of", "&nfiles");
+  run;
+
+  ods _all_ close;
+  ods excel file="&proffs/PDF_Mapping.xlsx"
+            options(sheet_name="Mapping" frozen_headers="yes");
+  proc print data=work.map noobs label
+    style(header)={background=#FFD966 font_weight=bold just=c
+                   bordercolor=black borderwidth=1pt};
+    var m_grp m_srt m_mem PDF_Name PDF_Part;
+    label m_grp="Group_Val" m_srt="SRT_TAB_ID" m_mem="MemName"
+          PDF_Name="PDF Name" PDF_Part="PDF Part";
+  run;
+  ods excel close;
+
+  /* 6) remove temporary PDFs */
+  data _null_;
+    set work.sizes;
+    rc = filename('f', cats("&tmpdir/m_", idx, ".pdf"));
+    rc = fdelete('f');
+    rc = filename('f');
+  run;
+
+  title;
+  footnote;
+  %put NOTE: DONE - files are in &proffs;
+%mend main;
+
+%main
+
+libname inx clear;
+libname cfg clear;
