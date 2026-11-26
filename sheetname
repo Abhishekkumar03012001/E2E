@@ -1,1 +1,1 @@
-Incorporated the specific variables in the Excel based VBA tool to load the config and calculate the relevant factors correctly and to match the final premium.
+VBA based tool to import modeling factors into the config and run QC.
