@@ -1,9 +1,1 @@
-Hi Jess, hope you're doing well.
-
-We have completed the GA Config Builder QC run. Please find the attached QC report for your reference.
-
-For the sheets flagged with **Manual Validation Required**, we have added the relevant comments in the **Analyst Comments** column to highlight the items requiring manual validation.
-
-Please review and let us know if any further validation is required.
-
-Thank you!
+Automated the Excel based VBA tool to input the variables and QC the final factors from ROC to match the NGRT premiums.
