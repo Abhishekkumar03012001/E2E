@@ -94,17 +94,14 @@ def find_sheet_name_ci(excel_path, target_name):
     """
     Return the actual sheet name inside excel_path that matches target_name
     case-insensitively (and ignoring surrounding whitespace).
-    Raises ValueError if no match is found.
+    Returns None if no match is found (the memname is then skipped).
     """
     xl = pd.ExcelFile(excel_path)
     target_clean = str(target_name).strip().lower()
     for sheet in xl.sheet_names:
         if str(sheet).strip().lower() == target_clean:
             return sheet
-    raise ValueError(
-        f"No sheet matching '{target_name}' (case-insensitive) found in {excel_path}. "
-        f"Available sheets: {xl.sheet_names}"
-    )
+    return None
 
 
 def normalize_group(val):
@@ -362,8 +359,13 @@ def merge_group(group_val, items, out_folder, max_bytes):
 MAPPING_COLUMNS = ["Group_Val", "SRT_TAB_ID", "MemName", "PDF Name", "PDF Part"]
 
 
+MISSING_TEXT = "NOT CREATED - sheet not found in config file"
+
+
 def save_mapping_excel(rows, path):
-    df = pd.DataFrame(rows, columns=MAPPING_COLUMNS)
+    df = pd.DataFrame(rows, columns=MAPPING_COLUMNS + ["Missing"])
+    missing_flags = df["Missing"].tolist()
+    df = df[MAPPING_COLUMNS]
 
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Mapping")
@@ -382,6 +384,14 @@ def save_mapping_excel(rows, path):
         for idx, col_cells in enumerate(ws.columns, start=1):
             longest = max(len(str(c.value)) if c.value is not None else 0 for c in col_cells)
             ws.column_dimensions[get_column_letter(idx)].width = longest + 4
+
+        # highlight memnames whose sheet was not found
+        red_fill = PatternFill("solid", start_color="F8CBAD", end_color="F8CBAD")
+        for excel_row, is_missing in enumerate(missing_flags, start=2):
+            if is_missing:
+                for cell in ws[excel_row]:
+                    cell.fill = red_fill
+                    cell.font = Font(bold=True)
 
         ws.freeze_panes = "A2"
 
@@ -408,6 +418,7 @@ def generate_single_reports(input_file, config_file, output_folder,
     # group_val -> list of (memname, temp_pdf_path), order of first appearance kept
     groups = {}
     memname_srt = {}  # memname -> SRT_TAB_ID from input sheet
+    missing_rows = []  # memnames whose sheet is not in the config file
 
     try:
         # ---------- Step 1: build one temp PDF per memname ----------
@@ -426,6 +437,17 @@ def generate_single_reports(input_file, config_file, output_folder,
 
             # Case-insensitive sheet name lookup
             sheet_name = find_sheet_name_ci(config_file, memname)
+            if sheet_name is None:
+                print(f"    WARNING: no sheet named '{memname}' in config file - SKIPPED")
+                missing_rows.append({
+                    "Group_Val":  group_val,
+                    "SRT_TAB_ID": memname_srt.get(memname, ""),
+                    "MemName":    memname,
+                    "PDF Name":   MISSING_TEXT,
+                    "PDF Part":   "",
+                    "Missing":    True,
+                })
+                continue
 
             df = pd.read_excel(config_file, sheet_name=sheet_name).fillna("")
             df = df.map(clean_text) if hasattr(df, "map") else df.applymap(clean_text)
@@ -469,9 +491,12 @@ def generate_single_reports(input_file, config_file, output_folder,
                     "Group_Val":  group_val,
                     "SRT_TAB_ID": memname_srt.get(m, ""),
                     "MemName":    m,
-                    "PDF Name":  pdf_name,
-                    "PDF Part":  f"{file_no} of {total_files}",
+                    "PDF Name":   pdf_name,
+                    "PDF Part":   f"{file_no} of {total_files}",
+                    "Missing":    False,
                 })
+
+        mapping_rows.extend(missing_rows)  # skipped memnames at the bottom, highlighted
 
         # ---------- Step 3: mapping Excel ----------
         mapping_path = os.path.join(final_folder, MAPPING_EXCEL_NAME)
