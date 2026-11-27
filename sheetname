@@ -1,1 +1,2 @@
-Liberty GPT AFC Assistant	Built a GPT-based assistant to summarize the AFC report for the product to analyze which variables have different impact percentages.
+GPT Assistants	Liberty GPT HMR 3.0 Manual Rater QC Assistant	Compares manual rater ROC with Rndprm factors and provides a list of all factor mismatches, which makes debugging easier.
+GPT Assistants	Liberty GPT PDF Compare Assistant	Compares product guides at the word-to-word level and creates a single PDF that highlights every difference in the same format as the input file.
