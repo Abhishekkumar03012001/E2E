@@ -1,2 +1,1 @@
-GPT Assistants	Liberty GPT HMR 3.0 Manual Rater QC Assistant	Compares manual rater ROC with Rndprm factors and provides a list of all factor mismatches, which makes debugging easier.
-GPT Assistants	Liberty GPT PDF Compare Assistant	Compares product guides at the word-to-word level and creates a single PDF that highlights every difference in the same format as the input file.
+HMR 2.5 WA HMR2.5 and OAS2 Condensing	VBA-based tool which created condensed filing for WA HMR 2.5 and OAS 2.
